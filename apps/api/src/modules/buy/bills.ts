@@ -4,6 +4,11 @@ import { z } from "zod";
 import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
 import { postJournal } from "../accounting/journal-posting.js";
+import {
+  applyStockReceipt,
+  resolveDefaultWarehouse,
+  resolveStockGLAccounts,
+} from "../inventory/stock-posting.js";
 
 const LineSchema = z.object({
   itemId: z.string().uuid().optional(),
@@ -79,6 +84,9 @@ async function computeBill(
     expenseCandidates[0] ??
     null;
 
+  // Inventory account — tracked items route here instead of an expense account
+  const { inventoryAccountId } = await resolveStockGLAccounts(tx, tenantId);
+
   const lines = lineInputs.map((l, idx) => {
     const qty = l.quantity;
     const unit = l.unitPriceCents;
@@ -91,8 +99,16 @@ async function computeBill(
     const taxCents = Math.round((taxable * taxRateBps) / 10_000);
     const lineTotal = taxable + taxCents;
     const item = itemById.get(l.itemId ?? "");
-    const expenseAccountId =
-      l.expenseAccountId ?? item?.expenseAccountId ?? defaultExpense?.id ?? null;
+    const isStocked = item?.trackInventory === true;
+    // Tracked products: DR Inventory (capitalized to stock, relieved later as COGS)
+    // Services / non-tracked: DR Expense
+    const expenseAccountId = isStocked
+      ? (item?.assetAccountId ?? inventoryAccountId)
+      : (l.expenseAccountId ?? item?.expenseAccountId ?? defaultExpense?.id ?? null);
+
+    // Net line cost (for stock receipts: unit cost post-discount)
+    const lineNetCents = subtotal - discount;
+    const effectiveUnitCostCents = qty > 0 ? Math.round(lineNetCents / qty) : 0;
 
     return {
       lineNo: idx + 1,
@@ -109,6 +125,8 @@ async function computeBill(
       lineTotalCents: lineTotal,
       expenseAccountId,
       taxReceivableAccountId: tax?.receivableAccountId ?? null,
+      isStocked,
+      effectiveUnitCostCents,
     };
   });
 
@@ -392,6 +410,46 @@ export const billsRoutes: FastifyPluginAsync = async (fastify) => {
         lines: journalLines,
       });
 
+      // Stock receipts for tracked items — one per line with itemId referencing a tracked item.
+      const trackedLines = lines.filter((l) => l.itemId !== null);
+      if (trackedLines.length > 0) {
+        const linkedItems = await tx
+          .select()
+          .from(schema.items)
+          .where(
+            and(
+              eq(schema.items.tenantId, ctx.tenantId),
+              isNull(schema.items.deletedAt),
+            ),
+          );
+        const itemById = new Map(linkedItems.map((i) => [i.id, i]));
+
+        const defaultWarehouse = await resolveDefaultWarehouse(tx, ctx.tenantId);
+        if (!defaultWarehouse) return { error: "NO_DEFAULT_WAREHOUSE" as const };
+
+        for (const l of trackedLines) {
+          const item = itemById.get(l.itemId!);
+          if (!item || !item.trackInventory) continue;
+          const qty = Number(l.quantity);
+          if (qty <= 0) continue;
+          const netCents = l.lineSubtotalCents - l.discountCents;
+          const unitCost = qty > 0 ? Math.round(netCents / qty) : 0;
+          await applyStockReceipt(tx, {
+            tenantId: ctx.tenantId,
+            itemId: item.id,
+            warehouseId: defaultWarehouse.id,
+            quantity: qty,
+            unitCostCents: unitCost,
+            sourceDocumentType: "bill",
+            sourceDocumentId: bill.id,
+            sourceLineId: l.id,
+            journalEntryId: entryId,
+            postedByUserId: ctx.userId,
+            memo: `Bill ${internalReference}`,
+          });
+        }
+      }
+
       await tx
         .update(schema.bills)
         .set({
@@ -414,6 +472,7 @@ export const billsRoutes: FastifyPluginAsync = async (fastify) => {
         NO_LINES: 400,
         NO_AP_ACCOUNT: 500,
         MISSING_EXPENSE_ACCOUNT: 500,
+        NO_DEFAULT_WAREHOUSE: 500,
       };
       return reply.status(map[result.error] ?? 500).send({ error: { code: result.error } });
     }

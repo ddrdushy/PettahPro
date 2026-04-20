@@ -1,0 +1,87 @@
+import type { FastifyPluginAsync } from "fastify";
+import { and, eq, isNull, desc, asc } from "drizzle-orm";
+import { withTenant, schema } from "@pettahpro/db";
+import { requireAuth } from "../../lib/with-tenant.js";
+
+export const stockRoutes: FastifyPluginAsync = async (fastify) => {
+  // GET /stock — current on-hand + WAVG value per tracked item
+  fastify.get("/", async (req, reply) => {
+    const ctx = requireAuth(req, reply);
+    if (!ctx) return;
+
+    const balances = await withTenant(ctx.tenantId, async (tx) =>
+      tx
+        .select({
+          itemId: schema.items.id,
+          itemName: schema.items.name,
+          sku: schema.items.sku,
+          unit: schema.items.unit,
+          trackInventory: schema.items.trackInventory,
+          reorderPoint: schema.items.reorderPoint,
+          warehouseId: schema.warehouses.id,
+          warehouseCode: schema.warehouses.code,
+          warehouseName: schema.warehouses.name,
+          quantityOnHand: schema.itemBalances.quantityOnHand,
+          averageCostCents: schema.itemBalances.averageCostCents,
+          totalValueCents: schema.itemBalances.totalValueCents,
+          lastMovementAt: schema.itemBalances.lastMovementAt,
+        })
+        .from(schema.itemBalances)
+        .innerJoin(schema.items, eq(schema.items.id, schema.itemBalances.itemId))
+        .innerJoin(schema.warehouses, eq(schema.warehouses.id, schema.itemBalances.warehouseId))
+        .where(
+          and(
+            eq(schema.itemBalances.tenantId, ctx.tenantId),
+            isNull(schema.items.deletedAt),
+          ),
+        )
+        .orderBy(asc(schema.items.name)),
+    );
+
+    const totalValueCents = balances.reduce((s, b) => s + b.totalValueCents, 0);
+
+    return reply.send({ balances, totalValueCents });
+  });
+
+  // GET /stock/ledger?itemId=… — movement history for an item
+  fastify.get<{ Querystring: { itemId?: string } }>("/ledger", async (req, reply) => {
+    const ctx = requireAuth(req, reply);
+    if (!ctx) return;
+
+    const itemId = req.query.itemId;
+    if (!itemId) {
+      return reply.status(400).send({ error: { code: "ITEM_ID_REQUIRED" } });
+    }
+
+    const movements = await withTenant(ctx.tenantId, async (tx) =>
+      tx
+        .select({
+          id: schema.stockLedger.id,
+          movementType: schema.stockLedger.movementType,
+          quantity: schema.stockLedger.quantity,
+          unitCostCents: schema.stockLedger.unitCostCents,
+          totalCostCents: schema.stockLedger.totalCostCents,
+          runningQuantity: schema.stockLedger.runningQuantity,
+          runningValueCents: schema.stockLedger.runningValueCents,
+          runningAvgCostCents: schema.stockLedger.runningAvgCostCents,
+          sourceDocumentType: schema.stockLedger.sourceDocumentType,
+          sourceDocumentId: schema.stockLedger.sourceDocumentId,
+          occurredAt: schema.stockLedger.occurredAt,
+          warehouseCode: schema.warehouses.code,
+          warehouseName: schema.warehouses.name,
+        })
+        .from(schema.stockLedger)
+        .innerJoin(schema.warehouses, eq(schema.warehouses.id, schema.stockLedger.warehouseId))
+        .where(
+          and(
+            eq(schema.stockLedger.tenantId, ctx.tenantId),
+            eq(schema.stockLedger.itemId, itemId),
+          ),
+        )
+        .orderBy(desc(schema.stockLedger.occurredAt))
+        .limit(200),
+    );
+
+    return reply.send({ movements });
+  });
+};

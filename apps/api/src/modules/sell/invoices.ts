@@ -4,6 +4,12 @@ import { z } from "zod";
 import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
 import { postJournal } from "../accounting/journal-posting.js";
+import {
+  applyStockIssue,
+  peekStockIssue,
+  resolveDefaultWarehouse,
+  resolveStockGLAccounts,
+} from "../inventory/stock-posting.js";
 
 const LineSchema = z.object({
   itemId: z.string().uuid().optional(),
@@ -423,6 +429,74 @@ export const invoicesRoutes: FastifyPluginAsync = async (fastify) => {
         });
       }
 
+      // Inventory relief + COGS for tracked items (WAVG, single default warehouse v1)
+      const trackedLines: Array<{
+        line: (typeof lines)[number];
+        item: typeof schema.items.$inferSelect;
+        cogsCents: number;
+      }> = [];
+      let totalCogsCents = 0;
+
+      const linkedItems = await tx
+        .select()
+        .from(schema.items)
+        .where(
+          and(
+            eq(schema.items.tenantId, ctx.tenantId),
+            isNull(schema.items.deletedAt),
+          ),
+        );
+      const itemById = new Map(linkedItems.map((i) => [i.id, i]));
+
+      const defaultWarehouse = await resolveDefaultWarehouse(tx, ctx.tenantId);
+      const { inventoryAccountId, cogsAccountId } = await resolveStockGLAccounts(
+        tx,
+        ctx.tenantId,
+      );
+
+      for (const l of lines) {
+        if (!l.itemId) continue;
+        const item = itemById.get(l.itemId);
+        if (!item || !item.trackInventory) continue;
+        if (!defaultWarehouse) return { error: "NO_DEFAULT_WAREHOUSE" as const };
+        if (!inventoryAccountId || !cogsAccountId) return { error: "NO_STOCK_ACCOUNTS" as const };
+
+        const qty = Number(l.quantity);
+        if (qty <= 0) continue;
+
+        try {
+          const { cogsCents } = await peekStockIssue(tx, {
+            tenantId: ctx.tenantId,
+            itemId: item.id,
+            warehouseId: defaultWarehouse.id,
+            quantity: qty,
+          });
+          trackedLines.push({ line: l, item, cogsCents });
+          totalCogsCents += cogsCents;
+        } catch (err) {
+          const e = err as Error & { code?: string };
+          if (e.code === "NEGATIVE_STOCK") return { error: "NEGATIVE_STOCK" as const, item };
+          throw err;
+        }
+      }
+
+      if (totalCogsCents > 0 && cogsAccountId && inventoryAccountId) {
+        journalLines.push(
+          {
+            accountId: cogsAccountId,
+            drCents: totalCogsCents,
+            description: `COGS · ${invoiceNumber}`,
+            customerId: invoice.customerId,
+          },
+          {
+            accountId: inventoryAccountId,
+            crCents: totalCogsCents,
+            description: `Inventory relief · ${invoiceNumber}`,
+            customerId: invoice.customerId,
+          },
+        );
+      }
+
       const { entryId, entryNumber } = await postJournal(tx, {
         tenantId: ctx.tenantId,
         entryDate: invoice.issueDate,
@@ -432,6 +506,22 @@ export const invoicesRoutes: FastifyPluginAsync = async (fastify) => {
         postedByUserId: ctx.userId,
         lines: journalLines,
       });
+
+      // Commit the stock movements with the journal entry id now that it exists
+      for (const t of trackedLines) {
+        await applyStockIssue(tx, {
+          tenantId: ctx.tenantId,
+          itemId: t.item.id,
+          warehouseId: defaultWarehouse!.id,
+          quantity: Number(t.line.quantity),
+          sourceDocumentType: "invoice",
+          sourceDocumentId: invoice.id,
+          sourceLineId: t.line.id,
+          journalEntryId: entryId,
+          postedByUserId: ctx.userId,
+          memo: `Invoice ${invoiceNumber}`,
+        });
+      }
 
       await tx
         .update(schema.invoices)
@@ -455,8 +545,18 @@ export const invoicesRoutes: FastifyPluginAsync = async (fastify) => {
         NO_LINES: 400,
         NO_AR_ACCOUNT: 500,
         MISSING_INCOME_ACCOUNT: 500,
+        NO_DEFAULT_WAREHOUSE: 500,
+        NO_STOCK_ACCOUNTS: 500,
+        NEGATIVE_STOCK: 409,
       };
-      return reply.status(map[result.error] ?? 500).send({ error: { code: result.error } });
+      const body: { error: { code: string; message?: string; itemName?: string } } = {
+        error: { code: result.error },
+      };
+      if (result.error === "NEGATIVE_STOCK" && "item" in result && result.item) {
+        body.error.message = `Not enough stock on hand for ${result.item.name}. Receive stock via a bill before invoicing.`;
+        body.error.itemName = result.item.name;
+      }
+      return reply.status(map[result.error] ?? 500).send(body);
     }
     return reply.send(result);
   });

@@ -6,6 +6,7 @@ import {
   Home,
   Users,
   Package,
+  Boxes,
   Receipt,
   ShoppingCart,
   BookOpen,
@@ -42,7 +43,10 @@ const nav: Group[] = [
   },
   {
     title: "Stock",
-    items: [{ label: "Items", href: "/app/items", icon: Package }],
+    items: [
+      { label: "Items", href: "/app/items", icon: Package },
+      { label: "On hand", href: "/app/stock", icon: Boxes },
+    ],
   },
   {
     title: "Accounting",

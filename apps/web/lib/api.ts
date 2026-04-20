@@ -128,6 +128,11 @@ export const api = {
     return request<BalanceSheet>(`/reports/balance-sheet${qs}`);
   },
 
+  listStock: () =>
+    request<{ balances: StockBalanceRow[]; totalValueCents: number }>("/stock"),
+  stockLedger: (itemId: string) =>
+    request<{ movements: StockLedgerMovement[] }>(`/stock/ledger?itemId=${itemId}`),
+
   listPayments: () => request<{ payments: PaymentListRow[] }>("/payments"),
   createPayment: (body: CreatePayment) =>
     request<{
@@ -442,6 +447,38 @@ export interface CreateInvoice {
   notes?: string;
   terms?: string;
   lines: CreateInvoiceLine[];
+}
+
+export interface StockBalanceRow {
+  itemId: string;
+  itemName: string;
+  sku: string | null;
+  unit: string;
+  trackInventory: boolean;
+  reorderPoint: number | null;
+  warehouseId: string;
+  warehouseCode: string;
+  warehouseName: string;
+  quantityOnHand: string;
+  averageCostCents: number;
+  totalValueCents: number;
+  lastMovementAt: string | null;
+}
+
+export interface StockLedgerMovement {
+  id: string;
+  movementType: string;
+  quantity: string;
+  unitCostCents: number;
+  totalCostCents: number;
+  runningQuantity: string;
+  runningValueCents: number;
+  runningAvgCostCents: number;
+  sourceDocumentType: string | null;
+  sourceDocumentId: string | null;
+  occurredAt: string;
+  warehouseCode: string;
+  warehouseName: string;
 }
 
 export interface BalanceSheetLine {
