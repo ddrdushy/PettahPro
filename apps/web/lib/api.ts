@@ -114,6 +114,15 @@ export const api = {
     return request<TrialBalance>(`/reports/trial-balance${q ? `?${q}` : ""}`);
   },
 
+  profitLoss: (from?: string, to?: string, compare?: string) => {
+    const params = new URLSearchParams();
+    if (from) params.set("from", from);
+    if (to) params.set("to", to);
+    if (compare) params.set("compare", compare);
+    const q = params.toString();
+    return request<ProfitLoss>(`/reports/profit-loss${q ? `?${q}` : ""}`);
+  },
+
   listPayments: () => request<{ payments: PaymentListRow[] }>("/payments"),
   createPayment: (body: CreatePayment) =>
     request<{
@@ -428,6 +437,42 @@ export interface CreateInvoice {
   notes?: string;
   terms?: string;
   lines: CreateInvoiceLine[];
+}
+
+export interface ProfitLossLine {
+  accountId: string;
+  code: string;
+  name: string;
+  amountCents: number;
+  comparisonCents?: number;
+}
+
+export interface ProfitLossSection {
+  label: string;
+  accounts: ProfitLossLine[];
+  totalCents: number;
+  comparisonTotalCents?: number;
+}
+
+export interface ProfitLoss {
+  asOfFrom: string;
+  asOfTo: string;
+  compare: "none" | "prior_month" | "prior_year";
+  comparisonFrom: string | null;
+  comparisonTo: string | null;
+  sections: ProfitLossSection[];
+  grossProfitCents: number;
+  netProfitCents: number;
+  totalIncomeCents: number;
+  totalCogsCents: number;
+  totalOpexCents: number;
+  comparison: {
+    grossProfitCents: number;
+    netProfitCents: number;
+    totalIncomeCents: number;
+    totalCogsCents: number;
+    totalOpexCents: number;
+  } | null;
 }
 
 export interface TrialBalanceAccount {

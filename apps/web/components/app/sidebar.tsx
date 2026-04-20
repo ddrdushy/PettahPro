@@ -54,7 +54,7 @@ const nav: Group[] = [
     title: "Reports",
     items: [
       { label: "Trial balance", href: "/app/reports/trial-balance", icon: FileBarChart },
-      { label: "P&L", href: "/app/reports/profit-loss", icon: FileBarChart, badge: "Soon" },
+      { label: "P&L", href: "/app/reports/profit-loss", icon: FileBarChart },
       { label: "Balance sheet", href: "/app/reports/balance-sheet", icon: FileBarChart, badge: "Soon" },
     ],
   },
