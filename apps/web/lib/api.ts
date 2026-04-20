@@ -114,6 +114,16 @@ export const api = {
       paymentNumber: string;
       entryNumber: string;
     }>("/payments", { method: "POST", json: body }),
+
+  listSupplierPayments: () =>
+    request<{ payments: SupplierPaymentListRow[] }>("/supplier-payments"),
+  createSupplierPayment: (body: CreateSupplierPayment) =>
+    request<{
+      ok: true;
+      payment: SupplierPayment;
+      paymentNumber: string;
+      entryNumber: string;
+    }>("/supplier-payments", { method: "POST", json: body }),
 };
 
 export interface User {
@@ -496,6 +506,61 @@ export interface Payment {
   status: "draft" | "posted" | "reversed";
   postedAt: string | null;
   journalEntryId: string | null;
+}
+
+export type SupplierPaymentMethod =
+  | "cash"
+  | "bank_transfer"
+  | "cheque"
+  | "slips"
+  | "other";
+
+export interface SupplierPaymentListRow {
+  id: string;
+  paymentNumber: string | null;
+  paymentDate: string;
+  method: SupplierPaymentMethod;
+  amountCents: number;
+  currency: string;
+  reference: string | null;
+  chequeNumber: string | null;
+  status: string;
+  supplierId: string;
+  supplierName: string;
+  bankAccountCode: string;
+  bankAccountName: string;
+  createdAt: string;
+}
+
+export interface SupplierPayment {
+  id: string;
+  paymentNumber: string | null;
+  supplierId: string;
+  paymentDate: string;
+  method: SupplierPaymentMethod;
+  amountCents: number;
+  currency: string;
+  bankAccountId: string;
+  reference: string | null;
+  chequeNumber: string | null;
+  chequeDate: string | null;
+  memo: string | null;
+  status: "draft" | "posted" | "reversed";
+  postedAt: string | null;
+  journalEntryId: string | null;
+}
+
+export interface CreateSupplierPayment {
+  supplierId: string;
+  paymentDate?: string;
+  method: SupplierPaymentMethod;
+  bankAccountId: string;
+  amountCents: number;
+  reference?: string;
+  chequeNumber?: string;
+  chequeDate?: string;
+  memo?: string;
+  allocations: { billId: string; allocatedCents: number }[];
 }
 
 export interface CreatePayment {

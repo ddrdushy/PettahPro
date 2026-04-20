@@ -10,6 +10,7 @@ import {
   ShoppingCart,
   BookOpen,
   Wallet,
+  Banknote,
   UsersRound,
   Settings,
   type LucideIcon,
@@ -35,6 +36,7 @@ const nav: Group[] = [
     items: [
       { label: "Suppliers", href: "/app/suppliers", icon: UsersRound },
       { label: "Bills", href: "/app/bills", icon: Receipt },
+      { label: "Payments out", href: "/app/supplier-payments", icon: Banknote },
     ],
   },
   {

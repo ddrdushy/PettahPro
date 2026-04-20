@@ -1,0 +1,261 @@
+import type { FastifyPluginAsync } from "fastify";
+import { and, eq, isNull, desc, inArray, asc, sql } from "drizzle-orm";
+import { z } from "zod";
+import { withTenant, schema } from "@pettahpro/db";
+import { requireAuth } from "../../lib/with-tenant.js";
+import { postJournal } from "../accounting/journal-posting.js";
+
+const METHOD_VALUES = ["cash", "bank_transfer", "cheque", "slips", "other"] as const;
+
+const AllocationSchema = z.object({
+  billId: z.string().uuid(),
+  allocatedCents: z.number().int().positive(),
+});
+
+const CreateSchema = z.object({
+  supplierId: z.string().uuid(),
+  paymentDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  method: z.enum(METHOD_VALUES),
+  bankAccountId: z.string().uuid(),
+  amountCents: z.number().int().positive(),
+  reference: z.string().max(64).optional().or(z.literal("")),
+  chequeNumber: z.string().max(32).optional().or(z.literal("")),
+  chequeDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  memo: z.string().optional().or(z.literal("")),
+  allocations: z.array(AllocationSchema).min(1),
+});
+
+export const supplierPaymentsRoutes: FastifyPluginAsync = async (fastify) => {
+  fastify.get("/", async (req, reply) => {
+    const ctx = requireAuth(req, reply);
+    if (!ctx) return;
+
+    const rows = await withTenant(ctx.tenantId, async (tx) =>
+      tx
+        .select({
+          id: schema.supplierPayments.id,
+          paymentNumber: schema.supplierPayments.paymentNumber,
+          paymentDate: schema.supplierPayments.paymentDate,
+          method: schema.supplierPayments.method,
+          amountCents: schema.supplierPayments.amountCents,
+          currency: schema.supplierPayments.currency,
+          reference: schema.supplierPayments.reference,
+          chequeNumber: schema.supplierPayments.chequeNumber,
+          status: schema.supplierPayments.status,
+          supplierId: schema.supplierPayments.supplierId,
+          supplierName: schema.suppliers.name,
+          bankAccountCode: schema.chartOfAccounts.code,
+          bankAccountName: schema.chartOfAccounts.name,
+          createdAt: schema.supplierPayments.createdAt,
+        })
+        .from(schema.supplierPayments)
+        .innerJoin(schema.suppliers, eq(schema.suppliers.id, schema.supplierPayments.supplierId))
+        .innerJoin(
+          schema.chartOfAccounts,
+          eq(schema.chartOfAccounts.id, schema.supplierPayments.bankAccountId),
+        )
+        .where(
+          and(
+            eq(schema.supplierPayments.tenantId, ctx.tenantId),
+            isNull(schema.supplierPayments.deletedAt),
+          ),
+        )
+        .orderBy(desc(schema.supplierPayments.createdAt))
+        .limit(200),
+    );
+
+    return reply.send({ payments: rows });
+  });
+
+  fastify.post("/", async (req, reply) => {
+    const ctx = requireAuth(req, reply);
+    if (!ctx) return;
+
+    const parsed = CreateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: { code: "INVALID_INPUT", issues: parsed.error.issues } });
+    }
+    const input = parsed.data;
+
+    const allocTotal = input.allocations.reduce((s, a) => s + a.allocatedCents, 0);
+    if (allocTotal !== input.amountCents) {
+      return reply.status(400).send({
+        error: {
+          code: "ALLOCATION_MISMATCH",
+          message: `Allocated ${allocTotal} cents but sending ${input.amountCents}.`,
+        },
+      });
+    }
+
+    const result = await withTenant(ctx.tenantId, async (tx) => {
+      const supRows = await tx
+        .select()
+        .from(schema.suppliers)
+        .where(
+          and(
+            eq(schema.suppliers.tenantId, ctx.tenantId),
+            eq(schema.suppliers.id, input.supplierId),
+            isNull(schema.suppliers.deletedAt),
+          ),
+        )
+        .limit(1);
+      const supplier = supRows[0];
+      if (!supplier) return { error: "SUPPLIER_NOT_FOUND" as const };
+
+      const bankRows = await tx
+        .select()
+        .from(schema.chartOfAccounts)
+        .where(
+          and(
+            eq(schema.chartOfAccounts.tenantId, ctx.tenantId),
+            eq(schema.chartOfAccounts.id, input.bankAccountId),
+            isNull(schema.chartOfAccounts.deletedAt),
+          ),
+        )
+        .limit(1);
+      const bank = bankRows[0];
+      if (!bank) return { error: "BANK_NOT_FOUND" as const };
+      if (bank.accountType !== "asset" || !["cash", "bank"].includes(bank.accountSubtype ?? "")) {
+        return { error: "INVALID_BANK_ACCOUNT" as const };
+      }
+
+      const billIds = input.allocations.map((a) => a.billId);
+      const billRows = await tx
+        .select()
+        .from(schema.bills)
+        .where(
+          and(
+            eq(schema.bills.tenantId, ctx.tenantId),
+            inArray(schema.bills.id, billIds),
+            isNull(schema.bills.deletedAt),
+          ),
+        );
+      if (billRows.length !== billIds.length) return { error: "BILL_NOT_FOUND" as const };
+      const billById = new Map(billRows.map((b) => [b.id, b]));
+      for (const a of input.allocations) {
+        const bill = billById.get(a.billId);
+        if (!bill) return { error: "BILL_NOT_FOUND" as const };
+        if (bill.supplierId !== supplier.id) return { error: "BILL_WRONG_SUPPLIER" as const };
+        if (!["posted", "partially_paid"].includes(bill.status)) {
+          return { error: "BILL_NOT_PAYABLE" as const };
+        }
+        if (a.allocatedCents > bill.balanceDueCents) {
+          return { error: "ALLOCATION_EXCEEDS_BALANCE" as const };
+        }
+      }
+
+      const apRows = await tx
+        .select()
+        .from(schema.chartOfAccounts)
+        .where(
+          and(
+            eq(schema.chartOfAccounts.tenantId, ctx.tenantId),
+            eq(schema.chartOfAccounts.accountSubtype, "ap"),
+            isNull(schema.chartOfAccounts.deletedAt),
+          ),
+        )
+        .limit(1);
+      const ap = apRows[0];
+      if (!ap) return { error: "NO_AP_ACCOUNT" as const };
+
+      const [{ number: paymentNumber }] = (await tx.execute(
+        sql`SELECT next_document_number('payment') AS number`,
+      )) as unknown as Array<{ number: string }>;
+
+      // Journal: DR AP, CR Bank
+      const { entryId, entryNumber } = await postJournal(tx, {
+        tenantId: ctx.tenantId,
+        entryDate: input.paymentDate ?? new Date().toISOString().slice(0, 10),
+        memo: `Payment ${paymentNumber} to ${supplier.name}`,
+        sourceType: "supplier_payment",
+        postedByUserId: ctx.userId,
+        lines: [
+          {
+            accountId: ap.id,
+            drCents: input.amountCents,
+            description: `AP cleared · ${paymentNumber}`,
+            supplierId: supplier.id,
+          },
+          {
+            accountId: bank.id,
+            crCents: input.amountCents,
+            description: `Payment sent · ${paymentNumber}`,
+            supplierId: supplier.id,
+          },
+        ],
+      });
+
+      const [payment] = await tx
+        .insert(schema.supplierPayments)
+        .values({
+          tenantId: ctx.tenantId,
+          paymentNumber,
+          supplierId: supplier.id,
+          paymentDate: input.paymentDate ?? new Date().toISOString().slice(0, 10),
+          method: input.method,
+          amountCents: input.amountCents,
+          currency: supplier.currency ?? "LKR",
+          bankAccountId: bank.id,
+          reference: input.reference || null,
+          chequeNumber: input.chequeNumber || null,
+          chequeDate: input.chequeDate ?? null,
+          memo: input.memo || null,
+          status: "posted",
+          journalEntryId: entryId,
+          postedAt: new Date(),
+          postedByUserId: ctx.userId,
+          createdByUserId: ctx.userId,
+        })
+        .returning();
+      if (!payment) throw new Error("Payment insert failed");
+
+      await tx.execute(sql`
+        UPDATE journal_entries SET source_id = ${payment.id}::uuid WHERE id = ${entryId}::uuid
+      `);
+
+      await tx.insert(schema.billAllocations).values(
+        input.allocations.map((a) => ({
+          tenantId: ctx.tenantId,
+          paymentId: payment.id,
+          billId: a.billId,
+          allocatedCents: a.allocatedCents,
+        })),
+      );
+
+      for (const a of input.allocations) {
+        const bill = billById.get(a.billId);
+        if (!bill) continue;
+        const newPaid = bill.amountPaidCents + a.allocatedCents;
+        const newBalance = bill.balanceDueCents - a.allocatedCents;
+        const newStatus =
+          newBalance === 0 ? "paid" : newPaid > 0 ? "partially_paid" : bill.status;
+        await tx
+          .update(schema.bills)
+          .set({
+            amountPaidCents: newPaid,
+            balanceDueCents: newBalance,
+            status: newStatus,
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.bills.id, bill.id));
+      }
+
+      return { ok: true as const, payment, paymentNumber, entryNumber };
+    });
+
+    if ("error" in result) {
+      const map: Record<string, number> = {
+        SUPPLIER_NOT_FOUND: 400,
+        BANK_NOT_FOUND: 400,
+        INVALID_BANK_ACCOUNT: 400,
+        BILL_NOT_FOUND: 400,
+        BILL_WRONG_SUPPLIER: 400,
+        BILL_NOT_PAYABLE: 409,
+        ALLOCATION_EXCEEDS_BALANCE: 400,
+        NO_AP_ACCOUNT: 500,
+      };
+      return reply.status(map[result.error] ?? 500).send({ error: { code: result.error } });
+    }
+    return reply.status(201).send(result);
+  });
+};

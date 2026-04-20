@@ -3,32 +3,43 @@ import Link from "next/link";
 import { cookies } from "next/headers";
 import { notFound } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
-import type { BillDetail, BillLine, Supplier } from "@/lib/api";
+import type { Account, BillDetail, BillLine, Supplier } from "@/lib/api";
 import { PageHeader } from "@/components/app/page-header";
 import { StatusBadge } from "@/components/app/status-badge";
 import { formatLKR, formatDate } from "@/lib/format";
 import { PostBillButton } from "./post-button";
+import { RecordPaymentOutButton } from "./record-payment-out-button";
 
 export const metadata: Metadata = { title: "Bill" };
 
 async function fetchBill(id: string) {
-  const res = await fetch(`${process.env.INTERNAL_API_URL ?? "http://api:4000"}/bills/${id}`, {
-    headers: { cookie: cookies().toString() },
-    cache: "no-store",
-  });
-  if (res.status === 404) return null;
-  if (!res.ok) return null;
-  return (await res.json()) as {
+  const base = process.env.INTERNAL_API_URL ?? "http://api:4000";
+  const cookieHeader = cookies().toString();
+  const [bRes, coaRes] = await Promise.all([
+    fetch(`${base}/bills/${id}`, { headers: { cookie: cookieHeader }, cache: "no-store" }),
+    fetch(`${base}/coa`, { headers: { cookie: cookieHeader }, cache: "no-store" }),
+  ]);
+  if (bRes.status === 404) return null;
+  if (!bRes.ok) return null;
+  const data = (await bRes.json()) as {
     bill: BillDetail;
     lines: BillLine[];
     supplier: Supplier | null;
   };
+  const coa = coaRes.ok ? ((await coaRes.json()) as { accounts: Account[] }).accounts : [];
+  const bankAccounts = coa.filter(
+    (a) => a.accountType === "asset" && (a.accountSubtype === "bank" || a.accountSubtype === "cash"),
+  );
+  return { ...data, bankAccounts };
 }
 
 export default async function BillDetailPage({ params }: { params: { id: string } }) {
   const data = await fetchBill(params.id);
   if (!data) notFound();
-  const { bill, lines, supplier } = data;
+  const { bill, lines, supplier, bankAccounts } = data;
+
+  const isPayable =
+    (bill.status === "posted" || bill.status === "partially_paid") && bill.balanceDueCents > 0;
 
   return (
     <main className="container-p py-10">
@@ -47,6 +58,16 @@ export default async function BillDetailPage({ params }: { params: { id: string 
           <div className="flex items-center gap-3">
             <StatusBadge status={bill.status} />
             {bill.status === "draft" && <PostBillButton id={bill.id} />}
+            {isPayable && supplier && (
+              <RecordPaymentOutButton
+                billId={bill.id}
+                supplierId={supplier.id}
+                supplierName={supplier.name}
+                billReference={bill.internalReference ?? bill.id.slice(0, 8)}
+                balanceDueCents={bill.balanceDueCents}
+                bankAccounts={bankAccounts}
+              />
+            )}
           </div>
         }
       />
