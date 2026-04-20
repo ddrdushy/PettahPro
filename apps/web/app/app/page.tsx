@@ -38,6 +38,7 @@ export default async function AppHomePage() {
   }
 
   const agingTotal = d.aging.reduce((s, b) => s + b.balanceCents, 0);
+  const apAgingTotal = d.apAging.reduce((s, b) => s + b.balanceCents, 0);
   const revChange =
     d.revenueLastMonthCents > 0
       ? ((d.revenueThisMonthCents - d.revenueLastMonthCents) / d.revenueLastMonthCents) * 100
@@ -73,7 +74,25 @@ export default async function AppHomePage() {
           value={formatLKR(d.cashPositionCents)}
           sub={`Across ${d.cashByAccount.length} bank/cash account${d.cashByAccount.length === 1 ? "" : "s"}`}
           tone="mint"
-        />
+        >
+          {d.cashByAccount.length > 1 && (
+            <ul className="mt-3 space-y-1 border-t-hairline border-border pt-3">
+              {d.cashByAccount.map((a) => (
+                <li
+                  key={a.code}
+                  className="flex items-baseline justify-between gap-3 text-caption"
+                >
+                  <span className="truncate text-text-secondary">
+                    <span className="tabular-nums text-text-tertiary">{a.code}</span> {a.name}
+                  </span>
+                  <span className="tabular-nums text-text-primary">
+                    {formatLKR(a.balanceCents)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </KpiCard>
         <KpiCard
           icon={<CircleDollarSign className="h-5 w-5" />}
           label="AR outstanding"
@@ -116,9 +135,9 @@ export default async function AppHomePage() {
         </div>
       )}
 
-      {/* Revenue sparkline + AR aging */}
-      <div className="mt-6 grid gap-4 lg:grid-cols-5">
-        <section className="rounded-card border-hairline border-border bg-surface-elevated p-6 lg:col-span-3">
+      {/* Revenue sparkline */}
+      <div className="mt-6">
+        <section className="rounded-card border-hairline border-border bg-surface-elevated p-6">
           <div className="flex items-start justify-between">
             <div>
               <p className="text-caption uppercase tracking-wide text-text-tertiary">Revenue · last 14 days</p>
@@ -132,40 +151,22 @@ export default async function AppHomePage() {
             <Sparkline data={d.revenueSeries} />
           </div>
         </section>
+      </div>
 
-        <section className="rounded-card border-hairline border-border bg-surface-elevated p-6 lg:col-span-2">
-          <div className="flex items-center justify-between">
-            <p className="text-caption uppercase tracking-wide text-text-tertiary">Receivables aging</p>
-            <span className="tabular-nums text-small font-medium text-charcoal">
-              {formatLKR(agingTotal)}
-            </span>
-          </div>
-          <ul className="mt-5 space-y-3">
-            {d.aging.map((b) => {
-              const pct = agingTotal > 0 ? (b.balanceCents / agingTotal) * 100 : 0;
-              const isOverdue = b.label !== "current";
-              return (
-                <li key={b.label}>
-                  <div className="flex items-baseline justify-between text-small">
-                    <span className="text-text-primary">{agingLabel(b.label)}</span>
-                    <span className="tabular-nums text-text-secondary">
-                      {formatLKR(b.balanceCents)}
-                      {b.invoiceCount > 0 && (
-                        <span className="ml-2 text-caption text-text-tertiary">{b.invoiceCount}</span>
-                      )}
-                    </span>
-                  </div>
-                  <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-surface-recessed">
-                    <div
-                      className={`h-full rounded-full ${isOverdue ? "bg-warning-accent" : "bg-mint"}`}
-                      style={{ width: `${pct}%`, transition: "width 0.6s ease-out" }}
-                    />
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        </section>
+      {/* Aging panels */}
+      <div className="mt-6 grid gap-4 lg:grid-cols-2">
+        <AgingPanel
+          title="Receivables aging"
+          total={agingTotal}
+          buckets={d.aging}
+          emptyLabel="No outstanding invoices."
+        />
+        <AgingPanel
+          title="Payables aging"
+          total={apAgingTotal}
+          buckets={d.apAging}
+          emptyLabel="No outstanding bills."
+        />
       </div>
 
       {/* Recent activity */}
@@ -254,6 +255,7 @@ function KpiCard({
   sub,
   tone,
   trend,
+  children,
 }: {
   icon: React.ReactNode;
   label: string;
@@ -261,6 +263,7 @@ function KpiCard({
   sub: string;
   tone?: "mint";
   trend?: "up" | "down";
+  children?: React.ReactNode;
 }) {
   return (
     <div className="rounded-card border-hairline border-border bg-surface-elevated p-5 transition-all duration-300 hover:-translate-y-0.5 hover:border-charcoal hover:shadow-sm">
@@ -282,7 +285,60 @@ function KpiCard({
       <p className="mt-4 text-caption uppercase tracking-wide text-text-tertiary">{label}</p>
       <p className="tabular-nums mt-1 text-h2 text-charcoal">{value}</p>
       <p className="mt-1 text-caption text-text-secondary">{sub}</p>
+      {children}
     </div>
+  );
+}
+
+function AgingPanel({
+  title,
+  total,
+  buckets,
+  emptyLabel,
+}: {
+  title: string;
+  total: number;
+  buckets: Dashboard["aging"];
+  emptyLabel: string;
+}) {
+  return (
+    <section className="rounded-card border-hairline border-border bg-surface-elevated p-6">
+      <div className="flex items-center justify-between">
+        <p className="text-caption uppercase tracking-wide text-text-tertiary">{title}</p>
+        <span className="tabular-nums text-small font-medium text-charcoal">
+          {formatLKR(total)}
+        </span>
+      </div>
+      {total === 0 ? (
+        <p className="mt-5 text-small text-text-tertiary">{emptyLabel}</p>
+      ) : (
+        <ul className="mt-5 space-y-3">
+          {buckets.map((b) => {
+            const pct = total > 0 ? (b.balanceCents / total) * 100 : 0;
+            const isOverdue = b.label !== "current";
+            return (
+              <li key={b.label}>
+                <div className="flex items-baseline justify-between text-small">
+                  <span className="text-text-primary">{agingLabel(b.label)}</span>
+                  <span className="tabular-nums text-text-secondary">
+                    {formatLKR(b.balanceCents)}
+                    {b.invoiceCount > 0 && (
+                      <span className="ml-2 text-caption text-text-tertiary">{b.invoiceCount}</span>
+                    )}
+                  </span>
+                </div>
+                <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-surface-recessed">
+                  <div
+                    className={`h-full rounded-full ${isOverdue ? "bg-warning-accent" : "bg-mint"}`}
+                    style={{ width: `${pct}%`, transition: "width 0.6s ease-out" }}
+                  />
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
   );
 }
 
