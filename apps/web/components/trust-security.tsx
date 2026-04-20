@@ -10,6 +10,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { trust } from "@/lib/content";
+import { Reveal } from "@/components/reveal";
 
 const icons: Record<string, LucideIcon> = {
   ShieldCheck,
@@ -24,27 +25,26 @@ export function TrustSecurity() {
   return (
     <section className="section">
       <div className="container-p">
-        <div className="max-w-2xl">
+        <Reveal className="max-w-2xl">
           <span className="eyebrow">Trust &amp; security</span>
           <h2 className="mt-4 text-h1 text-charcoal">Built to keep your books safe.</h2>
-        </div>
+        </Reveal>
 
         <div className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {trust.map((t) => {
+          {trust.map((t, i) => {
             const Icon = icons[t.icon] ?? ShieldCheck;
             return (
-              <div
-                key={t.label}
-                className="flex items-start gap-4 rounded-card border-hairline border-border bg-surface-elevated p-5"
-              >
-                <div className="grid h-10 w-10 flex-none place-items-center rounded-md bg-mint-surface text-mint-dark">
-                  <Icon className="h-5 w-5" aria-hidden />
+              <Reveal key={t.label} delay={i * 80}>
+                <div className="flex h-full items-start gap-4 rounded-card border-hairline border-border bg-surface-elevated p-5 transition-all duration-300 hover:-translate-y-0.5 hover:border-charcoal hover:shadow-sm">
+                  <div className="grid h-10 w-10 flex-none place-items-center rounded-md bg-mint-surface text-mint-dark">
+                    <Icon className="h-5 w-5" aria-hidden />
+                  </div>
+                  <div>
+                    <p className="text-body font-medium text-charcoal">{t.label}</p>
+                    <p className="mt-1 text-small text-text-secondary">{t.body}</p>
+                  </div>
                 </div>
-                <div>
-                  <p className="text-body font-medium text-charcoal">{t.label}</p>
-                  <p className="mt-1 text-small text-text-secondary">{t.body}</p>
-                </div>
-              </div>
+              </Reveal>
             );
           })}
         </div>

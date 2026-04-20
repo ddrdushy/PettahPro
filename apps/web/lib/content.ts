@@ -29,30 +29,30 @@ export const hero = {
   eyebrow: "New · AI-assisted bill entry",
   headline: "Built for how Pettah actually does business.",
   subhead:
-    "The cloud accounting platform replacing BUSY and Tally for Sri Lankan SMEs. AI-assisted, SL-compliant, ready from Pettah to Jaffna.",
+    "Cloud accounting made in Sri Lanka, for Sri Lankan SMEs. AI-assisted, SL-compliant, and ready to run from Pettah to Jaffna.",
   ctaPrimary: { label: "Start 30-day free trial", href: "https://app.pettahpro.lk/signup" },
   ctaSecondary: { label: "See how it works", href: "#how-it-works" },
-  trustLine: "No credit card. BUSY/Tally migration included.",
+  trustLine: "No credit card. Migration included.",
 };
 
 export const problems = [
   {
     icon: "Cloud",
-    pain: "Stuck on desktop BUSY or Tally?",
+    pain: "Tied to one desktop in the back office?",
     answer:
-      "Cloud and mobile, works from Pettah to Jaffna. Licenses never tied to one machine again.",
+      "Work from anywhere. Your books on your laptop at home, your phone on the road, the till at the counter — one set of numbers.",
   },
   {
     icon: "ScanLine",
     pain: "Hours lost typing supplier invoices?",
     answer:
-      "Photo → AI-extracted → posted in seconds. OCR trained on real SL invoices, not US templates.",
+      "Photograph it. PettahPro reads the vendor, date, amount, and line items. You review and post in seconds.",
   },
   {
     icon: "GitBranch",
-    pain: "Afraid to switch?",
+    pain: "Switching systems feels risky?",
     answer:
-      "We migrate your data for you. BUSY and PettahPro run in parallel for 30 days. Switch when your books match.",
+      "We handle the move. Your current system keeps running while we set PettahPro up. You switch only when both match, end-to-end.",
   },
 ] as const;
 
@@ -61,7 +61,7 @@ export const features = [
     id: "ai-entry",
     eyebrow: "AI-assisted entry",
     title: "Photograph a bill. Post it in seconds.",
-    body: "Snap a supplier invoice with your phone. PettahPro extracts vendor, date, amount, and line items. You review and post. OCR trained on Sri Lankan invoice formats — Sinhala, Tamil, mixed-language.",
+    body: "Snap a supplier invoice with your phone. PettahPro reads the vendor, date, amount, and line items. You review and post. Trained on Sri Lankan invoice formats — Sinhala, Tamil, and mixed-language.",
     bullets: [
       "Works on receipts, GRNs, utility bills, cheque stubs",
       "Duplicate detection across suppliers",
@@ -71,8 +71,8 @@ export const features = [
   {
     id: "whatsapp",
     eyebrow: "Coming soon",
-    title: "WhatsApp-ready invoicing.",
-    body: "Send invoices and payment reminders directly to customers via WhatsApp. Customers pay with one tap via LankaQR or PayHere. How Sri Lankan business actually runs.",
+    title: "Send invoices over WhatsApp.",
+    body: "Deliver invoices and payment reminders the way Sri Lanka actually communicates. Customers pay with one tap via LankaQR or PayHere. Less chasing, faster cash in.",
     bullets: [
       "Payment links embedded — LankaQR, PayHere, FriMi, Genie, iPay",
       "Delivery receipts so you know they saw it",
@@ -84,10 +84,10 @@ export const features = [
     id: "realtime",
     eyebrow: "Real-time dashboard",
     title: "See your cash position before breakfast.",
-    body: "Cash on hand, AR aging, AP due this week, P&L this month — all on one dashboard. Updated as transactions post, not at month-end close.",
+    body: "Cash on hand, receivables aging, payables due this week, profit this month — on one screen. Updated as transactions post, not at month-end.",
     bullets: [
-      "Multi-branch view — Pettah + Kandy + Galle in one screen",
-      "Drill-down to any transaction from any number",
+      "Multi-branch view — Pettah, Kandy, Galle in one place",
+      "Drill into any transaction from any number",
       "Mobile-first: the dashboard fits a phone",
     ],
   },
@@ -95,7 +95,7 @@ export const features = [
     id: "sl-native",
     eyebrow: "SL-native compliance",
     title: "VAT, WHT, EPF, PAYE, cheques — built in.",
-    body: "Not bolted on. Every SL statutory return auto-prepared. Cheque lifecycle modelled per the Bounced Cheques Act. Regulatory updates roll out to you automatically when the IRD changes the rules.",
+    body: "Sri Lankan compliance is part of the foundation, not an add-on. Statutory returns are auto-prepared. The cheque lifecycle follows the Bounced Cheques Act. When the IRD changes the rules, your system updates automatically.",
     bullets: [
       "VAT returns, SSCL, WHT certificates, EPF C-form, ETF R-form, PAYE T-10",
       "9-state cheque lifecycle with bounce-event tracking",
@@ -135,23 +135,23 @@ export const migrationSources = [
 export const migrationTiers = [
   {
     name: "Self-serve",
-    tagline: "CSV / Excel users, small datasets",
+    tagline: "Coming from spreadsheets, small datasets",
     price: "Free",
     features: [
       "CSV import template",
       "In-app import wizard",
-      "Migration docs and videos",
+      "Migration guides and videos",
       "Community support",
     ],
     cta: "Start importing",
   },
   {
     name: "Assisted",
-    tagline: "BUSY / Tally users, typical SME",
+    tagline: "Typical SME with an existing system",
     price: "LKR 25,000 – 50,000",
     highlight: true,
     features: [
-      "Data extraction from BUSY / Tally",
+      "Data extraction from your current system",
       "Field mapping and validation",
       "30-day parallel-run setup",
       "Dedicated migration specialist",
@@ -165,7 +165,7 @@ export const migrationTiers = [
     price: "LKR 100,000+",
     features: [
       "Dedicated migration engineer",
-      "On-site visit in Colombo / Kandy / Jaffna",
+      "On-site visit in Colombo, Kandy, or Jaffna",
       "Custom extraction scripts",
       "60-day parallel run",
       "Priority 24/7 support",
@@ -246,8 +246,8 @@ export const trust = [
 
 export const faqs = [
   {
-    q: "Can I import my BUSY / Tally data?",
-    a: "Yes. Our Assisted migration handles BUSY and Tally extraction, field mapping, and validation. Your old system keeps running in parallel for 30 days so you switch only when your books match.",
+    q: "Can I bring my existing accounting data in?",
+    a: "Yes. Our Assisted migration handles extraction, field mapping, and validation from most SL and global systems — BUSY, Tally, QuickBooks, Zoho, Xero, Sage, and spreadsheets. Your current system keeps running in parallel for 30 days so you switch only when both balance.",
   },
   {
     q: "Does this work offline?",

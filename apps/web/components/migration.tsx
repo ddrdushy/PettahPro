@@ -1,20 +1,21 @@
 import Link from "next/link";
 import { ArrowRight, Check } from "lucide-react";
 import { migrationSources, migrationTiers } from "@/lib/content";
+import { Reveal } from "@/components/reveal";
 
 export function Migration() {
   return (
     <section id="migration" className="section bg-mint-surface/40">
       <div className="container-p">
-        <div className="max-w-3xl">
-          <span className="eyebrow">Migration — our wedge</span>
+        <Reveal className="max-w-3xl">
+          <span className="eyebrow">Move at your own pace</span>
           <h2 className="mt-4 text-h1 text-charcoal md:text-display">
-            Switching from BUSY, Tally, or QuickBooks? We'll handle it.
+            Already using another system? We'll handle the move.
           </h2>
           <p className="mt-5 text-body-lg text-text-secondary">
-            30-day parallel run. Both systems running side-by-side. You switch only when your books match in both places.
+            30-day parallel run. Your current system keeps working while we set PettahPro up beside it. You switch only when both match, book for book.
           </p>
-        </div>
+        </Reveal>
 
         <div className="mt-10 flex flex-wrap items-center gap-x-8 gap-y-3 text-text-tertiary">
           <span className="text-small text-text-secondary">We migrate from:</span>
@@ -26,15 +27,15 @@ export function Migration() {
         </div>
 
         <div className="mt-12 grid gap-5 md:grid-cols-3">
-          {migrationTiers.map((t) => (
-            <article
-              key={t.name}
-              className={`relative rounded-card border-hairline p-7 transition ${
-                t.highlight
-                  ? "border-charcoal bg-surface-elevated shadow-sm"
-                  : "border-border bg-surface-elevated"
-              }`}
-            >
+          {migrationTiers.map((t, i) => (
+            <Reveal key={t.name} delay={i * 120}>
+              <article
+                className={`relative h-full rounded-card border-hairline p-7 transition-all duration-300 hover:-translate-y-1 hover:shadow-md ${
+                  t.highlight
+                    ? "border-charcoal bg-surface-elevated shadow-sm"
+                    : "border-border bg-surface-elevated hover:border-charcoal"
+                }`}
+              >
               {t.highlight && (
                 <span className="absolute -top-3 left-6 rounded-full bg-mint px-3 py-0.5 text-micro uppercase tracking-wide text-mint-dark">
                   Recommended
@@ -60,6 +61,7 @@ export function Migration() {
                 </Link>
               </div>
             </article>
+            </Reveal>
           ))}
         </div>
 

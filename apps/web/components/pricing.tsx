@@ -52,10 +52,10 @@ export function Pricing() {
           {pricingPlans.map((plan) => (
             <article
               key={plan.name}
-              className={`relative flex flex-col rounded-card border-hairline p-7 ${
+              className={`relative flex flex-col rounded-card border-hairline p-7 transition-all duration-300 hover:-translate-y-1 hover:shadow-lg ${
                 plan.highlight
                   ? "border-charcoal bg-surface-elevated shadow-md"
-                  : "border-border bg-surface-elevated"
+                  : "border-border bg-surface-elevated hover:border-charcoal"
               }`}
             >
               {plan.highlight && (

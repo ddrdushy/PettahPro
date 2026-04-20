@@ -7,11 +7,26 @@ export function Hero() {
     <section className="relative overflow-hidden">
       <div className="container-p grid gap-12 pb-20 pt-16 md:grid-cols-[3fr_2fr] md:gap-16 md:pb-28 md:pt-24">
         <div>
-          <span className="eyebrow">{hero.eyebrow}</span>
-          <h1 className="section-title mt-5 max-w-[18ch]">{hero.headline}</h1>
-          <p className="mt-6 max-w-[52ch] text-body-lg text-text-secondary">{hero.subhead}</p>
+          <span className="eyebrow animate-fade-up" style={{ animationDelay: "0.05s" }}>
+            {hero.eyebrow}
+          </span>
+          <h1
+            className="section-title mt-5 max-w-[18ch] animate-fade-up"
+            style={{ animationDelay: "0.15s" }}
+          >
+            {hero.headline}
+          </h1>
+          <p
+            className="mt-6 max-w-[52ch] text-body-lg text-text-secondary animate-fade-up"
+            style={{ animationDelay: "0.3s" }}
+          >
+            {hero.subhead}
+          </p>
 
-          <div className="mt-8 flex flex-wrap gap-3">
+          <div
+            className="mt-8 flex flex-wrap gap-3 animate-fade-up"
+            style={{ animationDelay: "0.45s" }}
+          >
             <Link href={hero.ctaPrimary.href} className="btn-primary text-body-lg">
               {hero.ctaPrimary.label}
               <ArrowRight className="h-4 w-4" aria-hidden />
@@ -22,10 +37,17 @@ export function Hero() {
             </Link>
           </div>
 
-          <p className="mt-4 text-small text-text-tertiary">{hero.trustLine}</p>
+          <p
+            className="mt-4 text-small text-text-tertiary animate-fade-up"
+            style={{ animationDelay: "0.6s" }}
+          >
+            {hero.trustLine}
+          </p>
         </div>
 
-        <DashboardPreview />
+        <div className="animate-fade-up" style={{ animationDelay: "0.4s" }}>
+          <DashboardPreview />
+        </div>
       </div>
     </section>
   );
@@ -62,14 +84,40 @@ function DashboardPreview() {
             <p className="text-caption text-text-tertiary">Today</p>
           </div>
           <ul className="mt-3 space-y-3">
-            <Row icon={<Receipt className="h-4 w-4" />} title="INV-2026-0342" sub="Perera Textiles" amount="LKR 45,600" status="Paid" />
-            <Row icon={<Receipt className="h-4 w-4" />} title="INV-2026-0341" sub="Fathima Importers" amount="LKR 12,900" status="Due 20 Apr" subtle />
-            <Row icon={<CircleDollarSign className="h-4 w-4" />} title="Bill BIL-0198" sub="Lanka Hardware" amount="-LKR 8,450" status="Scheduled" subtle />
+            <Row
+              icon={<Receipt className="h-4 w-4" />}
+              title="INV-2026-0342"
+              sub="Perera Textiles"
+              amount="LKR 45,600"
+              status="Paid"
+              delay={0.8}
+            />
+            <Row
+              icon={<Receipt className="h-4 w-4" />}
+              title="INV-2026-0341"
+              sub="Fathima Importers"
+              amount="LKR 12,900"
+              status="Due 20 Apr"
+              subtle
+              delay={1.0}
+            />
+            <Row
+              icon={<CircleDollarSign className="h-4 w-4" />}
+              title="Bill BIL-0198"
+              sub="Lanka Hardware"
+              amount="-LKR 8,450"
+              status="Scheduled"
+              subtle
+              delay={1.2}
+            />
           </ul>
         </div>
       </div>
 
-      <div className="absolute -right-4 -top-4 -z-10 h-32 w-32 rounded-full bg-mint-surface blur-2xl" />
+      <div
+        aria-hidden
+        className="pointer-events-none absolute -right-6 -top-6 -z-10 h-40 w-40 rounded-full bg-mint-surface blur-2xl animate-float"
+      />
     </div>
   );
 }
@@ -81,6 +129,7 @@ function Row({
   amount,
   status,
   subtle,
+  delay,
 }: {
   icon: React.ReactNode;
   title: string;
@@ -88,9 +137,13 @@ function Row({
   amount: string;
   status: string;
   subtle?: boolean;
+  delay: number;
 }) {
   return (
-    <li className="flex items-center justify-between gap-3">
+    <li
+      className="flex items-center justify-between gap-3 animate-fade-up"
+      style={{ animationDelay: `${delay}s` }}
+    >
       <div className="flex items-center gap-3">
         <div className="grid h-8 w-8 place-items-center rounded-md bg-mint-surface text-mint-dark">
           {icon}
@@ -102,7 +155,9 @@ function Row({
       </div>
       <div className="text-right">
         <p className="tabular-nums text-small font-medium text-charcoal">{amount}</p>
-        <p className={`text-caption ${subtle ? "text-text-tertiary" : "text-mint-dark"}`}>{status}</p>
+        <p className={`text-caption ${subtle ? "text-text-tertiary" : "text-mint-dark"}`}>
+          {status}
+        </p>
       </div>
     </li>
   );
