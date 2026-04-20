@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { cookies } from "next/headers";
 import { notFound } from "next/navigation";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Download } from "lucide-react";
 import type { Account, InvoiceDetail, InvoiceLine, Customer } from "@/lib/api";
 import { PageHeader } from "@/components/app/page-header";
 import { StatusBadge } from "@/components/app/status-badge";
@@ -62,6 +62,15 @@ export default async function InvoiceDetailPage({ params }: { params: { id: stri
         action={
           <div className="flex items-center gap-3">
             <StatusBadge status={invoice.status} />
+            <a
+              href={`/app/invoices/${invoice.id}/pdf`}
+              target="_blank"
+              rel="noopener"
+              className="btn-secondary"
+            >
+              <Download className="h-4 w-4" aria-hidden />
+              PDF
+            </a>
             {invoice.status === "draft" && <PostInvoiceButton id={invoice.id} />}
             {isPayable && customer && (
               <RecordPaymentButton
