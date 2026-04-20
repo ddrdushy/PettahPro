@@ -23,6 +23,7 @@ yarn-error.log*
 pnpm-debug.log*
 
 # Editor
+.claude/
 .vscode/
 .idea/
 *.swp
