@@ -59,6 +59,8 @@ export const payrollRunLines = pgTable("payroll_run_lines", {
   department: varchar("department", { length: 128 }),
   basicSalaryCents: bigint("basic_salary_cents", { mode: "number" }).notNull(),
   grossCents: bigint("gross_cents", { mode: "number" }).notNull(),
+  earningsCents: bigint("earnings_cents", { mode: "number" }).notNull().default(0),
+  nonStatutoryDeductionsCents: bigint("non_statutory_deductions_cents", { mode: "number" }).notNull().default(0),
   epfEmployeeCents: bigint("epf_employee_cents", { mode: "number" }).notNull().default(0),
   payeCents: bigint("paye_cents", { mode: "number" }).notNull().default(0),
   otherDeductionsCents: bigint("other_deductions_cents", { mode: "number" }).notNull().default(0),

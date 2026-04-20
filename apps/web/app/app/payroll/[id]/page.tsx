@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { cookies } from "next/headers";
 import { notFound } from "next/navigation";
-import { ArrowLeft, Download } from "lucide-react";
+import { ArrowLeft, Download, FileSpreadsheet } from "lucide-react";
 import type { Account, PayrollRun, PayrollRunLine, PayrollRunStatus } from "@/lib/api";
 import { PageHeader } from "@/components/app/page-header";
 import { formatLKR, formatDate } from "@/lib/format";
@@ -202,6 +202,43 @@ export default async function PayrollRunDetailPage({ params }: { params: { id: s
         </section>
       )}
 
+      {(run.status === "posted" || run.status === "paid") && (
+        <section className="mt-6 rounded-card border-hairline border-border bg-surface-elevated p-6">
+          <header className="flex items-start justify-between gap-4">
+            <div>
+              <h2 className="text-h3 text-charcoal">Statutory filings</h2>
+              <p className="mt-1 text-caption text-text-tertiary">
+                Download the member-contribution files to upload to the Labour Department (EPF, ETF) and the IRD (PAYE).
+              </p>
+            </div>
+          </header>
+          <div className="mt-5 grid gap-3 sm:grid-cols-3">
+            <FilingCard
+              href={`/app/payroll/${run.id}/filings/epf`}
+              title="EPF C-form"
+              subtitle="Member contributions · 8% + 12%"
+              amount={formatLKR(run.epfEmployeeCents + run.epfEmployerCents)}
+              filename="CSV · upload to Labour Dept"
+            />
+            <FilingCard
+              href={`/app/payroll/${run.id}/filings/etf`}
+              title="ETF R-form"
+              subtitle="Employer contribution · 3%"
+              amount={formatLKR(run.etfEmployerCents)}
+              filename="CSV · upload to ETF Board"
+            />
+            <FilingCard
+              href={`/app/payroll/${run.id}/filings/paye`}
+              title="PAYE T-10 schedule"
+              subtitle="Monthly PAYE deductions"
+              amount={formatLKR(run.payeCents)}
+              filename="CSV · keep with IRD file"
+              muted={run.payeCents === 0}
+            />
+          </div>
+        </section>
+      )}
+
       {run.notes && (
         <section className="mt-6 rounded-card border-hairline border-border bg-surface-elevated p-5">
           <p className="text-caption uppercase tracking-wide text-text-tertiary">Notes</p>
@@ -209,6 +246,39 @@ export default async function PayrollRunDetailPage({ params }: { params: { id: s
         </section>
       )}
     </main>
+  );
+}
+
+function FilingCard({
+  href,
+  title,
+  subtitle,
+  amount,
+  filename,
+  muted,
+}: {
+  href: string;
+  title: string;
+  subtitle: string;
+  amount: string;
+  filename: string;
+  muted?: boolean;
+}) {
+  const className = muted
+    ? "group pointer-events-none block rounded-card border-hairline border-border bg-surface-recessed p-4 opacity-60"
+    : "group block rounded-card border-hairline border-border bg-white p-4 transition-colors hover:border-charcoal";
+  return (
+    <a href={href} download className={className}>
+      <div className="flex items-start justify-between">
+        <div>
+          <p className="text-small font-medium text-charcoal">{title}</p>
+          <p className="mt-0.5 text-caption text-text-tertiary">{subtitle}</p>
+        </div>
+        <FileSpreadsheet className="h-4 w-4 text-text-tertiary group-hover:text-charcoal" aria-hidden />
+      </div>
+      <p className="tabular-nums mt-3 text-body font-medium text-charcoal">{amount}</p>
+      <p className="mt-1 text-caption text-text-tertiary">{filename}</p>
+    </a>
   );
 }
 

@@ -15,3 +15,4 @@ export * from "./stock.js";
 export * from "./cheques.js";
 export * from "./employees.js";
 export * from "./payroll.js";
+export * from "./salary-components.js";

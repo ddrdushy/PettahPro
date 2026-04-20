@@ -73,6 +73,8 @@ BEGIN
     VALUES (p_tenant_id, '2220', 'PAYE payable',            'liability', 'paye',      'cr', true);
   INSERT INTO chart_of_accounts (tenant_id, code, name, account_type, account_subtype, normal_side, is_system)
     VALUES (p_tenant_id, '2230', 'Salaries payable',        'liability', 'salaries',  'cr', true);
+  INSERT INTO chart_of_accounts (tenant_id, code, name, account_type, account_subtype, normal_side, is_system)
+    VALUES (p_tenant_id, '2240', 'Employee deductions payable', 'liability', 'employee_deductions', 'cr', true);
 
   -- Equity (3xxx)
   INSERT INTO chart_of_accounts (tenant_id, code, name, account_type, account_subtype, normal_side, is_system)
@@ -137,6 +139,36 @@ BEGIN
       (p_tenant_id, 'grn',           'GRN', 'year', 4),
       (p_tenant_id, 'payroll',       'PR',  'year', 4)
     ON CONFLICT (tenant_id, sequence_name) DO NOTHING;
+  END IF;
+
+  -- 6. Salary components — standard SL library.
+  --
+  -- SL convention (EPF Act s.47 + customary practice):
+  --   - BRA (Budgetary Relief Allowance) counts for EPF/ETF and is taxable.
+  --   - COLA counts for EPF/ETF and is taxable.
+  --   - Fixed transport/food allowances usually don't count for EPF/ETF and
+  --     are not PAYE-liable up to local relief thresholds (tenant can toggle).
+  --   - Overtime counts for EPF/ETF and is taxable.
+  --   - Salary advance recovery and no-pay leave are deductions; no-pay leave
+  --     also reduces EPF basis (which is why it's rendered as a deduction that
+  --     counts_for_epf=true — the compute subtracts it from EPF gross).
+  IF to_regclass('public.salary_components') IS NOT NULL THEN
+    INSERT INTO salary_components
+      (tenant_id, code, name, kind, calculation_basis,
+       counts_for_epf, counts_for_etf, counts_for_paye,
+       is_system, sort_order)
+    VALUES
+      (p_tenant_id, 'BASIC',   'Basic salary',        'earning',   'from_employee_basic', true,  true,  true,  true,  10),
+      (p_tenant_id, 'BRA',     'BRA',                 'earning',   'fixed',               true,  true,  true,  true,  20),
+      (p_tenant_id, 'COLA',    'COLA',                'earning',   'fixed',               true,  true,  true,  true,  30),
+      (p_tenant_id, 'TRANSP',  'Transport allowance', 'earning',   'fixed',               false, false, false, true,  40),
+      (p_tenant_id, 'FOOD',    'Food allowance',      'earning',   'fixed',               false, false, false, true,  50),
+      (p_tenant_id, 'OT',      'Overtime',            'earning',   'fixed',               true,  true,  true,  true,  60),
+      (p_tenant_id, 'ATT',     'Attendance bonus',    'earning',   'fixed',               true,  true,  true,  true,  70),
+      (p_tenant_id, 'COMM',    'Commission',          'earning',   'fixed',               true,  true,  true,  true,  80),
+      (p_tenant_id, 'NOPAY',   'No-pay leave',        'deduction', 'fixed',               true,  true,  true,  true,  90),
+      (p_tenant_id, 'ADVREC',  'Salary advance recovery', 'deduction', 'fixed',           false, false, false, true, 100)
+    ON CONFLICT DO NOTHING;
   END IF;
 END;
 $$;

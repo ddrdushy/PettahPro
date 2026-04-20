@@ -1,13 +1,15 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Plus, Search, UserRound } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { Plus, Search, UserRound, Layers } from "lucide-react";
 import { PageHeader } from "@/components/app/page-header";
 import { DataTable, type Column } from "@/components/app/data-table";
 import { Drawer } from "@/components/app/drawer";
 import { EmployeeForm } from "./employee-form";
+import { SalaryStructureDrawer } from "./salary-structure-drawer";
 import { formatLKR, formatDate, initials } from "@/lib/format";
-import type { EmployeeListRow, EmployeeStatus } from "@/lib/api";
+import type { EmployeeListRow, EmployeeStatus, SalaryComponent } from "@/lib/api";
 
 const statusTone: Record<EmployeeStatus, string> = {
   active: "bg-mint-surface text-mint-dark",
@@ -31,10 +33,18 @@ const statusLabel: Record<EmployeeStatus, string> = {
   deceased: "Deceased",
 };
 
-export function EmployeesClient({ initial }: { initial: EmployeeListRow[] }) {
+export function EmployeesClient({
+  initial,
+  components,
+}: {
+  initial: EmployeeListRow[];
+  components: SalaryComponent[];
+}) {
+  const router = useRouter();
   const [rows, setRows] = useState<EmployeeListRow[]>(initial);
   const [query, setQuery] = useState("");
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [salaryFor, setSalaryFor] = useState<EmployeeListRow | null>(null);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -137,6 +147,20 @@ export function EmployeesClient({ initial }: { initial: EmployeeListRow[] }) {
         </span>
       ),
     },
+    {
+      header: "",
+      align: "right",
+      accessor: (e) => (
+        <button
+          type="button"
+          onClick={() => setSalaryFor(e)}
+          className="btn-link inline-flex items-center gap-1 text-caption"
+        >
+          <Layers className="h-3.5 w-3.5" aria-hidden />
+          Salary
+        </button>
+      ),
+    },
   ];
 
   return (
@@ -209,6 +233,18 @@ export function EmployeesClient({ initial }: { initial: EmployeeListRow[] }) {
           }}
         />
       </Drawer>
+
+      {salaryFor && (
+        <SalaryStructureDrawer
+          employee={salaryFor}
+          library={components}
+          onClose={() => setSalaryFor(null)}
+          onSaved={() => {
+            setSalaryFor(null);
+            router.refresh();
+          }}
+        />
+      )}
     </main>
   );
 }

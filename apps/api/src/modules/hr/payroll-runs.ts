@@ -1,10 +1,13 @@
 import type { FastifyPluginAsync } from "fastify";
-import { and, eq, isNull, desc, asc, sql } from "drizzle-orm";
+import { and, eq, isNull, desc, asc, lte, gte, or, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
 import { postJournal } from "../accounting/journal-posting.js";
-import { computePayrollLine } from "./sl-tax.js";
+import {
+  computePayrollFromComponents,
+  type ResolvedComponent,
+} from "./sl-tax.js";
 
 const CreateSchema = z.object({
   periodYear: z.number().int().min(2020).max(2099),
@@ -71,7 +74,35 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
         .where(eq(schema.payrollRunLines.runId, run.id))
         .orderBy(asc(schema.payrollRunLines.employeeFullName));
 
-      return { run, lines };
+      // Fetch component breakdown for every line in one round-trip, keyed by
+      // line_id so the client can group without another fetch.
+      const breakdown = lines.length
+        ? await tx
+            .select()
+            .from(schema.payrollRunLineComponents)
+            .where(
+              and(
+                eq(schema.payrollRunLineComponents.tenantId, ctx.tenantId),
+                inArray(
+                  schema.payrollRunLineComponents.lineId,
+                  lines.map((l) => l.id),
+                ),
+              ),
+            )
+            .orderBy(asc(schema.payrollRunLineComponents.sortOrder))
+        : [];
+      const byLine = new Map<string, typeof breakdown>();
+      for (const c of breakdown) {
+        const list = byLine.get(c.lineId) ?? [];
+        list.push(c);
+        byLine.set(c.lineId, list);
+      }
+      const linesWithComponents = lines.map((l) => ({
+        ...l,
+        components: byLine.get(l.id) ?? [],
+      }));
+
+      return { run, lines: linesWithComponents };
     });
 
     if (!data) return reply.status(404).send({ error: { code: "NOT_FOUND" } });
@@ -146,6 +177,51 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
         .returning();
       if (!run) throw new Error("Run insert failed");
 
+      // Load every active component assignment for this period. An
+      // assignment is active if effective_from <= periodEnd AND
+      // (effective_to IS NULL OR effective_to >= periodStart).
+      const activeAssignments = await tx
+        .select({
+          employeeId: schema.employeeSalaryComponents.employeeId,
+          amountCents: schema.employeeSalaryComponents.amountCents,
+          percentBps: schema.employeeSalaryComponents.percentBps,
+          code: schema.salaryComponents.code,
+          name: schema.salaryComponents.name,
+          kind: schema.salaryComponents.kind,
+          calculationBasis: schema.salaryComponents.calculationBasis,
+          defaultAmountCents: schema.salaryComponents.defaultAmountCents,
+          countsForEpf: schema.salaryComponents.countsForEpf,
+          countsForEtf: schema.salaryComponents.countsForEtf,
+          countsForPaye: schema.salaryComponents.countsForPaye,
+          sortOrder: schema.salaryComponents.sortOrder,
+          componentId: schema.salaryComponents.id,
+        })
+        .from(schema.employeeSalaryComponents)
+        .innerJoin(
+          schema.salaryComponents,
+          eq(schema.salaryComponents.id, schema.employeeSalaryComponents.componentId),
+        )
+        .where(
+          and(
+            eq(schema.employeeSalaryComponents.tenantId, ctx.tenantId),
+            isNull(schema.employeeSalaryComponents.deletedAt),
+            lte(schema.employeeSalaryComponents.effectiveFrom, periodEnd),
+            or(
+              isNull(schema.employeeSalaryComponents.effectiveTo),
+              gte(schema.employeeSalaryComponents.effectiveTo, periodStart),
+            ),
+            isNull(schema.salaryComponents.deletedAt),
+            eq(schema.salaryComponents.isActive, true),
+          ),
+        );
+
+      const assignmentsByEmployee = new Map<string, typeof activeAssignments>();
+      for (const a of activeAssignments) {
+        const list = assignmentsByEmployee.get(a.employeeId) ?? [];
+        list.push(a);
+        assignmentsByEmployee.set(a.employeeId, list);
+      }
+
       // Compute each line and persist
       let gross = 0,
         epfEmp = 0,
@@ -155,39 +231,140 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
         net = 0;
 
       for (const e of eligible) {
-        const c = computePayrollLine({
-          basicSalaryCents: e.basicSalaryCents,
+        const assignments = assignmentsByEmployee.get(e.id) ?? [];
+
+        // Resolve to flat components for the compute. If no explicit
+        // assignments exist, fall back to a single Basic earning built from
+        // employees.basic_salary_cents — this keeps v1 employees (pre-
+        // structure) working without any data migration.
+        let resolved: ResolvedComponent[];
+        const snapshotInputs: Array<{
+          componentId: string | null;
+          code: string;
+          name: string;
+          kind: "earning" | "deduction";
+          amountCents: number;
+          countsForEpf: boolean;
+          countsForEtf: boolean;
+          countsForPaye: boolean;
+          sortOrder: number;
+        }> = [];
+
+        if (assignments.length === 0) {
+          resolved = [
+            {
+              code: "BASIC",
+              name: "Basic salary",
+              kind: "earning",
+              amountCents: e.basicSalaryCents,
+              countsForEpf: true,
+              countsForEtf: true,
+              countsForPaye: true,
+              sortOrder: 10,
+            },
+          ];
+          snapshotInputs.push({
+            componentId: null,
+            code: "BASIC",
+            name: "Basic salary",
+            kind: "earning",
+            amountCents: e.basicSalaryCents,
+            countsForEpf: true,
+            countsForEtf: true,
+            countsForPaye: true,
+            sortOrder: 10,
+          });
+        } else {
+          resolved = assignments.map((a) => {
+            const kind = (a.kind as "earning" | "deduction");
+            let amount = a.amountCents;
+            if (a.calculationBasis === "from_employee_basic") {
+              amount = e.basicSalaryCents;
+            } else if (a.calculationBasis === "percent_of_basic") {
+              amount = Math.round((e.basicSalaryCents * a.percentBps) / 10_000);
+            }
+            snapshotInputs.push({
+              componentId: a.componentId,
+              code: a.code,
+              name: a.name,
+              kind,
+              amountCents: amount,
+              countsForEpf: a.countsForEpf,
+              countsForEtf: a.countsForEtf,
+              countsForPaye: a.countsForPaye,
+              sortOrder: a.sortOrder,
+            });
+            return {
+              code: a.code,
+              name: a.name,
+              kind,
+              amountCents: amount,
+              countsForEpf: a.countsForEpf,
+              countsForEtf: a.countsForEtf,
+              countsForPaye: a.countsForPaye,
+              sortOrder: a.sortOrder,
+            };
+          });
+        }
+
+        const c = computePayrollFromComponents({
+          components: resolved,
           epfEligible: e.epfEligible,
           etfEligible: e.etfEligible,
           payeApplicable: e.payeApplicable,
         });
-        await tx.insert(schema.payrollRunLines).values({
-          tenantId: ctx.tenantId,
-          runId: run.id,
-          employeeId: e.id,
-          employeeFullName: e.fullName ?? `${e.firstName} ${e.lastName}`,
-          employeeCode: e.employeeCode,
-          nic: e.nic,
-          epfNumber: e.epfNumber,
-          etfNumber: e.etfNumber,
-          designation: e.designation,
-          department: e.department,
-          basicSalaryCents: e.basicSalaryCents,
-          grossCents: c.grossCents,
-          epfEmployeeCents: c.epfEmployeeCents,
-          payeCents: c.payeCents,
-          otherDeductionsCents: 0,
-          totalDeductionsCents: c.totalDeductionsCents,
-          epfEmployerCents: c.epfEmployerCents,
-          etfEmployerCents: c.etfEmployerCents,
-          netPayCents: c.netPayCents,
-          wasEpfEligible: e.epfEligible,
-          wasEtfEligible: e.etfEligible,
-          wasPayeApplicable: e.payeApplicable,
-          bankName: e.bankName,
-          bankAccountNo: e.bankAccountNo,
-          bankBranch: e.bankBranch,
-        });
+
+        const [line] = await tx
+          .insert(schema.payrollRunLines)
+          .values({
+            tenantId: ctx.tenantId,
+            runId: run.id,
+            employeeId: e.id,
+            employeeFullName: e.fullName ?? `${e.firstName} ${e.lastName}`,
+            employeeCode: e.employeeCode,
+            nic: e.nic,
+            epfNumber: e.epfNumber,
+            etfNumber: e.etfNumber,
+            designation: e.designation,
+            department: e.department,
+            basicSalaryCents: e.basicSalaryCents,
+            grossCents: c.grossCents,
+            earningsCents: c.earningsCents,
+            nonStatutoryDeductionsCents: c.nonStatutoryDeductionsCents,
+            epfEmployeeCents: c.epfEmployeeCents,
+            payeCents: c.payeCents,
+            otherDeductionsCents: c.nonStatutoryDeductionsCents,
+            totalDeductionsCents: c.totalDeductionsCents,
+            epfEmployerCents: c.epfEmployerCents,
+            etfEmployerCents: c.etfEmployerCents,
+            netPayCents: c.netPayCents,
+            wasEpfEligible: e.epfEligible,
+            wasEtfEligible: e.etfEligible,
+            wasPayeApplicable: e.payeApplicable,
+            bankName: e.bankName,
+            bankAccountNo: e.bankAccountNo,
+            bankBranch: e.bankBranch,
+          })
+          .returning();
+        if (!line) throw new Error("Payroll line insert failed");
+
+        // Snapshot the component breakdown for audit + payslip rendering
+        for (const s of snapshotInputs) {
+          await tx.insert(schema.payrollRunLineComponents).values({
+            tenantId: ctx.tenantId,
+            lineId: line.id,
+            componentId: s.componentId,
+            code: s.code,
+            name: s.name,
+            kind: s.kind,
+            amountCents: s.amountCents,
+            countsForEpf: s.countsForEpf,
+            countsForEtf: s.countsForEtf,
+            countsForPaye: s.countsForPaye,
+            sortOrder: s.sortOrder,
+          });
+        }
+
         gross += c.grossCents;
         epfEmp += c.epfEmployeeCents;
         epfEr += c.epfEmployerCents;
@@ -278,6 +455,7 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
       const etfPayable = bySub.get("liability:etf");
       const payePayable = bySub.get("liability:paye");
       const salariesPayable = bySub.get("liability:salaries");
+      const employeeDeductions = bySub.get("liability:employee_deductions");
 
       for (const [key, acc] of [
         ["expense:payroll", salaryExpense],
@@ -287,6 +465,7 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
         ["liability:etf", etfPayable],
         ["liability:paye", payePayable],
         ["liability:salaries", salariesPayable],
+        ["liability:employee_deductions", employeeDeductions],
       ] as const) {
         if (!acc) return { error: "MISSING_ACCOUNT" as const, account: key };
       }
@@ -295,19 +474,53 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
         sql`SELECT next_document_number('payroll') AS number`,
       )) as unknown as Array<{ number: string }>;
 
+      // Aggregate line-level figures needed to split gross into wages expense
+      // (what we truly owe for work done) vs. amounts withheld from pay for
+      // non-statutory recoveries (advance repayment, etc.) that land in a
+      // clearing liability until reconciled against the original advance asset.
+      const runLines = await tx
+        .select({
+          earningsCents: schema.payrollRunLines.earningsCents,
+          nonStatutoryDeductionsCents: schema.payrollRunLines.nonStatutoryDeductionsCents,
+          netPayCents: schema.payrollRunLines.netPayCents,
+          epfEmployeeCents: schema.payrollRunLines.epfEmployeeCents,
+          payeCents: schema.payrollRunLines.payeCents,
+        })
+        .from(schema.payrollRunLines)
+        .where(
+          and(
+            eq(schema.payrollRunLines.tenantId, ctx.tenantId),
+            eq(schema.payrollRunLines.runId, run.id),
+          ),
+        );
+      const sumEarnings = runLines.reduce((s, l) => s + l.earningsCents, 0);
+      const sumNonStat = runLines.reduce((s, l) => s + l.nonStatutoryDeductionsCents, 0);
+      const sumNet = runLines.reduce((s, l) => s + l.netPayCents, 0);
+      const sumEpfEmp = runLines.reduce((s, l) => s + l.epfEmployeeCents, 0);
+      const sumPaye = runLines.reduce((s, l) => s + l.payeCents, 0);
+      // Pre-tax basis-reducing deductions (e.g. no-pay leave) — those genuinely
+      // reduce the employer's wages cost. Derived from the net identity:
+      //   earnings = net + epfEmp + paye + preTax + nonStat
+      const preTaxDed = Math.max(
+        0,
+        sumEarnings - sumNet - sumEpfEmp - sumPaye - sumNonStat,
+      );
+      const wagesExpense = sumEarnings - preTaxDed;
+
       // Build balanced journal:
-      //   DR Salaries & wages              gross
-      //   DR EPF employer contribution     epf_employer
-      //   DR ETF employer contribution     etf_employer
-      //     CR EPF payable                 epf_employee + epf_employer
-      //     CR ETF payable                 etf_employer
-      //     CR PAYE payable                paye
-      //     CR Salaries payable            net
+      //   DR Salaries & wages               earnings − pre-tax deductions
+      //   DR EPF employer contribution      epf_employer
+      //   DR ETF employer contribution      etf_employer
+      //     CR EPF payable                  epf_employee + epf_employer
+      //     CR ETF payable                  etf_employer
+      //     CR PAYE payable                 paye
+      //     CR Salaries payable             net
+      //     CR Employee deductions payable  non-statutory recoveries
       const journalLines: Parameters<typeof postJournal>[1]["lines"] = [
         {
           accountId: salaryExpense!.id,
-          drCents: run.grossCents,
-          description: `Payroll ${runNumber} · gross`,
+          drCents: wagesExpense,
+          description: `Payroll ${runNumber} · wages`,
         },
       ];
       if (run.epfEmployerCents > 0) {
@@ -351,6 +564,13 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
         crCents: run.netPayCents,
         description: `Net salaries · ${runNumber}`,
       });
+      if (sumNonStat > 0) {
+        journalLines.push({
+          accountId: employeeDeductions!.id,
+          crCents: sumNonStat,
+          description: `Employee deductions withheld · ${runNumber}`,
+        });
+      }
 
       const { entryId, entryNumber } = await postJournal(tx, {
         tenantId: ctx.tenantId,
@@ -525,5 +745,271 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
       });
     }
     return reply.send(result);
+  });
+
+  // ----- Statutory CSV exports -----
+  // All three routes load the run + lines + component snapshots, then emit
+  // Labour-Department-friendly CSVs. Only posted or paid runs are exportable
+  // (drafts are provisional). Amounts are rupees with 2 decimals, not cents.
+
+  /** CSV cell escape: wrap in quotes if contains comma, quote, or newline. */
+  function csv(val: string | number | null | undefined): string {
+    if (val === null || val === undefined) return "";
+    const s = String(val);
+    if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+    return s;
+  }
+  function rupees(cents: number): string {
+    return (cents / 100).toFixed(2);
+  }
+
+  async function loadRunForExport(tenantId: string, runId: string) {
+    return withTenant(tenantId, async (tx) => {
+      const runRows = await tx
+        .select()
+        .from(schema.payrollRuns)
+        .where(
+          and(
+            eq(schema.payrollRuns.tenantId, tenantId),
+            eq(schema.payrollRuns.id, runId),
+            isNull(schema.payrollRuns.deletedAt),
+          ),
+        )
+        .limit(1);
+      const run = runRows[0];
+      if (!run) return null;
+      const lines = await tx
+        .select()
+        .from(schema.payrollRunLines)
+        .where(eq(schema.payrollRunLines.runId, run.id))
+        .orderBy(asc(schema.payrollRunLines.employeeFullName));
+      const snaps = lines.length
+        ? await tx
+            .select()
+            .from(schema.payrollRunLineComponents)
+            .where(
+              and(
+                eq(schema.payrollRunLineComponents.tenantId, tenantId),
+                inArray(
+                  schema.payrollRunLineComponents.lineId,
+                  lines.map((l) => l.id),
+                ),
+              ),
+            )
+        : [];
+      const snapByLine = new Map<string, typeof snaps>();
+      for (const c of snaps) {
+        const list = snapByLine.get(c.lineId) ?? [];
+        list.push(c);
+        snapByLine.set(c.lineId, list);
+      }
+      return { run, lines, snapByLine };
+    });
+  }
+
+  /** Sum earnings − deductions per statutory basis flag for one line's snapshot. */
+  function basisFor(
+    comps: Array<{ kind: string; amountCents: number; countsForEpf: boolean; countsForEtf: boolean; countsForPaye: boolean }>,
+    flag: "epf" | "etf" | "paye",
+  ): number {
+    let basis = 0;
+    for (const c of comps) {
+      const counts =
+        flag === "epf" ? c.countsForEpf : flag === "etf" ? c.countsForEtf : c.countsForPaye;
+      if (!counts) continue;
+      basis += c.kind === "earning" ? c.amountCents : -c.amountCents;
+    }
+    return Math.max(0, basis);
+  }
+
+  // GET /payroll-runs/:id/epf-csv — SL Labour Dept EPF C-form member contribution file
+  fastify.get<{ Params: { id: string } }>("/:id/epf-csv", async (req, reply) => {
+    const ctx = requireAuth(req, reply);
+    if (!ctx) return;
+    const data = await loadRunForExport(ctx.tenantId, req.params.id);
+    if (!data) return reply.status(404).send({ error: { code: "NOT_FOUND" } });
+    const { run, lines, snapByLine } = data;
+    if (run.status === "draft") {
+      return reply.status(400).send({
+        error: { code: "NOT_POSTED", message: "Post the run before exporting statutory files." },
+      });
+    }
+
+    const period = `${run.periodYear}-${String(run.periodMonth).padStart(2, "0")}`;
+    const header = [
+      "Member Number",
+      "NIC",
+      "Name",
+      "Total EPF Earnings (Rs.)",
+      "Employee Contribution 8% (Rs.)",
+      "Employer Contribution 12% (Rs.)",
+      "Total 20% (Rs.)",
+      "Period",
+    ];
+    const body: string[] = [header.map(csv).join(",")];
+    let totalEarnings = 0,
+      totalEmp = 0,
+      totalEr = 0;
+
+    for (const l of lines) {
+      if (!l.wasEpfEligible) continue;
+      const snap = snapByLine.get(l.id) ?? [];
+      const basis = snap.length > 0 ? basisFor(snap, "epf") : l.earningsCents;
+      const empC = l.epfEmployeeCents;
+      const erC = l.epfEmployerCents;
+      if (empC + erC === 0) continue;
+      totalEarnings += basis;
+      totalEmp += empC;
+      totalEr += erC;
+      body.push(
+        [
+          l.epfNumber ?? "",
+          l.nic ?? "",
+          l.employeeFullName.toUpperCase(),
+          rupees(basis),
+          rupees(empC),
+          rupees(erC),
+          rupees(empC + erC),
+          period,
+        ]
+          .map(csv)
+          .join(","),
+      );
+    }
+    body.push(
+      ["TOTAL", "", "", rupees(totalEarnings), rupees(totalEmp), rupees(totalEr), rupees(totalEmp + totalEr), period]
+        .map(csv)
+        .join(","),
+    );
+
+    const filename = `epf-cform-${period}-${run.runNumber ?? run.id.slice(0, 8)}.csv`;
+    reply
+      .header("Content-Type", "text/csv; charset=utf-8")
+      .header("Content-Disposition", `attachment; filename="${filename}"`);
+    return reply.send(body.join("\r\n") + "\r\n");
+  });
+
+  // GET /payroll-runs/:id/etf-csv — SL Labour Dept ETF R-form (3% employer only)
+  fastify.get<{ Params: { id: string } }>("/:id/etf-csv", async (req, reply) => {
+    const ctx = requireAuth(req, reply);
+    if (!ctx) return;
+    const data = await loadRunForExport(ctx.tenantId, req.params.id);
+    if (!data) return reply.status(404).send({ error: { code: "NOT_FOUND" } });
+    const { run, lines, snapByLine } = data;
+    if (run.status === "draft") {
+      return reply.status(400).send({
+        error: { code: "NOT_POSTED", message: "Post the run before exporting statutory files." },
+      });
+    }
+
+    const period = `${run.periodYear}-${String(run.periodMonth).padStart(2, "0")}`;
+    const header = [
+      "Member Number",
+      "NIC",
+      "Name",
+      "Total ETF Earnings (Rs.)",
+      "Employer Contribution 3% (Rs.)",
+      "Period",
+    ];
+    const body: string[] = [header.map(csv).join(",")];
+    let totalEarn = 0,
+      totalEr = 0;
+
+    for (const l of lines) {
+      if (!l.wasEtfEligible) continue;
+      const snap = snapByLine.get(l.id) ?? [];
+      const basis = snap.length > 0 ? basisFor(snap, "etf") : l.earningsCents;
+      const erC = l.etfEmployerCents;
+      if (erC === 0) continue;
+      totalEarn += basis;
+      totalEr += erC;
+      body.push(
+        [
+          l.etfNumber ?? l.epfNumber ?? "",
+          l.nic ?? "",
+          l.employeeFullName.toUpperCase(),
+          rupees(basis),
+          rupees(erC),
+          period,
+        ]
+          .map(csv)
+          .join(","),
+      );
+    }
+    body.push(
+      ["TOTAL", "", "", rupees(totalEarn), rupees(totalEr), period].map(csv).join(","),
+    );
+
+    const filename = `etf-rform-${period}-${run.runNumber ?? run.id.slice(0, 8)}.csv`;
+    reply
+      .header("Content-Type", "text/csv; charset=utf-8")
+      .header("Content-Disposition", `attachment; filename="${filename}"`);
+    return reply.send(body.join("\r\n") + "\r\n");
+  });
+
+  // GET /payroll-runs/:id/paye-csv — PAYE T-10 monthly schedule of tax deductions
+  fastify.get<{ Params: { id: string } }>("/:id/paye-csv", async (req, reply) => {
+    const ctx = requireAuth(req, reply);
+    if (!ctx) return;
+    const data = await loadRunForExport(ctx.tenantId, req.params.id);
+    if (!data) return reply.status(404).send({ error: { code: "NOT_FOUND" } });
+    const { run, lines, snapByLine } = data;
+    if (run.status === "draft") {
+      return reply.status(400).send({
+        error: { code: "NOT_POSTED", message: "Post the run before exporting statutory files." },
+      });
+    }
+
+    const period = `${run.periodYear}-${String(run.periodMonth).padStart(2, "0")}`;
+    const header = [
+      "NIC",
+      "Name",
+      "Designation",
+      "Gross Remuneration (Rs.)",
+      "PAYE Basis (Rs.)",
+      "PAYE Deducted (Rs.)",
+      "Period",
+    ];
+    const body: string[] = [header.map(csv).join(",")];
+    let totalGross = 0,
+      totalBasis = 0,
+      totalPaye = 0;
+
+    for (const l of lines) {
+      if (l.payeCents === 0) continue;
+      const snap = snapByLine.get(l.id) ?? [];
+      const basis = snap.length > 0 ? basisFor(snap, "paye") : l.earningsCents;
+      totalGross += l.earningsCents;
+      totalBasis += basis;
+      totalPaye += l.payeCents;
+      body.push(
+        [
+          l.nic ?? "",
+          l.employeeFullName.toUpperCase(),
+          l.designation ?? "",
+          rupees(l.earningsCents),
+          rupees(basis),
+          rupees(l.payeCents),
+          period,
+        ]
+          .map(csv)
+          .join(","),
+      );
+    }
+    if (body.length === 1) {
+      body.push(["", "No employees with PAYE liability this period", "", "", "", "", period].map(csv).join(","));
+    } else {
+      body.push(
+        ["TOTAL", "", "", rupees(totalGross), rupees(totalBasis), rupees(totalPaye), period]
+          .map(csv)
+          .join(","),
+      );
+    }
+
+    const filename = `paye-t10-${period}-${run.runNumber ?? run.id.slice(0, 8)}.csv`;
+    reply
+      .header("Content-Type", "text/csv; charset=utf-8")
+      .header("Content-Disposition", `attachment; filename="${filename}"`);
+    return reply.send(body.join("\r\n") + "\r\n");
   });
 };

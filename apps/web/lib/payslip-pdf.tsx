@@ -199,6 +199,19 @@ export function PayslipPDF({
 }) {
   const periodLabel = `${MONTHS[run.periodMonth - 1]} ${run.periodYear}`;
 
+  const comps = (line.components ?? [])
+    .slice()
+    .sort((a, b) => a.sortOrder - b.sortOrder);
+  const earningRows = comps.filter((c) => c.kind === "earning");
+  // Pre-tax deduction = reduces EPF or PAYE basis (no-pay leave etc.)
+  const preTaxDeductionRows = comps.filter(
+    (c) => c.kind === "deduction" && (c.countsForEpf || c.countsForEtf || c.countsForPaye),
+  );
+  // Post-tax = pure take-home recovery (salary advance, etc.)
+  const postTaxDeductionRows = comps.filter(
+    (c) => c.kind === "deduction" && !c.countsForEpf && !c.countsForEtf && !c.countsForPaye,
+  );
+
   return (
     <Document
       title={`Payslip ${line.employeeFullName} ${periodLabel}`}
@@ -255,19 +268,36 @@ export function PayslipPDF({
         <View style={styles.twoCol}>
           <View style={styles.colCard}>
             <Text style={styles.colHeader}>Earnings</Text>
-            <View style={styles.lineRow}>
-              <Text style={styles.lineLabel}>Basic salary</Text>
-              <Text style={styles.lineValue}>{formatLKR(line.basicSalaryCents)}</Text>
-            </View>
+            {earningRows.length === 0 ? (
+              <View style={styles.lineRow}>
+                <Text style={styles.lineLabel}>Basic salary</Text>
+                <Text style={styles.lineValue}>{formatLKR(line.basicSalaryCents)}</Text>
+              </View>
+            ) : (
+              earningRows.map((c) => (
+                <View key={c.id} style={styles.lineRow}>
+                  <Text style={styles.lineLabel}>{c.name}</Text>
+                  <Text style={styles.lineValue}>{formatLKR(c.amountCents)}</Text>
+                </View>
+              ))
+            )}
             <View style={styles.cardDivider} />
             <View style={styles.subtotal}>
               <Text style={styles.subtotalLabel}>Gross earnings</Text>
-              <Text style={styles.subtotalValue}>{formatLKR(line.grossCents)}</Text>
+              <Text style={styles.subtotalValue}>
+                {formatLKR(line.earningsCents || line.grossCents)}
+              </Text>
             </View>
           </View>
 
           <View style={styles.colCard}>
             <Text style={styles.colHeader}>Deductions</Text>
+            {preTaxDeductionRows.map((c) => (
+              <View key={c.id} style={styles.lineRow}>
+                <Text style={styles.lineLabel}>{c.name}</Text>
+                <Text style={styles.lineValue}>-{formatLKR(c.amountCents)}</Text>
+              </View>
+            ))}
             {line.epfEmployeeCents > 0 && (
               <View style={styles.lineRow}>
                 <Text style={styles.lineLabel}>EPF (employee, 8%)</Text>
@@ -280,20 +310,22 @@ export function PayslipPDF({
                 <Text style={styles.lineValue}>-{formatLKR(line.payeCents)}</Text>
               </View>
             )}
-            {line.otherDeductionsCents > 0 && (
-              <View style={styles.lineRow}>
-                <Text style={styles.lineLabel}>Other</Text>
-                <Text style={styles.lineValue}>-{formatLKR(line.otherDeductionsCents)}</Text>
+            {postTaxDeductionRows.map((c) => (
+              <View key={c.id} style={styles.lineRow}>
+                <Text style={styles.lineLabel}>{c.name}</Text>
+                <Text style={styles.lineValue}>-{formatLKR(c.amountCents)}</Text>
               </View>
-            )}
-            {line.totalDeductionsCents === 0 && (
-              <Text style={styles.lineLabel}>No deductions</Text>
-            )}
+            ))}
+            {line.totalDeductionsCents === 0 &&
+              preTaxDeductionRows.length === 0 &&
+              postTaxDeductionRows.length === 0 && (
+                <Text style={styles.lineLabel}>No deductions</Text>
+              )}
             <View style={styles.cardDivider} />
             <View style={styles.subtotal}>
               <Text style={styles.subtotalLabel}>Total deductions</Text>
               <Text style={styles.subtotalValue}>
-                -{formatLKR(line.totalDeductionsCents)}
+                -{formatLKR(Math.max(0, (line.earningsCents || line.grossCents) - line.netPayCents))}
               </Text>
             </View>
           </View>

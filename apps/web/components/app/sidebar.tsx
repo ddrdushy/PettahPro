@@ -16,6 +16,7 @@ import {
   UsersRound,
   UserRound,
   Briefcase,
+  Layers,
   FileBarChart,
   Settings,
   type LucideIcon,
@@ -62,6 +63,7 @@ const nav: Group[] = [
     title: "HR",
     items: [
       { label: "Employees", href: "/app/employees", icon: UserRound },
+      { label: "Salary components", href: "/app/salary-components", icon: Layers },
       { label: "Payroll runs", href: "/app/payroll", icon: Briefcase },
     ],
   },

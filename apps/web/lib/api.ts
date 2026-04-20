@@ -152,6 +152,36 @@ export const api = {
   getEmployee: (id: string) => request<{ employee: Employee }>(`/employees/${id}`),
   createEmployee: (body: CreateEmployee) =>
     request<{ employee: Employee }>("/employees", { method: "POST", json: body }),
+  getSalaryStructure: (employeeId: string) =>
+    request<{ employee: Employee; structure: EmployeeStructureRow[] }>(
+      `/employees/${employeeId}/salary-structure`,
+    ),
+  putSalaryStructure: (
+    employeeId: string,
+    body: {
+      effectiveFrom: string;
+      items: Array<{ componentId: string; amountCents: number; percentBps?: number; notes?: string }>;
+    },
+  ) =>
+    request<{ ok: true; count: number }>(`/employees/${employeeId}/salary-structure`, {
+      method: "PUT",
+      json: body,
+    }),
+
+  listSalaryComponents: () =>
+    request<{ components: SalaryComponent[] }>("/salary-components"),
+  createSalaryComponent: (body: CreateSalaryComponent) =>
+    request<{ component: SalaryComponent }>("/salary-components", {
+      method: "POST",
+      json: body,
+    }),
+  updateSalaryComponent: (id: string, body: Partial<CreateSalaryComponent> & { isActive?: boolean }) =>
+    request<{ ok: true; component: SalaryComponent }>(`/salary-components/${id}`, {
+      method: "PATCH",
+      json: body,
+    }),
+  deleteSalaryComponent: (id: string) =>
+    request<{ ok: true }>(`/salary-components/${id}`, { method: "DELETE" }),
 
   listPayrollRuns: () => request<{ runs: PayrollRun[] }>("/payroll-runs"),
   getPayrollRun: (id: string) =>
@@ -708,6 +738,71 @@ export interface PayrollRun {
   createdAt: string;
 }
 
+export type SalaryComponentKind = "earning" | "deduction";
+export type SalaryCalculationBasis = "fixed" | "percent_of_basic" | "from_employee_basic";
+
+export interface SalaryComponent {
+  id: string;
+  code: string;
+  name: string;
+  kind: SalaryComponentKind;
+  calculationBasis: SalaryCalculationBasis;
+  defaultAmountCents: number;
+  defaultPercentBps: number;
+  countsForEpf: boolean;
+  countsForEtf: boolean;
+  countsForPaye: boolean;
+  isSystem: boolean;
+  isActive: boolean;
+  sortOrder: number;
+  notes: string | null;
+}
+
+export interface CreateSalaryComponent {
+  code: string;
+  name: string;
+  kind: SalaryComponentKind;
+  calculationBasis?: SalaryCalculationBasis;
+  defaultAmountCents?: number;
+  defaultPercentBps?: number;
+  countsForEpf?: boolean;
+  countsForEtf?: boolean;
+  countsForPaye?: boolean;
+  sortOrder?: number;
+  notes?: string;
+}
+
+export interface EmployeeStructureRow {
+  id: string;
+  componentId: string;
+  amountCents: number;
+  percentBps: number;
+  effectiveFrom: string;
+  notes: string | null;
+  code: string;
+  name: string;
+  kind: SalaryComponentKind;
+  calculationBasis: SalaryCalculationBasis;
+  countsForEpf: boolean;
+  countsForEtf: boolean;
+  countsForPaye: boolean;
+  sortOrder: number;
+}
+
+export interface PayrollRunLineComponent {
+  id: string;
+  lineId: string;
+  componentId: string | null;
+  code: string;
+  name: string;
+  kind: SalaryComponentKind;
+  amountCents: number;
+  countsForEpf: boolean;
+  countsForEtf: boolean;
+  countsForPaye: boolean;
+  sortOrder: number;
+}
+
 export interface PayrollRunLine {
   id: string;
   runId: string;
@@ -721,6 +816,8 @@ export interface PayrollRunLine {
   department: string | null;
   basicSalaryCents: number;
   grossCents: number;
+  earningsCents: number;
+  nonStatutoryDeductionsCents: number;
   epfEmployeeCents: number;
   payeCents: number;
   otherDeductionsCents: number;
@@ -734,6 +831,7 @@ export interface PayrollRunLine {
   bankName: string | null;
   bankAccountNo: string | null;
   bankBranch: string | null;
+  components?: PayrollRunLineComponent[];
 }
 
 export type EmploymentType =
