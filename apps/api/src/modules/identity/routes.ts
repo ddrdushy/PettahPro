@@ -84,6 +84,9 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
         .returning();
       if (!u) throw new Error("User insert failed");
 
+      // Seed default branch, warehouse, SL chart of accounts, tax codes, fiscal period.
+      await tx.execute(sql`SELECT seed_tenant_defaults(${t.id}::uuid)`);
+
       return { tenant: t, user: u };
     });
 

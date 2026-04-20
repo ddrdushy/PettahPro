@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import type { ReactNode } from "react";
 import { LogoutButton } from "@/components/auth/logout-button";
+import { Sidebar } from "@/components/app/sidebar";
 
 async function fetchMe() {
   const cookieHeader = cookies().toString();
@@ -28,16 +29,13 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
 
   return (
     <div className="min-h-screen bg-offwhite">
-      <header className="sticky top-0 z-30 border-b-hairline border-border bg-offwhite/90 backdrop-blur">
-        <div className="container-p flex h-16 items-center justify-between">
+      <header className="sticky top-0 z-30 border-b-hairline border-border bg-offwhite/95 backdrop-blur">
+        <div className="flex h-16 items-center justify-between px-6">
           <Link href="/app" className="flex items-center gap-3">
             <span className="text-h3 font-medium text-charcoal">
               Pettah<span className="text-mint-dark">Pro</span>
             </span>
-            <span
-              aria-hidden
-              className="h-5 w-px bg-border"
-            />
+            <span aria-hidden className="h-5 w-px bg-border" />
             <span className="text-small text-text-secondary">{me.tenant.businessName}</span>
           </Link>
 
@@ -46,7 +44,11 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
               <p className="text-small font-medium text-charcoal">{me.user.fullName}</p>
               <p className="text-caption text-text-tertiary">
                 {me.user.email}
-                {me.user.isOwner && <span className="ml-2 rounded-full bg-mint-surface px-2 py-0.5 text-micro text-mint-dark">Owner</span>}
+                {me.user.isOwner && (
+                  <span className="ml-2 rounded-full bg-mint-surface px-2 py-0.5 text-micro text-mint-dark">
+                    Owner
+                  </span>
+                )}
               </p>
             </div>
             <LogoutButton />
@@ -54,7 +56,10 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
         </div>
       </header>
 
-      {children}
+      <div className="flex">
+        <Sidebar />
+        <div className="min-w-0 flex-1">{children}</div>
+      </div>
     </div>
   );
 }
