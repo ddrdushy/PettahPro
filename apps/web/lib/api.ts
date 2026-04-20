@@ -87,6 +87,15 @@ export const api = {
       `/invoices/${id}/post`,
       { method: "POST" },
     ),
+
+  listPayments: () => request<{ payments: PaymentListRow[] }>("/payments"),
+  createPayment: (body: CreatePayment) =>
+    request<{
+      ok: true;
+      payment: Payment;
+      paymentNumber: string;
+      entryNumber: string;
+    }>("/payments", { method: "POST", json: body }),
 };
 
 export interface User {
@@ -260,6 +269,63 @@ export interface CreateInvoice {
   notes?: string;
   terms?: string;
   lines: CreateInvoiceLine[];
+}
+
+export type PaymentMethod =
+  | "cash"
+  | "bank_transfer"
+  | "cheque"
+  | "card"
+  | "lankaqr"
+  | "payhere"
+  | "frimi"
+  | "genie"
+  | "ipay"
+  | "other";
+
+export interface PaymentListRow {
+  id: string;
+  paymentNumber: string | null;
+  paymentDate: string;
+  method: PaymentMethod;
+  amountCents: number;
+  currency: string;
+  reference: string | null;
+  status: string;
+  customerId: string;
+  customerName: string;
+  bankAccountCode: string;
+  bankAccountName: string;
+  createdAt: string;
+}
+
+export interface Payment {
+  id: string;
+  paymentNumber: string | null;
+  customerId: string;
+  paymentDate: string;
+  method: PaymentMethod;
+  amountCents: number;
+  currency: string;
+  bankAccountId: string;
+  reference: string | null;
+  chequeDate: string | null;
+  memo: string | null;
+  status: "draft" | "posted" | "reversed";
+  postedAt: string | null;
+  journalEntryId: string | null;
+}
+
+export interface CreatePayment {
+  customerId: string;
+  paymentDate?: string;
+  method: PaymentMethod;
+  bankAccountId: string;
+  amountCents: number;
+  reference?: string;
+  chequeDate?: string;
+  memo?: string;
+  allocations: { invoiceId: string; allocatedCents: number }[];
 }
 
 export interface TaxCode {

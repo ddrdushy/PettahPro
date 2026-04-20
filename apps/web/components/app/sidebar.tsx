@@ -27,6 +27,7 @@ const nav: Group[] = [
     items: [
       { label: "Customers", href: "/app/customers", icon: Users },
       { label: "Invoices", href: "/app/invoices", icon: Receipt },
+      { label: "Payments", href: "/app/payments", icon: Wallet },
     ],
   },
   {
@@ -44,7 +45,6 @@ const nav: Group[] = [
     title: "Accounting",
     items: [
       { label: "Chart of accounts", href: "/app/coa", icon: BookOpen },
-      { label: "Banking", href: "/app/banking", icon: Wallet, badge: "Soon" },
     ],
   },
   {

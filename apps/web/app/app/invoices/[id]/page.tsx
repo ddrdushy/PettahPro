@@ -3,32 +3,44 @@ import Link from "next/link";
 import { cookies } from "next/headers";
 import { notFound } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
-import type { InvoiceDetail, InvoiceLine, Customer } from "@/lib/api";
+import type { Account, InvoiceDetail, InvoiceLine, Customer } from "@/lib/api";
 import { PageHeader } from "@/components/app/page-header";
 import { StatusBadge } from "@/components/app/status-badge";
 import { formatLKR, formatDate } from "@/lib/format";
 import { PostInvoiceButton } from "./post-button";
+import { RecordPaymentButton } from "./record-payment-button";
 
 export const metadata: Metadata = { title: "Invoice" };
 
 async function fetchInvoice(id: string) {
-  const res = await fetch(`${process.env.INTERNAL_API_URL ?? "http://api:4000"}/invoices/${id}`, {
-    headers: { cookie: cookies().toString() },
-    cache: "no-store",
-  });
-  if (res.status === 404) return null;
-  if (!res.ok) return null;
-  return (await res.json()) as {
+  const base = process.env.INTERNAL_API_URL ?? "http://api:4000";
+  const cookieHeader = cookies().toString();
+  const [invRes, coaRes] = await Promise.all([
+    fetch(`${base}/invoices/${id}`, { headers: { cookie: cookieHeader }, cache: "no-store" }),
+    fetch(`${base}/coa`, { headers: { cookie: cookieHeader }, cache: "no-store" }),
+  ]);
+  if (invRes.status === 404) return null;
+  if (!invRes.ok) return null;
+  const data = (await invRes.json()) as {
     invoice: InvoiceDetail;
     lines: InvoiceLine[];
     customer: Customer | null;
   };
+  const coa = coaRes.ok ? ((await coaRes.json()) as { accounts: Account[] }).accounts : [];
+  const bankAccounts = coa.filter(
+    (a) => a.accountType === "asset" && (a.accountSubtype === "bank" || a.accountSubtype === "cash"),
+  );
+  return { ...data, bankAccounts };
 }
 
 export default async function InvoiceDetailPage({ params }: { params: { id: string } }) {
   const data = await fetchInvoice(params.id);
   if (!data) notFound();
-  const { invoice, lines, customer } = data;
+  const { invoice, lines, customer, bankAccounts } = data;
+
+  const isPayable =
+    (invoice.status === "posted" || invoice.status === "partially_paid") &&
+    invoice.balanceDueCents > 0;
 
   return (
     <main className="container-p py-10">
@@ -51,6 +63,16 @@ export default async function InvoiceDetailPage({ params }: { params: { id: stri
           <div className="flex items-center gap-3">
             <StatusBadge status={invoice.status} />
             {invoice.status === "draft" && <PostInvoiceButton id={invoice.id} />}
+            {isPayable && customer && (
+              <RecordPaymentButton
+                invoiceId={invoice.id}
+                customerId={customer.id}
+                customerName={customer.name}
+                invoiceNumber={invoice.invoiceNumber ?? invoice.id.slice(0, 8)}
+                balanceDueCents={invoice.balanceDueCents}
+                bankAccounts={bankAccounts}
+              />
+            )}
           </div>
         }
       />

@@ -7,6 +7,7 @@ import { customersRoutes } from "./modules/operations/customers.js";
 import { itemsRoutes } from "./modules/operations/items.js";
 import { coaRoutes, taxCodesRoutes } from "./modules/accounting/coa.js";
 import { invoicesRoutes } from "./modules/sell/invoices.js";
+import { paymentsRoutes } from "./modules/sell/payments.js";
 
 export async function buildServer(): Promise<FastifyInstance> {
   const server = Fastify({
@@ -40,6 +41,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await server.register(coaRoutes, { prefix: "/coa" });
   await server.register(taxCodesRoutes, { prefix: "/tax-codes" });
   await server.register(invoicesRoutes, { prefix: "/invoices" });
+  await server.register(paymentsRoutes, { prefix: "/payments" });
 
   server.setErrorHandler((err, req, reply) => {
     req.log.error({ err }, "request failed");
