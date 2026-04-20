@@ -74,6 +74,19 @@ export const api = {
 
   listCoa: () => request<{ accounts: Account[] }>("/coa"),
   listTaxCodes: () => request<{ taxCodes: TaxCode[] }>("/tax-codes"),
+
+  listInvoices: () => request<{ invoices: InvoiceListRow[] }>("/invoices"),
+  getInvoice: (id: string) =>
+    request<{ invoice: InvoiceDetail; lines: InvoiceLine[]; customer: Customer | null }>(
+      `/invoices/${id}`,
+    ),
+  createInvoice: (body: CreateInvoice) =>
+    request<{ invoice: InvoiceDetail }>("/invoices", { method: "POST", json: body }),
+  postInvoice: (id: string) =>
+    request<{ ok: true; invoiceNumber: string; entryNumber: string }>(
+      `/invoices/${id}/post`,
+      { method: "POST" },
+    ),
 };
 
 export interface User {
@@ -168,6 +181,85 @@ export interface Account {
   normalSide: "dr" | "cr";
   isSystem: boolean;
   isActive: boolean;
+}
+
+export type InvoiceStatus = "draft" | "posted" | "partially_paid" | "paid" | "void";
+
+export interface InvoiceListRow {
+  id: string;
+  invoiceNumber: string | null;
+  status: InvoiceStatus;
+  issueDate: string;
+  dueDate: string;
+  customerId: string;
+  customerName: string;
+  currency: string;
+  subtotalCents: number;
+  taxCents: number;
+  totalCents: number;
+  balanceDueCents: number;
+  createdAt: string;
+}
+
+export interface InvoiceDetail {
+  id: string;
+  invoiceNumber: string | null;
+  customerId: string;
+  branchId: string | null;
+  status: InvoiceStatus;
+  issueDate: string;
+  dueDate: string;
+  currency: string;
+  subtotalCents: number;
+  discountCents: number;
+  taxCents: number;
+  totalCents: number;
+  amountPaidCents: number;
+  balanceDueCents: number;
+  reference: string | null;
+  poNumber: string | null;
+  notes: string | null;
+  terms: string | null;
+  journalEntryId: string | null;
+  postedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface InvoiceLine {
+  id: string;
+  lineNo: number;
+  itemId: string | null;
+  description: string;
+  quantity: string;
+  unitPriceCents: number;
+  lineSubtotalCents: number;
+  discountPctBps: number;
+  discountCents: number;
+  taxCodeId: string | null;
+  taxRateBps: number;
+  taxCents: number;
+  lineTotalCents: number;
+}
+
+export interface CreateInvoiceLine {
+  itemId?: string;
+  description: string;
+  quantity: number;
+  unitPriceCents: number;
+  discountPctBps?: number;
+  taxCodeId?: string;
+}
+
+export interface CreateInvoice {
+  customerId: string;
+  issueDate?: string;
+  dueDate?: string;
+  reference?: string;
+  poNumber?: string;
+  notes?: string;
+  terms?: string;
+  lines: CreateInvoiceLine[];
 }
 
 export interface TaxCode {

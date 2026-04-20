@@ -26,7 +26,7 @@ const nav: Group[] = [
     title: "Sell",
     items: [
       { label: "Customers", href: "/app/customers", icon: Users },
-      { label: "Invoices", href: "/app/invoices", icon: Receipt, badge: "Soon" },
+      { label: "Invoices", href: "/app/invoices", icon: Receipt },
     ],
   },
   {

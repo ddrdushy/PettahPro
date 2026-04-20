@@ -5,3 +5,5 @@ export * from "./warehouses.js";
 export * from "./customers.js";
 export * from "./items.js";
 export * from "./accounts.js";
+export * from "./journals.js";
+export * from "./invoices.js";

@@ -102,5 +102,22 @@ BEGIN
   -- 4. Current fiscal period (monthly)
   INSERT INTO fiscal_periods (tenant_id, fiscal_year, period_no, starts_on, ends_on, status)
     VALUES (p_tenant_id, v_fy, EXTRACT(month FROM v_now)::smallint, v_month_start, v_month_end, 'open');
+
+  -- 5. Document-number sequences
+  -- Only insert if the table exists (idempotent across schema versions).
+  IF to_regclass('public.document_sequences') IS NOT NULL THEN
+    INSERT INTO document_sequences (tenant_id, sequence_name, prefix, scope, pad_width)
+    VALUES
+      (p_tenant_id, 'invoice',       'INV', 'year', 4),
+      (p_tenant_id, 'bill',          'BIL', 'year', 4),
+      (p_tenant_id, 'payment',       'PAY', 'year', 4),
+      (p_tenant_id, 'receipt',       'RCP', 'year', 4),
+      (p_tenant_id, 'journal',       'JV',  'year', 4),
+      (p_tenant_id, 'credit_note',   'CN',  'year', 4),
+      (p_tenant_id, 'quotation',     'QUO', 'year', 4),
+      (p_tenant_id, 'purchase_order','PO',  'year', 4),
+      (p_tenant_id, 'grn',           'GRN', 'year', 4)
+    ON CONFLICT (tenant_id, sequence_name) DO NOTHING;
+  END IF;
 END;
 $$;
