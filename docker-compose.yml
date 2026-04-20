@@ -1,0 +1,169 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: pettahpro-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-pettahpro}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pettahpro_dev}
+      POSTGRES_DB: ${POSTGRES_DB:-pettahpro}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pettahpro} -d ${POSTGRES_DB:-pettahpro}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    container_name: pettahpro-pgbouncer
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_USER: ${POSTGRES_USER:-pettahpro}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-pettahpro_dev}
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB:-pettahpro}
+      POOL_MODE: transaction
+      ADMIN_USERS: ${POSTGRES_USER:-pettahpro}
+      AUTH_TYPE: scram-sha-256
+      MAX_CLIENT_CONN: 1000
+      DEFAULT_POOL_SIZE: 25
+    ports:
+      - "${PGBOUNCER_PORT:-6432}:5432"
+
+  redis:
+    image: redis:7-alpine
+    container_name: pettahpro-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    container_name: pettahpro-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-pettahpro}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-pettahpro_dev}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: pettahpro-mailhog
+    restart: unless-stopped
+    ports:
+      - "1025:1025"  # SMTP
+      - "8025:8025"  # Web UI
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: dev
+    container_name: pettahpro-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      pgbouncer:
+        condition: service_started
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgres://${POSTGRES_USER:-pettahpro}:${POSTGRES_PASSWORD:-pettahpro_dev}@pgbouncer:5432/${POSTGRES_DB:-pettahpro}
+      DATABASE_URL_DIRECT: postgres://${POSTGRES_USER:-pettahpro}:${POSTGRES_PASSWORD:-pettahpro_dev}@postgres:5432/${POSTGRES_DB:-pettahpro}
+      REDIS_URL: redis://redis:6379
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-pettahpro}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-pettahpro_dev}
+      SMTP_HOST: mailhog
+      SMTP_PORT: 1025
+      API_PORT: 4000
+      API_HOST: 0.0.0.0
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me-in-prod}
+    ports:
+      - "${API_PORT:-4000}:4000"
+    volumes:
+      - ./apps/api:/app/apps/api
+      - ./packages:/app/packages
+      - api_node_modules:/app/node_modules
+    command: pnpm --filter @pettahpro/api dev
+
+  worker:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: dev
+    container_name: pettahpro-worker
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgres://${POSTGRES_USER:-pettahpro}:${POSTGRES_PASSWORD:-pettahpro_dev}@pgbouncer:5432/${POSTGRES_DB:-pettahpro}
+      REDIS_URL: redis://redis:6379
+    volumes:
+      - ./apps/api:/app/apps/api
+      - ./packages:/app/packages
+      - worker_node_modules:/app/node_modules
+    command: pnpm --filter @pettahpro/api worker
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      target: dev
+    container_name: pettahpro-web
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      NODE_ENV: development
+      NEXT_PUBLIC_API_URL: http://localhost:4000
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    volumes:
+      - ./apps/web:/app/apps/web
+      - ./packages:/app/packages
+      - web_node_modules:/app/node_modules
+      - web_next:/app/apps/web/.next
+    command: pnpm --filter @pettahpro/web dev
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+  api_node_modules:
+  worker_node_modules:
+  web_node_modules:
+  web_next:

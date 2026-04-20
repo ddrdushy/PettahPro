@@ -4,7 +4,9 @@
 
 **PettahPro** is a cloud accounting and business-operations platform for Sri Lankan SMEs — a modern, mobile-friendly, AI-assisted replacement for BUSY Accounting Software and Tally, purpose-built for the Sri Lankan tax regime, banking rails, and business culture.
 
-This repository holds the complete product specification: **23 specs**, ~24,200 lines, 206 database tables, covering product, data model, UI/UX, and brand.
+This repository holds the complete product specification (**23 specs**, ~24,200 lines, 206 database tables) and the working codebase scaffold (pnpm monorepo with Next.js web, Fastify API, BullMQ worker, Postgres with RLS, PgBouncer, Redis, MinIO — all running via `docker compose up`).
+
+**Building?** See [SETUP.md](SETUP.md) for dev environment instructions.
 
 ---
 
