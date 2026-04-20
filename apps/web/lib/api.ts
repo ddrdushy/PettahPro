@@ -67,6 +67,11 @@ export const api = {
   createCustomer: (body: CreateCustomer) =>
     request<{ customer: Customer }>("/customers", { method: "POST", json: body }),
 
+  listSuppliers: (q?: string) =>
+    request<{ suppliers: Supplier[] }>(`/suppliers${q ? `?q=${encodeURIComponent(q)}` : ""}`),
+  createSupplier: (body: CreateSupplier) =>
+    request<{ supplier: Supplier }>("/suppliers", { method: "POST", json: body }),
+
   listItems: (q?: string) =>
     request<{ items: Item[] }>(`/items${q ? `?q=${encodeURIComponent(q)}` : ""}`),
   createItem: (body: CreateItem) =>
@@ -147,6 +152,52 @@ export interface CreateCustomer {
   paymentTermsDays?: number;
   creditLimitCents?: number;
   currency?: string;
+  notes?: string;
+}
+
+export interface Supplier {
+  id: string;
+  code: string | null;
+  name: string;
+  legalName: string | null;
+  email: string | null;
+  phone: string | null;
+  whatsapp: string | null;
+  city: string | null;
+  country: string;
+  tin: string | null;
+  vatNo: string | null;
+  brNo: string | null;
+  paymentTermsDays: number;
+  currency: string;
+  defaultWhtTaxCodeId: string | null;
+  bankName: string | null;
+  bankAccountNo: string | null;
+  bankBranch: string | null;
+  isActive: boolean;
+  createdAt: string;
+}
+
+export interface CreateSupplier {
+  name: string;
+  legalName?: string;
+  code?: string;
+  email?: string;
+  phone?: string;
+  whatsapp?: string;
+  addressLine1?: string;
+  city?: string;
+  postalCode?: string;
+  country?: string;
+  tin?: string;
+  vatNo?: string;
+  brNo?: string;
+  paymentTermsDays?: number;
+  currency?: string;
+  defaultWhtTaxCodeId?: string;
+  bankName?: string;
+  bankAccountNo?: string;
+  bankBranch?: string;
   notes?: string;
 }
 
