@@ -88,6 +88,8 @@ export const api = {
       { method: "POST" },
     ),
 
+  dashboard: () => request<Dashboard>("/dashboard"),
+
   listPayments: () => request<{ payments: PaymentListRow[] }>("/payments"),
   createPayment: (body: CreatePayment) =>
     request<{
@@ -269,6 +271,47 @@ export interface CreateInvoice {
   notes?: string;
   terms?: string;
   lines: CreateInvoiceLine[];
+}
+
+export interface AgingBucket {
+  label: "current" | "0-30" | "30-60" | "60-90" | "90+";
+  lowerDays: number;
+  upperDays: number | null;
+  balanceCents: number;
+  invoiceCount: number;
+}
+
+export interface Dashboard {
+  cashPositionCents: number;
+  cashByAccount: Array<{ code: string; name: string; balanceCents: number }>;
+  arTotalCents: number;
+  openInvoiceCount: number;
+  overdueCents: number;
+  overdueCount: number;
+  revenueThisMonthCents: number;
+  revenueLastMonthCents: number;
+  invoicesThisMonth: number;
+  paymentsThisMonthCents: number;
+  aging: AgingBucket[];
+  recentInvoices: Array<{
+    id: string;
+    invoiceNumber: string | null;
+    customerName: string;
+    totalCents: number;
+    balanceDueCents: number;
+    status: InvoiceStatus;
+    issueDate: string;
+    dueDate: string;
+  }>;
+  recentPayments: Array<{
+    id: string;
+    paymentNumber: string | null;
+    customerName: string;
+    amountCents: number;
+    method: string;
+    paymentDate: string;
+  }>;
+  revenueSeries: Array<{ day: string; revenueCents: number }>;
 }
 
 export type PaymentMethod =
