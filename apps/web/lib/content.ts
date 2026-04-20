@@ -21,8 +21,8 @@ export const nav = {
     { label: "Industries", href: "#industries" },
     { label: "Resources", href: "/resources" },
   ],
-  signIn: { label: "Sign in", href: "https://app.pettahpro.lk/login" },
-  cta: { label: "Start free trial", href: "https://app.pettahpro.lk/signup" },
+  signIn: { label: "Sign in", href: "/login" },
+  cta: { label: "Start free trial", href: "/signup" },
 };
 
 export const hero = {
@@ -30,7 +30,7 @@ export const hero = {
   headline: "Built for how Pettah actually does business.",
   subhead:
     "Cloud accounting made in Sri Lanka, for Sri Lankan SMEs. AI-assisted, SL-compliant, and ready to run from Pettah to Jaffna.",
-  ctaPrimary: { label: "Start 30-day free trial", href: "https://app.pettahpro.lk/signup" },
+  ctaPrimary: { label: "Start 30-day free trial", href: "/signup" },
   ctaSecondary: { label: "See how it works", href: "#how-it-works" },
   trustLine: "No credit card. Migration included.",
 };
@@ -285,7 +285,7 @@ export const faqs = [
 
 export const finalCta = {
   title: "Start free. Migrate later. Cancel anytime.",
-  ctaPrimary: { label: "Start 30-day free trial", href: "https://app.pettahpro.lk/signup" },
+  ctaPrimary: { label: "Start 30-day free trial", href: "/signup" },
   ctaSecondary: { label: "Book a 20-min walkthrough →", href: "/demo" },
 };
 
