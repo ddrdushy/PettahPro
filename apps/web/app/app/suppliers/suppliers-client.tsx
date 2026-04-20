@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useMemo, useState } from "react";
 import { Plus, Search, UsersRound } from "lucide-react";
 import { PageHeader } from "@/components/app/page-header";
@@ -35,15 +36,15 @@ export function SuppliersClient({
     {
       header: "Supplier",
       accessor: (s) => (
-        <div className="flex items-center gap-3">
+        <Link href={`/app/suppliers/${s.id}`} className="group flex items-center gap-3">
           <div className="grid h-8 w-8 flex-none place-items-center rounded-full bg-mint-surface text-caption font-medium text-mint-dark">
             {initials(s.name)}
           </div>
           <div>
-            <p className="font-medium text-charcoal">{s.name}</p>
+            <p className="font-medium text-charcoal group-hover:underline">{s.name}</p>
             {s.code && <p className="text-caption text-text-tertiary">{s.code}</p>}
           </div>
-        </div>
+        </Link>
       ),
     },
     {

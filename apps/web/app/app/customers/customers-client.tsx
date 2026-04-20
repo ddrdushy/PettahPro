@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useMemo, useState } from "react";
 import { Plus, Search, Users } from "lucide-react";
 import { PageHeader } from "@/components/app/page-header";
@@ -29,15 +30,15 @@ export function CustomersClient({ initial }: { initial: Customer[] }) {
     {
       header: "Customer",
       accessor: (c) => (
-        <div className="flex items-center gap-3">
+        <Link href={`/app/customers/${c.id}`} className="group flex items-center gap-3">
           <div className="grid h-8 w-8 flex-none place-items-center rounded-full bg-mint-surface text-caption font-medium text-mint-dark">
             {initials(c.name)}
           </div>
           <div>
-            <p className="font-medium text-charcoal">{c.name}</p>
+            <p className="font-medium text-charcoal group-hover:underline">{c.name}</p>
             {c.code && <p className="text-caption text-text-tertiary">{c.code}</p>}
           </div>
-        </div>
+        </Link>
       ),
     },
     {

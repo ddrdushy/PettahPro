@@ -1,5 +1,5 @@
 import type { FastifyPluginAsync } from "fastify";
-import { and, eq, isNull, desc, sql, ilike } from "drizzle-orm";
+import { and, eq, isNull, desc, ilike, sql } from "drizzle-orm";
 import { z } from "zod";
 import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
@@ -58,6 +58,140 @@ export const customersRoutes: FastifyPluginAsync = async (fastify) => {
     });
 
     return reply.send({ customers: rows });
+  });
+
+  // GET /customers/:id — single customer + summary + recent docs
+  fastify.get<{ Params: { id: string } }>("/:id", async (req, reply) => {
+    const ctx = requireAuth(req, reply);
+    if (!ctx) return;
+
+    const data = await withTenant(ctx.tenantId, async (tx) => {
+      const custRows = await tx
+        .select()
+        .from(schema.customers)
+        .where(
+          and(
+            eq(schema.customers.tenantId, ctx.tenantId),
+            eq(schema.customers.id, req.params.id),
+            isNull(schema.customers.deletedAt),
+          ),
+        )
+        .limit(1);
+      const customer = custRows[0];
+      if (!customer) return null;
+
+      // KPI aggregates
+      const [kpis] = (await tx.execute(sql`
+        SELECT
+          COALESCE(SUM(total_cents) FILTER (WHERE status <> 'draft' AND status <> 'void'), 0)::bigint AS total_billed,
+          COALESCE(SUM(amount_paid_cents) FILTER (WHERE status <> 'void'), 0)::bigint AS total_paid,
+          COALESCE(SUM(balance_due_cents) FILTER (WHERE status IN ('posted','partially_paid')), 0)::bigint AS balance_due,
+          COUNT(*) FILTER (WHERE status IN ('posted','partially_paid'))::int AS open_count,
+          COUNT(*) FILTER (WHERE status IN ('posted','partially_paid') AND due_date < current_date)::int AS overdue_count,
+          COALESCE(SUM(balance_due_cents) FILTER (WHERE status IN ('posted','partially_paid') AND due_date < current_date), 0)::bigint AS overdue_cents
+        FROM invoices
+        WHERE tenant_id = current_tenant_id()
+          AND customer_id = ${customer.id}
+          AND deleted_at IS NULL
+      `)) as unknown as Array<{
+        total_billed: number | string;
+        total_paid: number | string;
+        balance_due: number | string;
+        open_count: number;
+        overdue_count: number;
+        overdue_cents: number | string;
+      }>;
+
+      const aging = (await tx.execute(sql`
+        SELECT
+          CASE
+            WHEN due_date >= current_date            THEN 'current'
+            WHEN current_date - due_date BETWEEN 1 AND 30   THEN '0-30'
+            WHEN current_date - due_date BETWEEN 31 AND 60  THEN '30-60'
+            WHEN current_date - due_date BETWEEN 61 AND 90  THEN '60-90'
+            ELSE '90+'
+          END AS bucket,
+          COALESCE(SUM(balance_due_cents), 0)::bigint AS balance_cents,
+          COUNT(*)::int AS inv_count
+        FROM invoices
+        WHERE tenant_id = current_tenant_id()
+          AND customer_id = ${customer.id}
+          AND deleted_at IS NULL
+          AND status IN ('posted','partially_paid')
+        GROUP BY bucket
+      `)) as unknown as Array<{
+        bucket: "current" | "0-30" | "30-60" | "60-90" | "90+";
+        balance_cents: number | string;
+        inv_count: number;
+      }>;
+
+      const invoices = await tx
+        .select({
+          id: schema.invoices.id,
+          invoiceNumber: schema.invoices.invoiceNumber,
+          status: schema.invoices.status,
+          issueDate: schema.invoices.issueDate,
+          dueDate: schema.invoices.dueDate,
+          totalCents: schema.invoices.totalCents,
+          balanceDueCents: schema.invoices.balanceDueCents,
+        })
+        .from(schema.invoices)
+        .where(
+          and(
+            eq(schema.invoices.tenantId, ctx.tenantId),
+            eq(schema.invoices.customerId, customer.id),
+            isNull(schema.invoices.deletedAt),
+          ),
+        )
+        .orderBy(desc(schema.invoices.createdAt))
+        .limit(50);
+
+      const payments = await tx
+        .select({
+          id: schema.customerPayments.id,
+          paymentNumber: schema.customerPayments.paymentNumber,
+          paymentDate: schema.customerPayments.paymentDate,
+          method: schema.customerPayments.method,
+          amountCents: schema.customerPayments.amountCents,
+          reference: schema.customerPayments.reference,
+          status: schema.customerPayments.status,
+        })
+        .from(schema.customerPayments)
+        .where(
+          and(
+            eq(schema.customerPayments.tenantId, ctx.tenantId),
+            eq(schema.customerPayments.customerId, customer.id),
+            isNull(schema.customerPayments.deletedAt),
+          ),
+        )
+        .orderBy(desc(schema.customerPayments.createdAt))
+        .limit(50);
+
+      const agingMap = new Map(aging.map((r) => [r.bucket, r]));
+      const buckets = (["current", "0-30", "30-60", "60-90", "90+"] as const).map((b) => ({
+        label: b,
+        balanceCents: Number(agingMap.get(b)?.balance_cents ?? 0),
+        invoiceCount: agingMap.get(b)?.inv_count ?? 0,
+      }));
+
+      return {
+        customer,
+        kpis: {
+          totalBilledCents: Number(kpis?.total_billed ?? 0),
+          totalPaidCents: Number(kpis?.total_paid ?? 0),
+          balanceDueCents: Number(kpis?.balance_due ?? 0),
+          openCount: Number(kpis?.open_count ?? 0),
+          overdueCount: Number(kpis?.overdue_count ?? 0),
+          overdueCents: Number(kpis?.overdue_cents ?? 0),
+        },
+        aging: buckets,
+        invoices,
+        payments,
+      };
+    });
+
+    if (!data) return reply.status(404).send({ error: { code: "NOT_FOUND" } });
+    return reply.send(data);
   });
 
   fastify.post("/", async (req, reply) => {

@@ -64,11 +64,13 @@ export const api = {
 
   listCustomers: (q?: string) =>
     request<{ customers: Customer[] }>(`/customers${q ? `?q=${encodeURIComponent(q)}` : ""}`),
+  getCustomer: (id: string) => request<CustomerDetail>(`/customers/${id}`),
   createCustomer: (body: CreateCustomer) =>
     request<{ customer: Customer }>("/customers", { method: "POST", json: body }),
 
   listSuppliers: (q?: string) =>
     request<{ suppliers: Supplier[] }>(`/suppliers${q ? `?q=${encodeURIComponent(q)}` : ""}`),
+  getSupplier: (id: string) => request<SupplierDetail>(`/suppliers/${id}`),
   createSupplier: (body: CreateSupplier) =>
     request<{ supplier: Supplier }>("/suppliers", { method: "POST", json: body }),
 
@@ -220,6 +222,71 @@ export interface Customer {
   currency: string;
   isActive: boolean;
   createdAt: string;
+}
+
+export interface PartyKpis {
+  totalBilledCents: number;
+  totalPaidCents: number;
+  balanceDueCents: number;
+  openCount: number;
+  overdueCount: number;
+  overdueCents: number;
+}
+
+export interface PartyAgingBucket {
+  label: "current" | "0-30" | "30-60" | "60-90" | "90+";
+  balanceCents: number;
+  invoiceCount: number;
+}
+
+export interface CustomerDetail {
+  customer: Customer;
+  kpis: PartyKpis;
+  aging: PartyAgingBucket[];
+  invoices: Array<{
+    id: string;
+    invoiceNumber: string | null;
+    status: InvoiceStatus;
+    issueDate: string;
+    dueDate: string;
+    totalCents: number;
+    balanceDueCents: number;
+  }>;
+  payments: Array<{
+    id: string;
+    paymentNumber: string | null;
+    paymentDate: string;
+    method: PaymentMethod;
+    amountCents: number;
+    reference: string | null;
+    status: string;
+  }>;
+}
+
+export interface SupplierDetail {
+  supplier: Supplier;
+  kpis: PartyKpis;
+  aging: PartyAgingBucket[];
+  bills: Array<{
+    id: string;
+    internalReference: string | null;
+    supplierBillNumber: string | null;
+    status: BillStatus;
+    billDate: string;
+    dueDate: string;
+    totalCents: number;
+    balanceDueCents: number;
+  }>;
+  payments: Array<{
+    id: string;
+    paymentNumber: string | null;
+    paymentDate: string;
+    method: SupplierPaymentMethod;
+    amountCents: number;
+    reference: string | null;
+    chequeNumber: string | null;
+    status: string;
+  }>;
 }
 
 export interface CreateCustomer {
