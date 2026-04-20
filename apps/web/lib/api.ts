@@ -123,6 +123,11 @@ export const api = {
     return request<ProfitLoss>(`/reports/profit-loss${q ? `?${q}` : ""}`);
   },
 
+  balanceSheet: (asOf?: string) => {
+    const qs = asOf ? `?asOf=${asOf}` : "";
+    return request<BalanceSheet>(`/reports/balance-sheet${qs}`);
+  },
+
   listPayments: () => request<{ payments: PaymentListRow[] }>("/payments"),
   createPayment: (body: CreatePayment) =>
     request<{
@@ -437,6 +442,31 @@ export interface CreateInvoice {
   notes?: string;
   terms?: string;
   lines: CreateInvoiceLine[];
+}
+
+export interface BalanceSheetLine {
+  accountId: string;
+  code: string;
+  name: string;
+  subtype: string | null;
+  balanceCents: number;
+}
+
+export interface BalanceSheetSection {
+  label: string;
+  accounts: BalanceSheetLine[];
+  totalCents: number;
+}
+
+export interface BalanceSheet {
+  asOf: string;
+  sections: BalanceSheetSection[];
+  totalAssetsCents: number;
+  totalLiabilitiesCents: number;
+  totalEquityCents: number;
+  liabilitiesAndEquityCents: number;
+  currentEarningsCents: number;
+  balanced: boolean;
 }
 
 export interface ProfitLossLine {
