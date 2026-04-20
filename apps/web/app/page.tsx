@@ -1,26 +1,37 @@
+import { AnnouncementBar } from "@/components/announcement-bar";
+import { Header } from "@/components/header";
+import { Hero } from "@/components/hero";
+import { TrustBar } from "@/components/trust-bar";
+import { ProblemSolution } from "@/components/problem-solution";
+import { Features } from "@/components/features";
+import { HowItWorks } from "@/components/how-it-works";
+import { Migration } from "@/components/migration";
+import { Pricing } from "@/components/pricing";
+import { Industries } from "@/components/industries";
+import { TrustSecurity } from "@/components/trust-security";
+import { Faq } from "@/components/faq";
+import { FinalCta } from "@/components/final-cta";
+import { Footer } from "@/components/footer";
+
 export default function HomePage() {
   return (
-    <main
-      style={{
-        minHeight: "100vh",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        flexDirection: "column",
-        fontFamily: "Inter, system-ui, sans-serif",
-        backgroundColor: "#FAFAF9",
-        color: "#1A1A1A",
-      }}
-    >
-      <h1 style={{ fontSize: "2.5rem", fontWeight: 500, marginBottom: "0.5rem" }}>
-        PettahPro
-      </h1>
-      <p style={{ color: "#7FB89A", fontSize: "1.125rem" }}>
-        Accounting for how Sri Lanka actually does business.
-      </p>
-      <p style={{ marginTop: "2rem", fontSize: "0.875rem", opacity: 0.6 }}>
-        Build starts here.
-      </p>
-    </main>
+    <>
+      <AnnouncementBar />
+      <Header />
+      <main id="main">
+        <Hero />
+        <TrustBar />
+        <ProblemSolution />
+        <Features />
+        <HowItWorks />
+        <Migration />
+        <Pricing />
+        <Industries />
+        <TrustSecurity />
+        <Faq />
+        <FinalCta />
+      </main>
+      <Footer />
+    </>
   );
 }
