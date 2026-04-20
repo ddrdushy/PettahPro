@@ -114,7 +114,9 @@ services:
       - ./apps/api:/app/apps/api
       - ./packages:/app/packages
       - api_node_modules:/app/node_modules
-    command: pnpm --filter @pettahpro/api dev
+      - /app/apps/api/node_modules
+      - /app/packages/db/node_modules
+    command: sh -c "pnpm install && pnpm --filter @pettahpro/api dev"
 
   worker:
     build:
@@ -136,7 +138,9 @@ services:
       - ./apps/api:/app/apps/api
       - ./packages:/app/packages
       - worker_node_modules:/app/node_modules
-    command: pnpm --filter @pettahpro/api worker
+      - /app/apps/api/node_modules
+      - /app/packages/db/node_modules
+    command: sh -c "pnpm install && pnpm --filter @pettahpro/api worker"
 
   web:
     build:
@@ -156,8 +160,10 @@ services:
       - ./apps/web:/app/apps/web
       - ./packages:/app/packages
       - web_node_modules:/app/node_modules
+      - /app/apps/web/node_modules
+      - /app/packages/db/node_modules
       - web_next:/app/apps/web/.next
-    command: pnpm --filter @pettahpro/web dev
+    command: sh -c "pnpm install && pnpm --filter @pettahpro/web dev"
 
 volumes:
   postgres_data:
