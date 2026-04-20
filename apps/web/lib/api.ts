@@ -92,6 +92,11 @@ export const api = {
       `/invoices/${id}/post`,
       { method: "POST" },
     ),
+  voidInvoice: (id: string, reason?: string) =>
+    request<{ ok: true; reversalEntryNumber: string }>(`/invoices/${id}/void`, {
+      method: "POST",
+      json: reason ? { reason } : {},
+    }),
 
   listBills: () => request<{ bills: BillListRow[] }>("/bills"),
   getBill: (id: string) =>
@@ -103,6 +108,11 @@ export const api = {
       `/bills/${id}/post`,
       { method: "POST" },
     ),
+  voidBill: (id: string, reason?: string) =>
+    request<{ ok: true; reversalEntryNumber: string }>(`/bills/${id}/void`, {
+      method: "POST",
+      json: reason ? { reason } : {},
+    }),
 
   dashboard: () => request<Dashboard>("/dashboard"),
 

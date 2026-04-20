@@ -5,6 +5,10 @@ import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
 import { postJournal } from "../accounting/journal-posting.js";
 import {
+  postReversingJournal,
+  rewindStockForSource,
+} from "../accounting/reversing-journal.js";
+import {
   applyStockReceipt,
   resolveDefaultWarehouse,
   resolveStockGLAccounts,
@@ -478,4 +482,101 @@ export const billsRoutes: FastifyPluginAsync = async (fastify) => {
     }
     return reply.send(result);
   });
+
+  // POST /bills/:id/void — reverse a posted bill
+  fastify.post<{ Params: { id: string }; Body: { reason?: string } }>(
+    "/:id/void",
+    async (req, reply) => {
+      const ctx = requireAuth(req, reply);
+      if (!ctx) return;
+
+      const reason = typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
+
+      const result = await withTenant(ctx.tenantId, async (tx) => {
+        const billRows = await tx
+          .select()
+          .from(schema.bills)
+          .where(
+            and(
+              eq(schema.bills.tenantId, ctx.tenantId),
+              eq(schema.bills.id, req.params.id),
+              isNull(schema.bills.deletedAt),
+            ),
+          )
+          .limit(1);
+        const bill = billRows[0];
+        if (!bill) return { error: "NOT_FOUND" as const };
+        if (bill.status === "void") return { error: "ALREADY_VOID" as const };
+        if (!["posted", "partially_paid"].includes(bill.status)) {
+          return { error: "NOT_VOIDABLE" as const };
+        }
+        if (bill.amountPaidCents > 0) return { error: "HAS_PAYMENTS" as const };
+        if (!bill.journalEntryId) return { error: "NO_SOURCE_ENTRY" as const };
+
+        const today = new Date().toISOString().slice(0, 10);
+        const { entryId, entryNumber } = await postReversingJournal(tx, {
+          tenantId: ctx.tenantId,
+          sourceEntryId: bill.journalEntryId,
+          reversalDate: today,
+          memo: `Void bill ${bill.internalReference ?? bill.id.slice(0, 8)}${reason ? " · " + reason : ""}`,
+          sourceType: "bill_void",
+          sourceId: bill.id,
+          postedByUserId: ctx.userId,
+        });
+
+        await rewindStockForSource(tx, {
+          tenantId: ctx.tenantId,
+          sourceDocumentType: "bill",
+          sourceDocumentId: bill.id,
+          journalEntryId: entryId,
+          postedByUserId: ctx.userId,
+          memo: `Void bill ${bill.internalReference ?? bill.id.slice(0, 8)}`,
+        });
+
+        await tx
+          .update(schema.bills)
+          .set({
+            status: "void",
+            balanceDueCents: 0,
+            updatedAt: new Date(),
+            notes:
+              reason && bill.notes
+                ? `${bill.notes}\n\n[Voided] ${reason}`
+                : reason
+                  ? `[Voided] ${reason}`
+                  : bill.notes,
+          })
+          .where(eq(schema.bills.id, bill.id));
+
+        return { ok: true as const, reversalEntryNumber: entryNumber };
+      }).catch((err: Error & { message: string }) => {
+        if (err.message === "ALREADY_REVERSED") {
+          return { error: "ALREADY_REVERSED" as const };
+        }
+        throw err;
+      });
+
+      if ("error" in result) {
+        const map: Record<string, number> = {
+          NOT_FOUND: 404,
+          NOT_VOIDABLE: 409,
+          ALREADY_VOID: 409,
+          ALREADY_REVERSED: 409,
+          HAS_PAYMENTS: 409,
+          NO_SOURCE_ENTRY: 500,
+        };
+        const messages: Record<string, string> = {
+          HAS_PAYMENTS:
+            "This bill has payments allocated. Reverse the payments first, then void the bill.",
+          NOT_VOIDABLE: "Only posted bills with no payments can be voided.",
+          ALREADY_VOID: "This bill is already void.",
+          ALREADY_REVERSED: "The original journal entry is already reversed.",
+        };
+        return reply
+          .status(map[result.error] ?? 500)
+          .send({ error: { code: result.error, message: messages[result.error] } });
+      }
+      return reply.send(result);
+    },
+  );
 };

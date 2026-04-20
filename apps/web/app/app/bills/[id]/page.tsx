@@ -8,6 +8,7 @@ import { PageHeader } from "@/components/app/page-header";
 import { StatusBadge } from "@/components/app/status-badge";
 import { formatLKR, formatDate } from "@/lib/format";
 import { PostBillButton } from "./post-button";
+import { BillVoidButton } from "@/components/app/void-button";
 import { RecordPaymentOutButton } from "./record-payment-out-button";
 
 export const metadata: Metadata = { title: "Bill" };
@@ -41,6 +42,17 @@ export default async function BillDetailPage({ params }: { params: { id: string 
   const isPayable =
     (bill.status === "posted" || bill.status === "partially_paid") && bill.balanceDueCents > 0;
 
+  const canVoid =
+    (bill.status === "posted" || bill.status === "partially_paid") && bill.amountPaidCents === 0;
+  const voidDisabledReason =
+    bill.status === "void"
+      ? "Already void."
+      : bill.status === "draft"
+        ? "Drafts don't need voiding — delete them instead."
+        : bill.amountPaidCents > 0
+          ? "Reverse the payments first, then void."
+          : undefined;
+
   return (
     <main className="container-p py-10">
       <div className="mb-4">
@@ -66,6 +78,14 @@ export default async function BillDetailPage({ params }: { params: { id: string 
                 billReference={bill.internalReference ?? bill.id.slice(0, 8)}
                 balanceDueCents={bill.balanceDueCents}
                 bankAccounts={bankAccounts}
+              />
+            )}
+            {(canVoid || bill.status === "void") && (
+              <BillVoidButton
+                billId={bill.id}
+                label={`bill ${bill.internalReference ?? bill.id.slice(0, 8)}`}
+                disabled={!canVoid}
+                disabledReason={voidDisabledReason}
               />
             )}
           </div>

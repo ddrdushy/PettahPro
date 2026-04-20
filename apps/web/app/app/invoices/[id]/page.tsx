@@ -9,6 +9,7 @@ import { StatusBadge } from "@/components/app/status-badge";
 import { formatLKR, formatDate } from "@/lib/format";
 import { PostInvoiceButton } from "./post-button";
 import { RecordPaymentButton } from "./record-payment-button";
+import { InvoiceVoidButton } from "@/components/app/void-button";
 
 export const metadata: Metadata = { title: "Invoice" };
 
@@ -41,6 +42,18 @@ export default async function InvoiceDetailPage({ params }: { params: { id: stri
   const isPayable =
     (invoice.status === "posted" || invoice.status === "partially_paid") &&
     invoice.balanceDueCents > 0;
+
+  const canVoid =
+    (invoice.status === "posted" || invoice.status === "partially_paid") &&
+    invoice.amountPaidCents === 0;
+  const voidDisabledReason =
+    invoice.status === "void"
+      ? "Already void."
+      : invoice.status === "draft"
+        ? "Drafts don't need voiding — delete them instead."
+        : invoice.amountPaidCents > 0
+          ? "Reverse the payments first, then void."
+          : undefined;
 
   return (
     <main className="container-p py-10">
@@ -80,6 +93,14 @@ export default async function InvoiceDetailPage({ params }: { params: { id: stri
                 invoiceNumber={invoice.invoiceNumber ?? invoice.id.slice(0, 8)}
                 balanceDueCents={invoice.balanceDueCents}
                 bankAccounts={bankAccounts}
+              />
+            )}
+            {(canVoid || invoice.status === "void") && (
+              <InvoiceVoidButton
+                invoiceId={invoice.id}
+                label={`invoice ${invoice.invoiceNumber ?? invoice.id.slice(0, 8)}`}
+                disabled={!canVoid}
+                disabledReason={voidDisabledReason}
               />
             )}
           </div>

@@ -5,6 +5,10 @@ import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
 import { postJournal } from "../accounting/journal-posting.js";
 import {
+  postReversingJournal,
+  rewindStockForSource,
+} from "../accounting/reversing-journal.js";
+import {
   applyStockIssue,
   peekStockIssue,
   resolveDefaultWarehouse,
@@ -560,4 +564,104 @@ export const invoicesRoutes: FastifyPluginAsync = async (fastify) => {
     }
     return reply.send(result);
   });
+
+  // POST /invoices/:id/void — reverse a posted invoice
+  fastify.post<{ Params: { id: string }; Body: { reason?: string } }>(
+    "/:id/void",
+    async (req, reply) => {
+      const ctx = requireAuth(req, reply);
+      if (!ctx) return;
+
+      const reason = typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
+
+      const result = await withTenant(ctx.tenantId, async (tx) => {
+        const invRows = await tx
+          .select()
+          .from(schema.invoices)
+          .where(
+            and(
+              eq(schema.invoices.tenantId, ctx.tenantId),
+              eq(schema.invoices.id, req.params.id),
+              isNull(schema.invoices.deletedAt),
+            ),
+          )
+          .limit(1);
+        const invoice = invRows[0];
+        if (!invoice) return { error: "NOT_FOUND" as const };
+        if (invoice.status === "void") return { error: "ALREADY_VOID" as const };
+        if (!["posted", "partially_paid"].includes(invoice.status)) {
+          return { error: "NOT_VOIDABLE" as const };
+        }
+        if (invoice.amountPaidCents > 0) {
+          return { error: "HAS_PAYMENTS" as const };
+        }
+        if (!invoice.journalEntryId) return { error: "NO_SOURCE_ENTRY" as const };
+
+        const today = new Date().toISOString().slice(0, 10);
+        const { entryId, entryNumber } = await postReversingJournal(tx, {
+          tenantId: ctx.tenantId,
+          sourceEntryId: invoice.journalEntryId,
+          reversalDate: today,
+          memo: `Void invoice ${invoice.invoiceNumber ?? invoice.id.slice(0, 8)}${reason ? " · " + reason : ""}`,
+          sourceType: "invoice_void",
+          sourceId: invoice.id,
+          postedByUserId: ctx.userId,
+        });
+
+        // Rewind any stock movements from the original posting
+        await rewindStockForSource(tx, {
+          tenantId: ctx.tenantId,
+          sourceDocumentType: "invoice",
+          sourceDocumentId: invoice.id,
+          journalEntryId: entryId,
+          postedByUserId: ctx.userId,
+          memo: `Void invoice ${invoice.invoiceNumber ?? invoice.id.slice(0, 8)}`,
+        });
+
+        await tx
+          .update(schema.invoices)
+          .set({
+            status: "void",
+            balanceDueCents: 0,
+            updatedAt: new Date(),
+            notes:
+              reason && invoice.notes
+                ? `${invoice.notes}\n\n[Voided] ${reason}`
+                : reason
+                  ? `[Voided] ${reason}`
+                  : invoice.notes,
+          })
+          .where(eq(schema.invoices.id, invoice.id));
+
+        return { ok: true as const, reversalEntryNumber: entryNumber };
+      }).catch((err: Error & { message: string }) => {
+        if (err.message === "ALREADY_REVERSED") {
+          return { error: "ALREADY_REVERSED" as const };
+        }
+        throw err;
+      });
+
+      if ("error" in result) {
+        const map: Record<string, number> = {
+          NOT_FOUND: 404,
+          NOT_VOIDABLE: 409,
+          ALREADY_VOID: 409,
+          ALREADY_REVERSED: 409,
+          HAS_PAYMENTS: 409,
+          NO_SOURCE_ENTRY: 500,
+        };
+        const messages: Record<string, string> = {
+          HAS_PAYMENTS:
+            "This invoice has payments allocated to it. Reverse the payments first, then void the invoice.",
+          NOT_VOIDABLE: "Only posted invoices with no payments can be voided.",
+          ALREADY_VOID: "This invoice is already void.",
+          ALREADY_REVERSED: "The original journal entry is already reversed.",
+        };
+        return reply
+          .status(map[result.error] ?? 500)
+          .send({ error: { code: result.error, message: messages[result.error] } });
+      }
+      return reply.send(result);
+    },
+  );
 };
