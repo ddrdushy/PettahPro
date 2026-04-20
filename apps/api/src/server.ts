@@ -12,6 +12,7 @@ import { paymentsRoutes } from "./modules/sell/payments.js";
 import { billsRoutes } from "./modules/buy/bills.js";
 import { supplierPaymentsRoutes } from "./modules/buy/supplier-payments.js";
 import { dashboardRoutes } from "./modules/reports/dashboard.js";
+import { trialBalanceRoutes } from "./modules/reports/trial-balance.js";
 
 export async function buildServer(): Promise<FastifyInstance> {
   const server = Fastify({
@@ -50,6 +51,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await server.register(billsRoutes, { prefix: "/bills" });
   await server.register(supplierPaymentsRoutes, { prefix: "/supplier-payments" });
   await server.register(dashboardRoutes, { prefix: "/dashboard" });
+  await server.register(trialBalanceRoutes, { prefix: "/reports/trial-balance" });
 
   server.setErrorHandler((err, req, reply) => {
     req.log.error({ err }, "request failed");

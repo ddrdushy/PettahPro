@@ -12,6 +12,7 @@ import {
   Wallet,
   Banknote,
   UsersRound,
+  FileBarChart,
   Settings,
   type LucideIcon,
 } from "lucide-react";
@@ -47,6 +48,14 @@ const nav: Group[] = [
     title: "Accounting",
     items: [
       { label: "Chart of accounts", href: "/app/coa", icon: BookOpen },
+    ],
+  },
+  {
+    title: "Reports",
+    items: [
+      { label: "Trial balance", href: "/app/reports/trial-balance", icon: FileBarChart },
+      { label: "P&L", href: "/app/reports/profit-loss", icon: FileBarChart, badge: "Soon" },
+      { label: "Balance sheet", href: "/app/reports/balance-sheet", icon: FileBarChart, badge: "Soon" },
     ],
   },
   {

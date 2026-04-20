@@ -106,6 +106,14 @@ export const api = {
 
   dashboard: () => request<Dashboard>("/dashboard"),
 
+  trialBalance: (from?: string, to?: string) => {
+    const params = new URLSearchParams();
+    if (from) params.set("from", from);
+    if (to) params.set("to", to);
+    const q = params.toString();
+    return request<TrialBalance>(`/reports/trial-balance${q ? `?${q}` : ""}`);
+  },
+
   listPayments: () => request<{ payments: PaymentListRow[] }>("/payments"),
   createPayment: (body: CreatePayment) =>
     request<{
@@ -420,6 +428,27 @@ export interface CreateInvoice {
   notes?: string;
   terms?: string;
   lines: CreateInvoiceLine[];
+}
+
+export interface TrialBalanceAccount {
+  accountId: string;
+  code: string;
+  name: string;
+  accountType: "asset" | "liability" | "equity" | "income" | "expense";
+  accountSubtype: string | null;
+  normalSide: "dr" | "cr";
+  debitCents: number;
+  creditCents: number;
+  balanceCents: number;
+}
+
+export interface TrialBalance {
+  accounts: TrialBalanceAccount[];
+  totalDebits: number;
+  totalCredits: number;
+  balanced: boolean;
+  asOfFrom: string | null;
+  asOfTo: string | null;
 }
 
 export interface AgingBucket {
