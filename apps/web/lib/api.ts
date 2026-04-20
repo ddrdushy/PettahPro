@@ -183,6 +183,21 @@ export const api = {
       json: body,
     }),
 
+  statutorySummary: () =>
+    request<{ statutory: StatutoryBalance[] }>("/payroll/statutory-summary"),
+  remitStatutory: (body: {
+    which: "epf" | "etf" | "paye";
+    bankAccountId: string;
+    amountCents: number;
+    paymentDate?: string;
+    reference?: string;
+    memo?: string;
+  }) =>
+    request<{ ok: true; entryId: string; entryNumber: string }>("/payroll/remit", {
+      method: "POST",
+      json: body,
+    }),
+
   listPayments: () => request<{ payments: PaymentListRow[] }>("/payments"),
   createPayment: (body: CreatePayment) =>
     request<{
@@ -659,6 +674,14 @@ export interface ChequeBounceEvent {
   rePresentedAt: string | null;
   reversalJournalEntryId: string | null;
   createdAt: string;
+}
+
+export interface StatutoryBalance {
+  accountId: string;
+  accountCode: string;
+  accountName: string;
+  kind: "epf" | "etf" | "paye";
+  balanceCents: number;
 }
 
 export type PayrollRunStatus = "draft" | "posted" | "paid" | "void";

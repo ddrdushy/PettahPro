@@ -5,7 +5,8 @@ import { Briefcase, Plus } from "lucide-react";
 import { PageHeader } from "@/components/app/page-header";
 import { DataTable, type Column } from "@/components/app/data-table";
 import { formatLKR, formatDate } from "@/lib/format";
-import type { PayrollRun, PayrollRunStatus } from "@/lib/api";
+import type { Account, PayrollRun, PayrollRunStatus, StatutoryBalance } from "@/lib/api";
+import { StatutoryPanel } from "./statutory-panel";
 
 export const metadata: Metadata = { title: "Payroll runs" };
 
@@ -38,18 +39,27 @@ const MONTHS = [
   "December",
 ];
 
-async function fetchRuns(): Promise<PayrollRun[]> {
-  const res = await fetch(`${process.env.INTERNAL_API_URL ?? "http://api:4000"}/payroll-runs`, {
-    headers: { cookie: cookies().toString() },
-    cache: "no-store",
-  });
-  if (!res.ok) return [];
-  const data = (await res.json()) as { runs: PayrollRun[] };
-  return data.runs;
+async function fetchAll() {
+  const base = process.env.INTERNAL_API_URL ?? "http://api:4000";
+  const cookieHeader = cookies().toString();
+  const [runsRes, statutoryRes, coaRes] = await Promise.all([
+    fetch(`${base}/payroll-runs`, { headers: { cookie: cookieHeader }, cache: "no-store" }),
+    fetch(`${base}/payroll/statutory-summary`, { headers: { cookie: cookieHeader }, cache: "no-store" }),
+    fetch(`${base}/coa`, { headers: { cookie: cookieHeader }, cache: "no-store" }),
+  ]);
+  const runs = runsRes.ok ? ((await runsRes.json()) as { runs: PayrollRun[] }).runs : [];
+  const statutory = statutoryRes.ok
+    ? ((await statutoryRes.json()) as { statutory: StatutoryBalance[] }).statutory
+    : [];
+  const coa = coaRes.ok ? ((await coaRes.json()) as { accounts: Account[] }).accounts : [];
+  const bankAccounts = coa.filter(
+    (a) => a.accountType === "asset" && (a.accountSubtype === "bank" || a.accountSubtype === "cash"),
+  );
+  return { runs, statutory, bankAccounts };
 }
 
 export default async function PayrollPage() {
-  const runs = await fetchRuns();
+  const { runs, statutory, bankAccounts } = await fetchAll();
 
   const columns: Column<PayrollRun>[] = [
     {
@@ -120,6 +130,8 @@ export default async function PayrollPage() {
       />
 
       <div className="mt-6">
+        <StatutoryPanel balances={statutory} bankAccounts={bankAccounts} />
+
         <DataTable
           rows={runs}
           columns={columns}
