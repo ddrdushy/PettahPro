@@ -14,6 +14,7 @@ import { supplierPaymentsRoutes } from "./modules/buy/supplier-payments.js";
 import { stockRoutes } from "./modules/inventory/stock.js";
 import { chequesRoutes } from "./modules/cheques/routes.js";
 import { employeesRoutes } from "./modules/hr/employees.js";
+import { payrollRunsRoutes } from "./modules/hr/payroll-runs.js";
 import { dashboardRoutes } from "./modules/reports/dashboard.js";
 import { trialBalanceRoutes } from "./modules/reports/trial-balance.js";
 import { profitLossRoutes } from "./modules/reports/profit-loss.js";
@@ -58,6 +59,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await server.register(stockRoutes, { prefix: "/stock" });
   await server.register(chequesRoutes, { prefix: "/cheques" });
   await server.register(employeesRoutes, { prefix: "/employees" });
+  await server.register(payrollRunsRoutes, { prefix: "/payroll-runs" });
   await server.register(dashboardRoutes, { prefix: "/dashboard" });
   await server.register(trialBalanceRoutes, { prefix: "/reports/trial-balance" });
   await server.register(profitLossRoutes, { prefix: "/reports/profit-loss" });

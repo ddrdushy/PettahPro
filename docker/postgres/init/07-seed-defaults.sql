@@ -65,6 +65,14 @@ BEGIN
     VALUES (p_tenant_id, '2100', 'VAT payable',             'liability', 'tax',       'cr', true) RETURNING id INTO v_vat_pay_id;
   INSERT INTO chart_of_accounts (tenant_id, code, name, account_type, account_subtype, normal_side, is_system)
     VALUES (p_tenant_id, '2110', 'WHT payable',             'liability', 'tax',       'cr', true) RETURNING id INTO v_wht_pay_id;
+  INSERT INTO chart_of_accounts (tenant_id, code, name, account_type, account_subtype, normal_side, is_system)
+    VALUES (p_tenant_id, '2200', 'EPF payable',             'liability', 'epf',       'cr', true);
+  INSERT INTO chart_of_accounts (tenant_id, code, name, account_type, account_subtype, normal_side, is_system)
+    VALUES (p_tenant_id, '2210', 'ETF payable',             'liability', 'etf',       'cr', true);
+  INSERT INTO chart_of_accounts (tenant_id, code, name, account_type, account_subtype, normal_side, is_system)
+    VALUES (p_tenant_id, '2220', 'PAYE payable',            'liability', 'paye',      'cr', true);
+  INSERT INTO chart_of_accounts (tenant_id, code, name, account_type, account_subtype, normal_side, is_system)
+    VALUES (p_tenant_id, '2230', 'Salaries payable',        'liability', 'salaries',  'cr', true);
 
   -- Equity (3xxx)
   INSERT INTO chart_of_accounts (tenant_id, code, name, account_type, account_subtype, normal_side, is_system)
@@ -85,6 +93,10 @@ BEGIN
     VALUES (p_tenant_id, '5000', 'Cost of goods sold',      'expense',   'cogs',      'dr', true) RETURNING id INTO v_cogs_id;
   INSERT INTO chart_of_accounts (tenant_id, code, name, account_type, account_subtype, normal_side, is_system)
     VALUES (p_tenant_id, '6000', 'Salaries & wages',        'expense',   'payroll',   'dr', true) RETURNING id INTO v_salary_id;
+  INSERT INTO chart_of_accounts (tenant_id, code, name, account_type, account_subtype, normal_side, is_system)
+    VALUES (p_tenant_id, '6001', 'EPF — employer contribution', 'expense', 'payroll_epf', 'dr', true);
+  INSERT INTO chart_of_accounts (tenant_id, code, name, account_type, account_subtype, normal_side, is_system)
+    VALUES (p_tenant_id, '6002', 'ETF — employer contribution', 'expense', 'payroll_etf', 'dr', true);
   INSERT INTO chart_of_accounts (tenant_id, code, name, account_type, account_subtype, normal_side, is_system)
     VALUES (p_tenant_id, '6100', 'Rent',                    'expense',   'rent',      'dr', true) RETURNING id INTO v_rent_id;
   INSERT INTO chart_of_accounts (tenant_id, code, name, account_type, account_subtype, normal_side, is_system)
@@ -122,7 +134,8 @@ BEGIN
       (p_tenant_id, 'credit_note',   'CN',  'year', 4),
       (p_tenant_id, 'quotation',     'QUO', 'year', 4),
       (p_tenant_id, 'purchase_order','PO',  'year', 4),
-      (p_tenant_id, 'grn',           'GRN', 'year', 4)
+      (p_tenant_id, 'grn',           'GRN', 'year', 4),
+      (p_tenant_id, 'payroll',       'PR',  'year', 4)
     ON CONFLICT (tenant_id, sequence_name) DO NOTHING;
   END IF;
 END;

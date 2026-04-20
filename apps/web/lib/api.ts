@@ -153,6 +153,22 @@ export const api = {
   createEmployee: (body: CreateEmployee) =>
     request<{ employee: Employee }>("/employees", { method: "POST", json: body }),
 
+  listPayrollRuns: () => request<{ runs: PayrollRun[] }>("/payroll-runs"),
+  getPayrollRun: (id: string) =>
+    request<{ run: PayrollRun; lines: PayrollRunLine[] }>(`/payroll-runs/${id}`),
+  createPayrollRun: (body: {
+    periodYear: number;
+    periodMonth: number;
+    payDate?: string;
+    notes?: string;
+  }) =>
+    request<{ ok: true; runId: string }>("/payroll-runs", { method: "POST", json: body }),
+  postPayrollRun: (id: string) =>
+    request<{ ok: true; runNumber: string; entryNumber: string }>(
+      `/payroll-runs/${id}/post`,
+      { method: "POST" },
+    ),
+
   listPayments: () => request<{ payments: PaymentListRow[] }>("/payments"),
   createPayment: (body: CreatePayment) =>
     request<{
@@ -629,6 +645,58 @@ export interface ChequeBounceEvent {
   rePresentedAt: string | null;
   reversalJournalEntryId: string | null;
   createdAt: string;
+}
+
+export type PayrollRunStatus = "draft" | "posted" | "paid" | "void";
+
+export interface PayrollRun {
+  id: string;
+  runNumber: string | null;
+  periodYear: number;
+  periodMonth: number;
+  periodStart: string;
+  periodEnd: string;
+  payDate: string;
+  status: PayrollRunStatus;
+  employeeCount: number;
+  grossCents: number;
+  epfEmployeeCents: number;
+  epfEmployerCents: number;
+  etfEmployerCents: number;
+  payeCents: number;
+  netPayCents: number;
+  journalEntryId: string | null;
+  postedAt: string | null;
+  notes: string | null;
+  createdAt: string;
+}
+
+export interface PayrollRunLine {
+  id: string;
+  runId: string;
+  employeeId: string;
+  employeeFullName: string;
+  employeeCode: string | null;
+  nic: string | null;
+  epfNumber: string | null;
+  etfNumber: string | null;
+  designation: string | null;
+  department: string | null;
+  basicSalaryCents: number;
+  grossCents: number;
+  epfEmployeeCents: number;
+  payeCents: number;
+  otherDeductionsCents: number;
+  totalDeductionsCents: number;
+  epfEmployerCents: number;
+  etfEmployerCents: number;
+  netPayCents: number;
+  wasEpfEligible: boolean;
+  wasEtfEligible: boolean;
+  wasPayeApplicable: boolean;
+  bankName: string | null;
+  bankAccountNo: string | null;
+  bankBranch: string | null;
 }
 
 export type EmploymentType =

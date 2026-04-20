@@ -62,7 +62,7 @@ const nav: Group[] = [
     title: "HR",
     items: [
       { label: "Employees", href: "/app/employees", icon: UserRound },
-      { label: "Payroll runs", href: "/app/payroll", icon: Briefcase, badge: "Soon" },
+      { label: "Payroll runs", href: "/app/payroll", icon: Briefcase },
     ],
   },
   {
