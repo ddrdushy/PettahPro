@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { cookies } from "next/headers";
 import { notFound } from "next/navigation";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Download } from "lucide-react";
 import type { PayrollRun, PayrollRunLine, PayrollRunStatus } from "@/lib/api";
 import { PageHeader } from "@/components/app/page-header";
 import { formatLKR, formatDate } from "@/lib/format";
@@ -107,6 +107,7 @@ export default async function PayrollRunDetailPage({ params }: { params: { id: s
                 <th className="px-4 py-3 text-right">EPF 8%</th>
                 <th className="px-4 py-3 text-right">PAYE</th>
                 <th className="px-4 py-3 text-right">Net</th>
+                <th className="w-24 px-4 py-3 text-center">Payslip</th>
               </tr>
             </thead>
             <tbody className="divide-y-hairline divide-border">
@@ -136,6 +137,18 @@ export default async function PayrollRunDetailPage({ params }: { params: { id: s
                   <td className="px-4 py-3 text-right tabular-nums font-medium text-charcoal">
                     {formatLKR(l.netPayCents)}
                   </td>
+                  <td className="px-4 py-3 text-center">
+                    <a
+                      href={`/app/payroll/${run.id}/payslips/${l.id}/pdf`}
+                      target="_blank"
+                      rel="noopener"
+                      className="inline-flex items-center gap-1 rounded-md border-hairline border-border bg-surface-elevated px-2.5 py-1 text-caption text-charcoal transition-colors hover:border-charcoal"
+                      aria-label={`Download payslip for ${l.employeeFullName}`}
+                    >
+                      <Download className="h-3 w-3" aria-hidden />
+                      PDF
+                    </a>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -156,6 +169,7 @@ export default async function PayrollRunDetailPage({ params }: { params: { id: s
                 <td className="px-4 py-3 text-right tabular-nums font-medium text-charcoal">
                   {formatLKR(run.netPayCents)}
                 </td>
+                <td className="px-4 py-3" />
               </tr>
             </tfoot>
           </table>
