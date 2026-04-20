@@ -145,6 +145,14 @@ export const api = {
   stockLedger: (itemId: string) =>
     request<{ movements: StockLedgerMovement[] }>(`/stock/ledger?itemId=${itemId}`),
 
+  listEmployees: (q?: string) =>
+    request<{ employees: EmployeeListRow[] }>(
+      `/employees${q ? `?q=${encodeURIComponent(q)}` : ""}`,
+    ),
+  getEmployee: (id: string) => request<{ employee: Employee }>(`/employees/${id}`),
+  createEmployee: (body: CreateEmployee) =>
+    request<{ employee: Employee }>("/employees", { method: "POST", json: body }),
+
   listPayments: () => request<{ payments: PaymentListRow[] }>("/payments"),
   createPayment: (body: CreatePayment) =>
     request<{
@@ -621,6 +629,101 @@ export interface ChequeBounceEvent {
   rePresentedAt: string | null;
   reversalJournalEntryId: string | null;
   createdAt: string;
+}
+
+export type EmploymentType =
+  | "permanent"
+  | "contract"
+  | "casual"
+  | "probation"
+  | "intern"
+  | "consultant";
+
+export type EmployeeStatus =
+  | "active"
+  | "on_probation"
+  | "confirmed"
+  | "suspended"
+  | "resigned"
+  | "terminated"
+  | "retired"
+  | "deceased";
+
+export interface EmployeeListRow {
+  id: string;
+  employeeCode: string | null;
+  firstName: string;
+  lastName: string;
+  fullName: string;
+  designation: string | null;
+  department: string | null;
+  hireDate: string;
+  employmentType: EmploymentType;
+  status: EmployeeStatus;
+  nic: string | null;
+  personalEmail: string | null;
+  mobilePhone: string | null;
+  basicSalaryCents: number;
+  currency: string;
+  epfEligible: boolean;
+  etfEligible: boolean;
+  payeApplicable: boolean;
+}
+
+export interface Employee extends EmployeeListRow {
+  dateOfBirth: string | null;
+  gender: string | null;
+  whatsapp: string | null;
+  addressLine1: string | null;
+  city: string | null;
+  postalCode: string | null;
+  epfNumber: string | null;
+  etfNumber: string | null;
+  tin: string | null;
+  branchId: string | null;
+  wageType: string;
+  bankName: string | null;
+  bankAccountNo: string | null;
+  bankBranch: string | null;
+  statusChangedAt: string;
+  statusChangeReason: string | null;
+  exitDate: string | null;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateEmployee {
+  firstName: string;
+  lastName: string;
+  employeeCode?: string;
+  dateOfBirth?: string;
+  gender?: string;
+  personalEmail?: string;
+  mobilePhone?: string;
+  whatsapp?: string;
+  addressLine1?: string;
+  city?: string;
+  postalCode?: string;
+  nic?: string;
+  epfNumber?: string;
+  etfNumber?: string;
+  tin?: string;
+  hireDate: string;
+  employmentType?: EmploymentType;
+  designation?: string;
+  department?: string;
+  branchId?: string;
+  wageType?: string;
+  basicSalaryCents?: number;
+  epfEligible?: boolean;
+  etfEligible?: boolean;
+  payeApplicable?: boolean;
+  bankName?: string;
+  bankAccountNo?: string;
+  bankBranch?: string;
+  status?: EmployeeStatus;
+  notes?: string;
 }
 
 export interface StockBalanceRow {

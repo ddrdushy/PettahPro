@@ -14,6 +14,8 @@ import {
   Banknote,
   FileSignature,
   UsersRound,
+  UserRound,
+  Briefcase,
   FileBarChart,
   Settings,
   type LucideIcon,
@@ -54,6 +56,13 @@ const nav: Group[] = [
     items: [
       { label: "Chart of accounts", href: "/app/coa", icon: BookOpen },
       { label: "Cheques", href: "/app/cheques", icon: FileSignature },
+    ],
+  },
+  {
+    title: "HR",
+    items: [
+      { label: "Employees", href: "/app/employees", icon: UserRound },
+      { label: "Payroll runs", href: "/app/payroll", icon: Briefcase, badge: "Soon" },
     ],
   },
   {
