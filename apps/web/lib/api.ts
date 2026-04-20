@@ -168,6 +168,20 @@ export const api = {
       `/payroll-runs/${id}/post`,
       { method: "POST" },
     ),
+  payPayrollRun: (
+    id: string,
+    body: {
+      bankAccountId: string;
+      paymentDate?: string;
+      method?: "bank_transfer" | "slips" | "cash" | "cheque" | "other";
+      reference?: string;
+      memo?: string;
+    },
+  ) =>
+    request<{ ok: true; entryNumber: string }>(`/payroll-runs/${id}/pay`, {
+      method: "POST",
+      json: body,
+    }),
 
   listPayments: () => request<{ payments: PaymentListRow[] }>("/payments"),
   createPayment: (body: CreatePayment) =>

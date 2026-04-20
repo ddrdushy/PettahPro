@@ -3,10 +3,11 @@ import Link from "next/link";
 import { cookies } from "next/headers";
 import { notFound } from "next/navigation";
 import { ArrowLeft, Download } from "lucide-react";
-import type { PayrollRun, PayrollRunLine, PayrollRunStatus } from "@/lib/api";
+import type { Account, PayrollRun, PayrollRunLine, PayrollRunStatus } from "@/lib/api";
 import { PageHeader } from "@/components/app/page-header";
 import { formatLKR, formatDate } from "@/lib/format";
 import { PostPayrollButton } from "./post-button";
+import { PayRunButton } from "./pay-button";
 
 export const metadata: Metadata = { title: "Payroll run" };
 
@@ -40,19 +41,26 @@ const statusLabel: Record<PayrollRunStatus, string> = {
 };
 
 async function fetchRun(id: string) {
-  const res = await fetch(`${process.env.INTERNAL_API_URL ?? "http://api:4000"}/payroll-runs/${id}`, {
-    headers: { cookie: cookies().toString() },
-    cache: "no-store",
-  });
-  if (res.status === 404) return null;
-  if (!res.ok) return null;
-  return (await res.json()) as { run: PayrollRun; lines: PayrollRunLine[] };
+  const base = process.env.INTERNAL_API_URL ?? "http://api:4000";
+  const cookieHeader = cookies().toString();
+  const [runRes, coaRes] = await Promise.all([
+    fetch(`${base}/payroll-runs/${id}`, { headers: { cookie: cookieHeader }, cache: "no-store" }),
+    fetch(`${base}/coa`, { headers: { cookie: cookieHeader }, cache: "no-store" }),
+  ]);
+  if (runRes.status === 404) return null;
+  if (!runRes.ok) return null;
+  const data = (await runRes.json()) as { run: PayrollRun; lines: PayrollRunLine[] };
+  const coa = coaRes.ok ? ((await coaRes.json()) as { accounts: Account[] }).accounts : [];
+  const bankAccounts = coa.filter(
+    (a) => a.accountType === "asset" && (a.accountSubtype === "bank" || a.accountSubtype === "cash"),
+  );
+  return { ...data, bankAccounts };
 }
 
 export default async function PayrollRunDetailPage({ params }: { params: { id: string } }) {
   const data = await fetchRun(params.id);
   if (!data) notFound();
-  const { run, lines } = data;
+  const { run, lines, bankAccounts } = data;
 
   return (
     <main className="container-p py-10">
@@ -73,6 +81,14 @@ export default async function PayrollRunDetailPage({ params }: { params: { id: s
               {statusLabel[run.status]}
             </span>
             {run.status === "draft" && <PostPayrollButton id={run.id} />}
+            {run.status === "posted" && (
+              <PayRunButton
+                runId={run.id}
+                runNumber={run.runNumber ?? run.id.slice(0, 8)}
+                netPayCents={run.netPayCents}
+                bankAccounts={bankAccounts}
+              />
+            )}
           </div>
         }
       />

@@ -390,4 +390,140 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
     }
     return reply.send(result);
   });
+
+  // POST /payroll-runs/:id/pay — disburse net pay, clearing Salaries payable
+  const PaySchema = z.object({
+    bankAccountId: z.string().uuid(),
+    paymentDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    method: z
+      .enum(["bank_transfer", "slips", "cash", "cheque", "other"])
+      .default("slips"),
+    reference: z.string().max(64).optional().or(z.literal("")),
+    memo: z.string().optional().or(z.literal("")),
+  });
+
+  fastify.post<{ Params: { id: string } }>("/:id/pay", async (req, reply) => {
+    const ctx = requireAuth(req, reply);
+    if (!ctx) return;
+
+    const parsed = PaySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: { code: "INVALID_INPUT", issues: parsed.error.issues },
+      });
+    }
+    const input = parsed.data;
+
+    const result = await withTenant(ctx.tenantId, async (tx) => {
+      const runRows = await tx
+        .select()
+        .from(schema.payrollRuns)
+        .where(
+          and(
+            eq(schema.payrollRuns.tenantId, ctx.tenantId),
+            eq(schema.payrollRuns.id, req.params.id),
+            isNull(schema.payrollRuns.deletedAt),
+          ),
+        )
+        .limit(1);
+      const run = runRows[0];
+      if (!run) return { error: "NOT_FOUND" as const };
+      if (run.status !== "posted") return { error: "NOT_PAYABLE" as const };
+
+      // Verify bank/cash account
+      const bankRows = await tx
+        .select()
+        .from(schema.chartOfAccounts)
+        .where(
+          and(
+            eq(schema.chartOfAccounts.tenantId, ctx.tenantId),
+            eq(schema.chartOfAccounts.id, input.bankAccountId),
+            isNull(schema.chartOfAccounts.deletedAt),
+          ),
+        )
+        .limit(1);
+      const bank = bankRows[0];
+      if (!bank) return { error: "BANK_NOT_FOUND" as const };
+      if (bank.accountType !== "asset" || !["cash", "bank"].includes(bank.accountSubtype ?? "")) {
+        return { error: "INVALID_BANK_ACCOUNT" as const };
+      }
+
+      // Resolve Salaries payable
+      const salariesPayableRows = await tx
+        .select()
+        .from(schema.chartOfAccounts)
+        .where(
+          and(
+            eq(schema.chartOfAccounts.tenantId, ctx.tenantId),
+            eq(schema.chartOfAccounts.accountSubtype, "salaries"),
+            isNull(schema.chartOfAccounts.deletedAt),
+          ),
+        )
+        .limit(1);
+      const salariesPayable = salariesPayableRows[0];
+      if (!salariesPayable) return { error: "NO_SALARIES_PAYABLE_ACCOUNT" as const };
+
+      if (run.netPayCents <= 0) return { error: "NOTHING_TO_PAY" as const };
+
+      const payDate = input.paymentDate ?? new Date().toISOString().slice(0, 10);
+      const refSuffix = input.reference ? ` · ${input.reference}` : "";
+
+      // Journal: DR Salaries payable (full net), CR Bank (full net)
+      const { entryId, entryNumber } = await postJournal(tx, {
+        tenantId: ctx.tenantId,
+        entryDate: payDate,
+        memo: `Payroll ${run.runNumber ?? run.id.slice(0, 8)} disbursement${refSuffix}`,
+        sourceType: "payroll_disbursement",
+        sourceId: run.id,
+        postedByUserId: ctx.userId,
+        lines: [
+          {
+            accountId: salariesPayable.id,
+            drCents: run.netPayCents,
+            description: `Salaries paid · ${run.runNumber ?? ""}`,
+          },
+          {
+            accountId: bank.id,
+            crCents: run.netPayCents,
+            description: `Payroll disbursement · ${input.method}${refSuffix}`,
+          },
+        ],
+      });
+
+      await tx
+        .update(schema.payrollRuns)
+        .set({
+          status: "paid",
+          updatedAt: new Date(),
+          notes:
+            input.memo && run.notes
+              ? `${run.notes}\n\n[Paid] ${input.memo}`
+              : input.memo
+                ? `[Paid] ${input.memo}`
+                : run.notes,
+        })
+        .where(eq(schema.payrollRuns.id, run.id));
+
+      return { ok: true as const, entryNumber };
+    });
+
+    if ("error" in result) {
+      const map: Record<string, number> = {
+        NOT_FOUND: 404,
+        NOT_PAYABLE: 409,
+        BANK_NOT_FOUND: 400,
+        INVALID_BANK_ACCOUNT: 400,
+        NOTHING_TO_PAY: 400,
+        NO_SALARIES_PAYABLE_ACCOUNT: 500,
+      };
+      const messages: Record<string, string> = {
+        NOT_PAYABLE: "Only posted (unpaid) runs can be paid.",
+        INVALID_BANK_ACCOUNT: "Pick a bank or cash account.",
+      };
+      return reply.status(map[result.error] ?? 500).send({
+        error: { code: result.error, message: messages[result.error] },
+      });
+    }
+    return reply.send(result);
+  });
 };
