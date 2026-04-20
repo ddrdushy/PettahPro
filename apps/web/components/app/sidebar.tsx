@@ -34,7 +34,7 @@ const nav: Group[] = [
     title: "Buy",
     items: [
       { label: "Suppliers", href: "/app/suppliers", icon: UsersRound },
-      { label: "Bills", href: "/app/bills", icon: Receipt, badge: "Soon" },
+      { label: "Bills", href: "/app/bills", icon: Receipt },
     ],
   },
   {

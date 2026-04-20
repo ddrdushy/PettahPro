@@ -93,6 +93,17 @@ export const api = {
       { method: "POST" },
     ),
 
+  listBills: () => request<{ bills: BillListRow[] }>("/bills"),
+  getBill: (id: string) =>
+    request<{ bill: BillDetail; lines: BillLine[]; supplier: Supplier | null }>(`/bills/${id}`),
+  createBill: (body: CreateBill) =>
+    request<{ bill: BillDetail }>("/bills", { method: "POST", json: body }),
+  postBill: (id: string) =>
+    request<{ ok: true; internalReference: string; entryNumber: string }>(
+      `/bills/${id}/post`,
+      { method: "POST" },
+    ),
+
   dashboard: () => request<Dashboard>("/dashboard"),
 
   listPayments: () => request<{ payments: PaymentListRow[] }>("/payments"),
@@ -246,6 +257,83 @@ export interface Account {
 }
 
 export type InvoiceStatus = "draft" | "posted" | "partially_paid" | "paid" | "void";
+export type BillStatus = InvoiceStatus;
+
+export interface BillListRow {
+  id: string;
+  internalReference: string | null;
+  supplierBillNumber: string | null;
+  status: BillStatus;
+  billDate: string;
+  dueDate: string;
+  supplierId: string;
+  supplierName: string;
+  currency: string;
+  subtotalCents: number;
+  taxCents: number;
+  totalCents: number;
+  balanceDueCents: number;
+  createdAt: string;
+}
+
+export interface BillDetail {
+  id: string;
+  internalReference: string | null;
+  supplierBillNumber: string | null;
+  supplierId: string;
+  branchId: string | null;
+  status: BillStatus;
+  billDate: string;
+  dueDate: string;
+  currency: string;
+  subtotalCents: number;
+  discountCents: number;
+  taxCents: number;
+  totalCents: number;
+  amountPaidCents: number;
+  balanceDueCents: number;
+  notes: string | null;
+  journalEntryId: string | null;
+  postedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BillLine {
+  id: string;
+  lineNo: number;
+  itemId: string | null;
+  description: string;
+  quantity: string;
+  unitPriceCents: number;
+  lineSubtotalCents: number;
+  discountPctBps: number;
+  discountCents: number;
+  taxCodeId: string | null;
+  taxRateBps: number;
+  taxCents: number;
+  lineTotalCents: number;
+  expenseAccountId: string | null;
+}
+
+export interface CreateBillLine {
+  itemId?: string;
+  description: string;
+  quantity: number;
+  unitPriceCents: number;
+  discountPctBps?: number;
+  taxCodeId?: string;
+  expenseAccountId?: string;
+}
+
+export interface CreateBill {
+  supplierId: string;
+  supplierBillNumber?: string;
+  billDate?: string;
+  dueDate?: string;
+  notes?: string;
+  lines: CreateBillLine[];
+}
 
 export interface InvoiceListRow {
   id: string;

@@ -9,3 +9,4 @@ export * from "./journals.js";
 export * from "./invoices.js";
 export * from "./payments.js";
 export * from "./suppliers.js";
+export * from "./bills.js";
