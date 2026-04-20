@@ -48,6 +48,10 @@ BEGIN
   INSERT INTO chart_of_accounts (tenant_id, code, name, account_type, account_subtype, normal_side, is_system)
     VALUES (p_tenant_id, '1010', 'Bank — primary',          'asset',     'bank',      'dr', true) RETURNING id INTO v_bank_id;
   INSERT INTO chart_of_accounts (tenant_id, code, name, account_type, account_subtype, normal_side, is_system)
+    VALUES (p_tenant_id, '1020', 'Bank — cheques in transit',  'asset',  'bank_transit',  'dr', true);
+  INSERT INTO chart_of_accounts (tenant_id, code, name, account_type, account_subtype, normal_side, is_system)
+    VALUES (p_tenant_id, '1030', 'Bank — cheques in clearing', 'asset',  'bank_clearing', 'dr', true);
+  INSERT INTO chart_of_accounts (tenant_id, code, name, account_type, account_subtype, normal_side, is_system)
     VALUES (p_tenant_id, '1100', 'Accounts receivable',     'asset',     'ar',        'dr', true) RETURNING id INTO v_ar_id;
   INSERT INTO chart_of_accounts (tenant_id, code, name, account_type, account_subtype, normal_side, is_system)
     VALUES (p_tenant_id, '1200', 'Inventory',               'asset',     'inventory', 'dr', true) RETURNING id INTO v_inv_id;
@@ -85,6 +89,8 @@ BEGIN
     VALUES (p_tenant_id, '6100', 'Rent',                    'expense',   'rent',      'dr', true) RETURNING id INTO v_rent_id;
   INSERT INTO chart_of_accounts (tenant_id, code, name, account_type, account_subtype, normal_side, is_system)
     VALUES (p_tenant_id, '6200', 'Utilities',               'expense',   'utilities', 'dr', true) RETURNING id INTO v_util_id;
+  INSERT INTO chart_of_accounts (tenant_id, code, name, account_type, account_subtype, normal_side, is_system)
+    VALUES (p_tenant_id, '6300', 'Bank charges',            'expense',   'bank_fees', 'dr', true);
   INSERT INTO chart_of_accounts (tenant_id, code, name, account_type, account_subtype, normal_side, is_system)
     VALUES (p_tenant_id, '6900', 'Other operating expenses','expense',   'other',     'dr', true) RETURNING id INTO v_other_exp_id;
 

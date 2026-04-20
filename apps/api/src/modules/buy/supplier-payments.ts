@@ -4,6 +4,8 @@ import { z } from "zod";
 import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
 import { postJournal } from "../accounting/journal-posting.js";
+import { resolveChequeGLAccounts } from "../cheques/accounts.js";
+import { createChequeFromPayment } from "../cheques/create.js";
 
 const METHOD_VALUES = ["cash", "bank_transfer", "cheque", "slips", "other"] as const;
 
@@ -158,15 +160,27 @@ export const supplierPaymentsRoutes: FastifyPluginAsync = async (fastify) => {
       const ap = apRows[0];
       if (!ap) return { error: "NO_AP_ACCOUNT" as const };
 
+      // Cheques go to Bank-in-Transit first; money stays in Bank until cleared.
+      let creditAccountId = bank.id;
+      if (input.method === "cheque") {
+        const { bankTransitAccountId } = await resolveChequeGLAccounts(tx, ctx.tenantId);
+        if (!bankTransitAccountId) return { error: "NO_BANK_TRANSIT_ACCOUNT" as const };
+        if (!input.chequeNumber) return { error: "CHEQUE_NUMBER_REQUIRED" as const };
+        creditAccountId = bankTransitAccountId;
+      }
+
       const [{ number: paymentNumber }] = (await tx.execute(
         sql`SELECT next_document_number('payment') AS number`,
       )) as unknown as Array<{ number: string }>;
 
-      // Journal: DR AP, CR Bank
+      // Journal: DR AP, CR Bank (or Bank-in-Transit for cheques)
       const { entryId, entryNumber } = await postJournal(tx, {
         tenantId: ctx.tenantId,
         entryDate: input.paymentDate ?? new Date().toISOString().slice(0, 10),
-        memo: `Payment ${paymentNumber} to ${supplier.name}`,
+        memo:
+          input.method === "cheque"
+            ? `Payment ${paymentNumber} to ${supplier.name} (cheque ${input.chequeNumber})`
+            : `Payment ${paymentNumber} to ${supplier.name}`,
         sourceType: "supplier_payment",
         postedByUserId: ctx.userId,
         lines: [
@@ -177,9 +191,12 @@ export const supplierPaymentsRoutes: FastifyPluginAsync = async (fastify) => {
             supplierId: supplier.id,
           },
           {
-            accountId: bank.id,
+            accountId: creditAccountId,
             crCents: input.amountCents,
-            description: `Payment sent · ${paymentNumber}`,
+            description:
+              input.method === "cheque"
+                ? `Cheque in transit · ${paymentNumber}`
+                : `Payment sent · ${paymentNumber}`,
             supplierId: supplier.id,
           },
         ],
@@ -222,6 +239,24 @@ export const supplierPaymentsRoutes: FastifyPluginAsync = async (fastify) => {
         })),
       );
 
+      if (input.method === "cheque") {
+        await createChequeFromPayment(tx, {
+          tenantId: ctx.tenantId,
+          direction: "issued",
+          chequeNumber: input.chequeNumber!,
+          chequeDate: input.chequeDate ?? input.paymentDate ?? new Date().toISOString().slice(0, 10),
+          amountCents: input.amountCents,
+          currency: supplier.currency ?? "LKR",
+          supplierId: supplier.id,
+          payeeName: supplier.name,
+          bankAccountId: bank.id,
+          sourcePaymentId: payment.id,
+          journalEntryId: entryId,
+          createdByUserId: ctx.userId,
+          memo: input.memo ?? null,
+        });
+      }
+
       for (const a of input.allocations) {
         const bill = billById.get(a.billId);
         if (!bill) continue;
@@ -253,6 +288,8 @@ export const supplierPaymentsRoutes: FastifyPluginAsync = async (fastify) => {
         BILL_NOT_PAYABLE: 409,
         ALLOCATION_EXCEEDS_BALANCE: 400,
         NO_AP_ACCOUNT: 500,
+        NO_BANK_TRANSIT_ACCOUNT: 500,
+        CHEQUE_NUMBER_REQUIRED: 400,
       };
       return reply.status(map[result.error] ?? 500).send({ error: { code: result.error } });
     }

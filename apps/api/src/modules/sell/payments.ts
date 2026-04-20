@@ -4,6 +4,8 @@ import { z } from "zod";
 import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
 import { postJournal } from "../accounting/journal-posting.js";
+import { resolveChequeGLAccounts } from "../cheques/accounts.js";
+import { createChequeFromPayment } from "../cheques/create.js";
 
 const METHOD_VALUES = [
   "cash",
@@ -177,23 +179,41 @@ export const paymentsRoutes: FastifyPluginAsync = async (fastify) => {
       const ar = arRows[0];
       if (!ar) return { error: "NO_AR_ACCOUNT" as const };
 
+      // For cheques, the immediate debit is Bank-in-Clearing, not the final
+      // bank account — money doesn't move until the cheque clears.
+      let debitAccountId = bank.id;
+      let { bankClearingAccountId } = { bankClearingAccountId: null as string | null };
+      if (input.method === "cheque") {
+        const resolved = await resolveChequeGLAccounts(tx, ctx.tenantId);
+        bankClearingAccountId = resolved.bankClearingAccountId;
+        if (!bankClearingAccountId) return { error: "NO_BANK_CLEARING_ACCOUNT" as const };
+        if (!input.reference) return { error: "CHEQUE_NUMBER_REQUIRED" as const };
+        debitAccountId = bankClearingAccountId;
+      }
+
       // Allocate payment number
       const [{ number: paymentNumber }] = (await tx.execute(
         sql`SELECT next_document_number('payment') AS number`,
       )) as unknown as Array<{ number: string }>;
 
-      // Post journal: DR Bank, CR AR
+      // Post journal: DR Bank (or Clearing for cheque), CR AR
       const { entryId, entryNumber } = await postJournal(tx, {
         tenantId: ctx.tenantId,
         entryDate: input.paymentDate ?? new Date().toISOString().slice(0, 10),
-        memo: `Payment ${paymentNumber} from ${customer.name}`,
+        memo:
+          input.method === "cheque"
+            ? `Payment ${paymentNumber} from ${customer.name} (cheque ${input.reference})`
+            : `Payment ${paymentNumber} from ${customer.name}`,
         sourceType: "customer_payment",
         postedByUserId: ctx.userId,
         lines: [
           {
-            accountId: bank.id,
+            accountId: debitAccountId,
             drCents: input.amountCents,
-            description: `Payment received · ${paymentNumber}`,
+            description:
+              input.method === "cheque"
+                ? `Cheque in clearing · ${paymentNumber}`
+                : `Payment received · ${paymentNumber}`,
             customerId: customer.id,
           },
           {
@@ -244,6 +264,24 @@ export const paymentsRoutes: FastifyPluginAsync = async (fastify) => {
         })),
       );
 
+      // Record the cheque artifact for lifecycle tracking
+      if (input.method === "cheque") {
+        await createChequeFromPayment(tx, {
+          tenantId: ctx.tenantId,
+          direction: "received",
+          chequeNumber: input.reference!,
+          chequeDate: input.chequeDate ?? input.paymentDate ?? new Date().toISOString().slice(0, 10),
+          amountCents: input.amountCents,
+          currency: customer.currency ?? "LKR",
+          customerId: customer.id,
+          bankAccountId: bank.id,
+          sourceReceiptId: payment.id,
+          journalEntryId: entryId,
+          createdByUserId: ctx.userId,
+          memo: input.memo ?? null,
+        });
+      }
+
       // Update each invoice's amount_paid + balance + status
       for (const a of input.allocations) {
         const inv = invById.get(a.invoiceId);
@@ -276,6 +314,8 @@ export const paymentsRoutes: FastifyPluginAsync = async (fastify) => {
         INVOICE_NOT_POSTABLE: 409,
         ALLOCATION_EXCEEDS_BALANCE: 400,
         NO_AR_ACCOUNT: 500,
+        NO_BANK_CLEARING_ACCOUNT: 500,
+        CHEQUE_NUMBER_REQUIRED: 400,
       };
       return reply.status(map[result.error] ?? 500).send({ error: { code: result.error } });
     }

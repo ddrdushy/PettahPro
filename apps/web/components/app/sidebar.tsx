@@ -12,6 +12,7 @@ import {
   BookOpen,
   Wallet,
   Banknote,
+  FileSignature,
   UsersRound,
   FileBarChart,
   Settings,
@@ -52,6 +53,7 @@ const nav: Group[] = [
     title: "Accounting",
     items: [
       { label: "Chart of accounts", href: "/app/coa", icon: BookOpen },
+      { label: "Cheques", href: "/app/cheques", icon: FileSignature },
     ],
   },
   {

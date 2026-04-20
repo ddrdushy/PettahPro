@@ -12,3 +12,4 @@ export * from "./suppliers.js";
 export * from "./bills.js";
 export * from "./supplier-payments.js";
 export * from "./stock.js";
+export * from "./cheques.js";

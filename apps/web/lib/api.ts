@@ -151,6 +151,33 @@ export const api = {
       paymentNumber: string;
       entryNumber: string;
     }>("/supplier-payments", { method: "POST", json: body }),
+
+  listCheques: () => request<{ cheques: ChequeListRow[] }>("/cheques"),
+  getCheque: (id: string) =>
+    request<{
+      cheque: Cheque;
+      events: ChequeBounceEvent[];
+      party: { id: string; name: string } | null;
+      bankAccount: { code: string; name: string } | null;
+    }>(`/cheques/${id}`),
+  clearCheque: (id: string, clearedOn?: string) =>
+    request<{ ok: true; entryNumber: string }>(`/cheques/${id}/clear`, {
+      method: "POST",
+      json: clearedOn ? { clearedOn } : {},
+    }),
+  bounceCheque: (
+    id: string,
+    body: {
+      reasonCode: string;
+      reasonDetails?: string;
+      bankChargesCents?: number;
+      bouncedOn?: string;
+    },
+  ) =>
+    request<{ ok: true; entryNumber: string; bounceNumber: number }>(
+      `/cheques/${id}/bounce`,
+      { method: "POST", json: body },
+    ),
 };
 
 export interface User {
@@ -447,6 +474,76 @@ export interface CreateInvoice {
   notes?: string;
   terms?: string;
   lines: CreateInvoiceLine[];
+}
+
+export type ChequeStatus =
+  | "drafted"
+  | "issued"
+  | "presented"
+  | "cleared"
+  | "bounced"
+  | "cancelled"
+  | "stale"
+  | "reissued"
+  | "replaced"
+  | "received"
+  | "deposited"
+  | "in_clearing"
+  | "returned_to_customer";
+
+export interface Cheque {
+  id: string;
+  direction: "received" | "issued";
+  status: ChequeStatus;
+  chequeNumber: string;
+  chequeDate: string;
+  amountCents: number;
+  currency: string;
+  customerId: string | null;
+  supplierId: string | null;
+  otherPartyName: string | null;
+  payeeName: string | null;
+  bankAccountId: string | null;
+  draweeBankName: string | null;
+  draweeBranchName: string | null;
+  draweeAccountNumber: string | null;
+  sourcePaymentId: string | null;
+  sourceReceiptId: string | null;
+  issuedAt: string | null;
+  handedOverAt: string | null;
+  depositedAt: string | null;
+  presentedAt: string | null;
+  clearedAt: string | null;
+  bouncedAt: string | null;
+  cancelledAt: string | null;
+  staleAt: string | null;
+  bounceCount: number;
+  lastBounceReason: string | null;
+  legalActionInitiated: boolean;
+  legalActionInitiatedAt: string | null;
+  legalCaseReference: string | null;
+  createdAt: string;
+  updatedAt: string;
+  memo: string | null;
+}
+
+export type ChequeListRow = Cheque & { partyName: string };
+
+export interface ChequeBounceEvent {
+  id: string;
+  chequeId: string;
+  bounceNumber: number;
+  bouncedAt: string;
+  reasonCode: string;
+  reasonDetails: string | null;
+  bankChargesCents: number;
+  bankChargesAccountId: string | null;
+  customerNotifiedAt: string | null;
+  notificationChannel: string | null;
+  rePresented: boolean;
+  rePresentedAt: string | null;
+  reversalJournalEntryId: string | null;
+  createdAt: string;
 }
 
 export interface StockBalanceRow {
