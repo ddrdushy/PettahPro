@@ -402,6 +402,21 @@ export const api = {
   reconcileBankImport: (id: string) =>
     request<{ ok: true }>(`/bank-reconciliation/imports/${id}/reconcile`, { method: "POST" }),
 
+  getOpeningBalance: () => request<OpeningBalanceState>("/opening-balance"),
+  postOpeningBalance: (body: {
+    asOfDate: string;
+    lines: Array<{
+      accountCode: string;
+      drCents?: number;
+      crCents?: number;
+      description?: string;
+    }>;
+  }) =>
+    request<{ ok: true; entryId: string; entryNumber: string }>("/opening-balance", {
+      method: "POST",
+      json: body,
+    }),
+
   whtSummary: () => request<WhtSummary>("/wht"),
   remitWht: (body: {
     bankAccountId: string;
@@ -2514,6 +2529,18 @@ export type StockRelieveOn = "invoice" | "delivery_note";
 export interface TenantSettings {
   salaryDaysPerMonth: number;
   stockRelieveOn: StockRelieveOn;
+}
+
+export interface OpeningBalanceState {
+  posted: boolean;
+  entry: {
+    id: string;
+    entryNumber: string | null;
+    entryDate: string;
+    lineCount: number;
+    totalDrCents: number;
+    totalCrCents: number;
+  } | null;
 }
 
 export interface WhtPerMonth {

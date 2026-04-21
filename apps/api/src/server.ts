@@ -14,6 +14,7 @@ import { journalEntriesRoutes } from "./modules/accounting/journal-entries.js";
 import { fixedAssetsRoutes } from "./modules/accounting/fixed-assets.js";
 import { periodsRoutes } from "./modules/accounting/periods.js";
 import { whtRoutes } from "./modules/accounting/wht.js";
+import { openingBalanceRoutes } from "./modules/accounting/opening-balance.js";
 import { bankReconciliationRoutes } from "./modules/accounting/bank-reconciliation.js";
 import { invoicesRoutes } from "./modules/sell/invoices.js";
 import { recurringInvoicesRoutes } from "./modules/sell/recurring-invoices.js";
@@ -92,6 +93,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await server.register(fixedAssetsRoutes, { prefix: "/fixed-assets" });
   await server.register(periodsRoutes, { prefix: "/periods" });
   await server.register(whtRoutes, { prefix: "/wht" });
+  await server.register(openingBalanceRoutes, { prefix: "/opening-balance" });
   await server.register(bankReconciliationRoutes, { prefix: "/bank-reconciliation" });
   await server.register(invoicesRoutes, { prefix: "/invoices" });
   await server.register(recurringInvoicesRoutes, { prefix: "/recurring-invoices" });
