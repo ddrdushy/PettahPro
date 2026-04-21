@@ -1,5 +1,5 @@
 import type { FastifyPluginAsync } from "fastify";
-import { and, eq, desc, inArray, asc } from "drizzle-orm";
+import { and, eq, desc, inArray, asc, sql } from "drizzle-orm";
 import { z } from "zod";
 import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
@@ -387,6 +387,27 @@ export const chequesRoutes: FastifyPluginAsync = async (fastify) => {
               updatedAt: new Date(),
             })
             .where(eq(schema.invoices.id, inv.id));
+        }
+        // 2-bounce auto-flag: if this customer now has ≥ 2 bounced cheques
+        // against this tenant, park them on credit hold until a human
+        // reviews. Mirrors the SL SME practice of being cautious with
+        // serial bouncers — and keeps our exposure down.
+        if (cheque.customerId) {
+          const bounceRows = (await tx.execute(sql`
+            SELECT customer_bounce_count(${cheque.customerId}::uuid)::int AS bounce_count
+          `)) as unknown as Array<{ bounce_count: number }>;
+          const bounceCount = bounceRows[0]?.bounce_count ?? 0;
+          if (bounceCount >= 2) {
+            await tx
+              .update(schema.customers)
+              .set({
+                creditHold: true,
+                creditHoldReason: `Auto-flag: ${bounceCount} bounced cheques`,
+                creditHoldAt: new Date(),
+                updatedAt: new Date(),
+              })
+              .where(eq(schema.customers.id, cheque.customerId));
+          }
         }
       } else if (cheque.direction === "issued" && cheque.sourcePaymentId) {
         const allocs = await tx
