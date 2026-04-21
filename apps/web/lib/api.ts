@@ -157,6 +157,23 @@ export const api = {
   duplicateInvoice: (id: string) =>
     request<{ invoice: InvoiceDetail }>(`/invoices/${id}/duplicate`, { method: "POST" }),
 
+  listSalesOrders: () => request<{ salesOrders: SalesOrderListRow[] }>("/sales-orders"),
+  getSalesOrder: (id: string) =>
+    request<{ salesOrder: SalesOrderDetail; lines: SalesOrderLine[]; customer: Customer | null }>(
+      `/sales-orders/${id}`,
+    ),
+  createSalesOrder: (body: CreateSalesOrder) =>
+    request<{ salesOrder: SalesOrderDetail }>("/sales-orders", { method: "POST", json: body }),
+  confirmSalesOrder: (id: string) =>
+    request<{ ok: true; soNumber: string }>(`/sales-orders/${id}/confirm`, { method: "POST" }),
+  cancelSalesOrder: (id: string, reason?: string) =>
+    request<{ ok: true }>(`/sales-orders/${id}/cancel`, {
+      method: "POST",
+      json: reason ? { reason } : {},
+    }),
+  convertSalesOrder: (id: string) =>
+    request<{ ok: true; invoiceId: string }>(`/sales-orders/${id}/convert`, { method: "POST" }),
+
   listQuotations: () => request<{ quotations: QuotationListRow[] }>("/quotations"),
   getQuotation: (id: string) =>
     request<{ quotation: QuotationDetail; lines: QuotationLine[]; customer: Customer | null }>(
@@ -207,6 +224,28 @@ export const api = {
       method: "POST",
       json: reason ? { reason } : {},
     }),
+
+  listPurchaseOrders: () => request<{ purchaseOrders: PurchaseOrderListRow[] }>("/purchase-orders"),
+  getPurchaseOrder: (id: string) =>
+    request<{ purchaseOrder: PurchaseOrderDetail; lines: PurchaseOrderLine[]; supplier: Supplier | null }>(
+      `/purchase-orders/${id}`,
+    ),
+  createPurchaseOrder: (body: CreatePurchaseOrder) =>
+    request<{ purchaseOrder: PurchaseOrderDetail }>("/purchase-orders", { method: "POST", json: body }),
+  sendPurchaseOrder: (id: string) =>
+    request<{ ok: true; poNumber: string }>(`/purchase-orders/${id}/send`, { method: "POST" }),
+  acknowledgePurchaseOrder: (id: string, supplierReference?: string) =>
+    request<{ ok: true }>(`/purchase-orders/${id}/acknowledge`, {
+      method: "POST",
+      json: supplierReference ? { supplierReference } : {},
+    }),
+  cancelPurchaseOrder: (id: string, reason?: string) =>
+    request<{ ok: true }>(`/purchase-orders/${id}/cancel`, {
+      method: "POST",
+      json: reason ? { reason } : {},
+    }),
+  convertPurchaseOrder: (id: string) =>
+    request<{ ok: true; billId: string }>(`/purchase-orders/${id}/convert`, { method: "POST" }),
 
   listDebitNotes: () => request<{ debitNotes: DebitNoteListRow[] }>("/debit-notes"),
   getDebitNote: (id: string) =>
@@ -882,6 +921,91 @@ export interface CreateBill {
   lines: CreateBillLine[];
 }
 
+export type PurchaseOrderStatus =
+  | "draft"
+  | "sent"
+  | "acknowledged"
+  | "cancelled"
+  | "converted";
+
+export interface PurchaseOrderListRow {
+  id: string;
+  poNumber: string | null;
+  status: PurchaseOrderStatus;
+  orderDate: string;
+  expectedDeliveryDate: string | null;
+  supplierId: string;
+  supplierName: string;
+  currency: string;
+  totalCents: number;
+  convertedBillId: string | null;
+  createdAt: string;
+}
+
+export interface PurchaseOrderDetail {
+  id: string;
+  poNumber: string | null;
+  supplierId: string;
+  branchId: string | null;
+  status: PurchaseOrderStatus;
+  orderDate: string;
+  expectedDeliveryDate: string | null;
+  currency: string;
+  subtotalCents: number;
+  discountCents: number;
+  taxCents: number;
+  totalCents: number;
+  reference: string | null;
+  supplierReference: string | null;
+  notes: string | null;
+  terms: string | null;
+  sentAt: string | null;
+  acknowledgedAt: string | null;
+  cancelledAt: string | null;
+  cancelledReason: string | null;
+  convertedBillId: string | null;
+  convertedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PurchaseOrderLine {
+  id: string;
+  lineNo: number;
+  itemId: string | null;
+  description: string;
+  quantity: string;
+  unitPriceCents: number;
+  lineSubtotalCents: number;
+  discountPctBps: number;
+  discountCents: number;
+  taxCodeId: string | null;
+  taxRateBps: number;
+  taxCents: number;
+  lineTotalCents: number;
+  expenseAccountId: string | null;
+}
+
+export interface CreatePurchaseOrderLine {
+  itemId?: string;
+  description: string;
+  quantity: number;
+  unitPriceCents: number;
+  discountPctBps?: number;
+  taxCodeId?: string;
+  expenseAccountId?: string;
+}
+
+export interface CreatePurchaseOrder {
+  supplierId: string;
+  orderDate?: string;
+  expectedDeliveryDate?: string;
+  reference?: string;
+  notes?: string;
+  terms?: string;
+  lines: CreatePurchaseOrderLine[];
+}
+
 export interface InvoiceListRow {
   id: string;
   invoiceNumber: string | null;
@@ -957,6 +1081,85 @@ export interface CreateInvoice {
   notes?: string;
   terms?: string;
   lines: CreateInvoiceLine[];
+}
+
+export type SalesOrderStatus = "draft" | "confirmed" | "cancelled" | "converted";
+
+export interface SalesOrderListRow {
+  id: string;
+  soNumber: string | null;
+  status: SalesOrderStatus;
+  orderDate: string;
+  expectedShipDate: string | null;
+  customerId: string;
+  customerName: string;
+  currency: string;
+  totalCents: number;
+  convertedInvoiceId: string | null;
+  createdAt: string;
+}
+
+export interface SalesOrderDetail {
+  id: string;
+  soNumber: string | null;
+  customerId: string;
+  branchId: string | null;
+  status: SalesOrderStatus;
+  orderDate: string;
+  expectedShipDate: string | null;
+  currency: string;
+  subtotalCents: number;
+  discountCents: number;
+  taxCents: number;
+  totalCents: number;
+  reference: string | null;
+  customerPoNumber: string | null;
+  notes: string | null;
+  terms: string | null;
+  confirmedAt: string | null;
+  cancelledAt: string | null;
+  cancelledReason: string | null;
+  convertedInvoiceId: string | null;
+  convertedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SalesOrderLine {
+  id: string;
+  lineNo: number;
+  itemId: string | null;
+  description: string;
+  quantity: string;
+  unitPriceCents: number;
+  lineSubtotalCents: number;
+  discountPctBps: number;
+  discountCents: number;
+  taxCodeId: string | null;
+  taxRateBps: number;
+  taxCents: number;
+  lineTotalCents: number;
+  incomeAccountId: string | null;
+}
+
+export interface CreateSalesOrderLine {
+  itemId?: string;
+  description: string;
+  quantity: number;
+  unitPriceCents: number;
+  discountPctBps?: number;
+  taxCodeId?: string;
+}
+
+export interface CreateSalesOrder {
+  customerId: string;
+  orderDate?: string;
+  expectedShipDate?: string;
+  reference?: string;
+  customerPoNumber?: string;
+  notes?: string;
+  terms?: string;
+  lines: CreateSalesOrderLine[];
 }
 
 export type QuotationStatus =
