@@ -24,8 +24,6 @@ export * from "./fixed-assets.js";
 export * from "./employees.js";
 export * from "./payroll.js";
 export * from "./salary-components.js";
-<<<<<<< claude/leave-management
 export * from "./leave.js";
-=======
 export * from "./notifications.js";
->>>>>>> main
+export * from "./bank-reconciliation.js";
