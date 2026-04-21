@@ -222,6 +222,52 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
         assignmentsByEmployee.set(a.employeeId, list);
       }
 
+      // Approved no-pay leave days per employee within the period. SL salary
+      // convention uses a 30-day month for prorating; configurable later via
+      // tenant setting. We only look at unpaid (is_paid=false) leave types —
+      // paid leave doesn't reduce salary by construction.
+      const npDaysByEmployee = new Map<string, number>();
+      const npLeaveRows = (await tx.execute(sql`
+        SELECT lr.employee_id,
+               lr.from_date::text AS from_date,
+               lr.to_date::text   AS to_date,
+               lr.days_count
+        FROM leave_requests lr
+        INNER JOIN leave_types lt
+          ON lt.id = lr.leave_type_id
+         AND lt.tenant_id = lr.tenant_id
+        WHERE lr.tenant_id = current_tenant_id()
+          AND lr.status = 'approved'
+          AND lt.is_paid = false
+          AND lt.deleted_at IS NULL
+          AND lr.from_date <= ${periodEnd}::date
+          AND lr.to_date   >= ${periodStart}::date
+      `)) as unknown as Array<{
+        employee_id: string;
+        from_date: string;
+        to_date: string;
+        days_count: string | number;
+      }>;
+
+      const SALARY_DAYS_PER_MONTH = 30;
+      const msPerDay = 86_400_000;
+      for (const r of npLeaveRows) {
+        const reqStart = new Date(r.from_date).getTime();
+        const reqEnd = new Date(r.to_date).getTime();
+        const windowStart = Math.max(reqStart, new Date(periodStart).getTime());
+        const windowEnd = Math.min(reqEnd, new Date(periodEnd).getTime());
+        if (windowEnd < windowStart) continue; // no overlap
+        const overlapCalendarDays = Math.round((windowEnd - windowStart) / msPerDay) + 1;
+        const totalCalendarDays = Math.round((reqEnd - reqStart) / msPerDay) + 1;
+        // Prorate days_count (can be fractional — half-day leave) by the
+        // share of the leave-request window that falls inside this period.
+        const portion =
+          totalCalendarDays > 0 ? overlapCalendarDays / totalCalendarDays : 1;
+        const days = Number(r.days_count) * portion;
+        const current = npDaysByEmployee.get(r.employee_id) ?? 0;
+        npDaysByEmployee.set(r.employee_id, current + days);
+      }
+
       // Compute each line and persist
       let gross = 0,
         epfEmp = 0,
@@ -304,6 +350,42 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
               countsForPaye: a.countsForPaye,
               sortOrder: a.sortOrder,
             };
+          });
+        }
+
+        // Auto-injected no-pay leave deduction from approved leave requests
+        // that overlap this period. Kept separate from any manually-assigned
+        // NOPAY component so both can coexist (e.g. a standing sabbatical
+        // plus ad-hoc NP days).
+        const npDays = npDaysByEmployee.get(e.id) ?? 0;
+        if (npDays > 0 && e.basicSalaryCents > 0) {
+          // SL convention: monthly salary divided by 30 calendar days.
+          const npDeductionCents = Math.round(
+            (e.basicSalaryCents * npDays) / SALARY_DAYS_PER_MONTH,
+          );
+          const npLabel = `No-pay leave (${npDays.toFixed(npDays % 1 === 0 ? 0 : 2)}d)`;
+          resolved.push({
+            code: "NOPAY-LV",
+            name: npLabel,
+            kind: "deduction",
+            amountCents: npDeductionCents,
+            // SL EPF Act s.47: NP reduces EPF/ETF basis, so it counts for
+            // the statutory bases. PAYE is similarly reduced.
+            countsForEpf: true,
+            countsForEtf: true,
+            countsForPaye: true,
+            sortOrder: 95,
+          });
+          snapshotInputs.push({
+            componentId: null,
+            code: "NOPAY-LV",
+            name: npLabel,
+            kind: "deduction",
+            amountCents: npDeductionCents,
+            countsForEpf: true,
+            countsForEtf: true,
+            countsForPaye: true,
+            sortOrder: 95,
           });
         }
 
