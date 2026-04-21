@@ -17,6 +17,7 @@ function refHref(n: AppNotification): string | null {
     supplier_payment: `/app/supplier-payments`,
     cheque: `/app/cheques/${n.refId}`,
     leave_request: `/app/leave-requests/${n.refId}`,
+    item: `/app/stock/low-stock`,
   };
   return map[n.refType] ?? null;
 }

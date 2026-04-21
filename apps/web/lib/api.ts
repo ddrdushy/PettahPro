@@ -418,6 +418,8 @@ export const api = {
     request<{ balances: StockBalanceRow[]; totalValueCents: number }>("/stock"),
   stockLedger: (itemId: string) =>
     request<{ movements: StockLedgerMovement[] }>(`/stock/ledger?itemId=${itemId}`),
+  lowStock: () =>
+    request<{ items: LowStockItem[]; count: number }>("/stock/low-stock"),
 
   listEmployees: (q?: string) =>
     request<{ employees: EmployeeListRow[] }>(
@@ -2129,6 +2131,17 @@ export interface StockLedgerMovement {
   occurredAt: string;
   warehouseCode: string;
   warehouseName: string;
+}
+
+export interface LowStockItem {
+  itemId: string;
+  sku: string | null;
+  name: string;
+  unit: string;
+  reorderPoint: number;
+  onHand: number;
+  shortBy: number;
+  lastMovementAt: string | null;
 }
 
 export interface BalanceSheetLine {

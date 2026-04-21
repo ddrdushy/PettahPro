@@ -63,6 +63,7 @@ const nav: Group[] = [
     items: [
       { label: "Items", href: "/app/items", icon: Package },
       { label: "On hand", href: "/app/stock", icon: Boxes },
+      { label: "Low stock", href: "/app/stock/low-stock", icon: Boxes },
     ],
   },
   {

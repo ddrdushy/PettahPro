@@ -1,6 +1,7 @@
 import { and, eq, isNull, sql, asc } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { schema } from "@pettahpro/db";
+import { emitNotification } from "../notifications/emit.js";
 
 /**
  * Call inside a DB transaction with app.tenant_id already SET.
@@ -274,6 +275,28 @@ export async function applyStockIssue(
     memo: input.memo ?? null,
     postedByUserId: input.postedByUserId ?? null,
   });
+
+  // Reorder-point alert: fire a notification only when this issue *crossed*
+  // below the item's reorder_point. Natural dedupe — once below, subsequent
+  // issues don't alert until stock climbs back above and dips again.
+  const [itemRow] = await tx
+    .select({ name: schema.items.name, reorderPoint: schema.items.reorderPoint })
+    .from(schema.items)
+    .where(eq(schema.items.id, input.itemId))
+    .limit(1);
+  if (itemRow && itemRow.reorderPoint != null && itemRow.reorderPoint > 0) {
+    const rp = itemRow.reorderPoint;
+    if (currentQty > rp && newQty <= rp) {
+      await emitNotification(tx, {
+        tenantId: input.tenantId,
+        kind: "low_stock",
+        title: `Low stock: ${itemRow.name}`,
+        body: `On hand ${newQty} ≤ reorder point ${rp}. Time to reorder.`,
+        refType: "item",
+        refId: input.itemId,
+      });
+    }
+  }
 
   return {
     cogsCents,
