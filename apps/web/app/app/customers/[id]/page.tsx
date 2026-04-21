@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { cookies } from "next/headers";
 import { notFound } from "next/navigation";
-import { ArrowLeft, Mail, MapPin, Phone, Plus } from "lucide-react";
+import { ArrowLeft, FileText, Mail, MapPin, Phone, Plus } from "lucide-react";
 import type { CustomerDetail } from "@/lib/api";
 import { PageHeader } from "@/components/app/page-header";
 import { StatusBadge } from "@/components/app/status-badge";
@@ -54,10 +54,16 @@ export default async function CustomerDetailPage({ params }: { params: { id: str
         title={customer.name}
         description={customer.legalName && customer.legalName !== customer.name ? `Legal: ${customer.legalName}` : undefined}
         action={
-          <Link href="/app/invoices/new" className="btn-primary">
-            <Plus className="h-4 w-4" aria-hidden />
-            New invoice
-          </Link>
+          <div className="flex flex-wrap gap-2">
+            <Link href={`/app/customers/${customer.id}/statement`} className="btn-secondary">
+              <FileText className="h-4 w-4" aria-hidden />
+              Statement
+            </Link>
+            <Link href="/app/invoices/new" className="btn-primary">
+              <Plus className="h-4 w-4" aria-hidden />
+              New invoice
+            </Link>
+          </div>
         }
       />
 
