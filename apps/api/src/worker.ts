@@ -1,6 +1,8 @@
 import { Worker, Queue } from "bullmq";
 import IORedis from "ioredis";
 import pino from "pino";
+import { db } from "@pettahpro/db";
+import { runDueRecurringInvoices } from "./modules/sell/recurring-invoices.js";
 
 const log = pino({
   level: process.env.LOG_LEVEL ?? "info",
@@ -17,17 +19,54 @@ const connection = new IORedis(process.env.REDIS_URL ?? "redis://localhost:6379"
 // Placeholder queues — real queues get registered from their respective modules.
 export const defaultQueue = new Queue("default", { connection });
 
-const worker = new Worker(
+// Scheduled jobs queue. Repeatable BullMQ jobs live here; the worker
+// dispatches by job.name.
+export const scheduledQueue = new Queue("scheduled", { connection });
+
+async function registerSchedules() {
+  // Hourly recurring-invoice generation. BullMQ dedupes repeatable jobs by
+  // (name, cron/every, jobId?) so re-adding on every worker boot is safe.
+  await scheduledQueue.add(
+    "generate-recurring-invoices",
+    {},
+    {
+      repeat: { every: 60 * 60 * 1000 }, // 1h
+      removeOnComplete: 50,
+      removeOnFail: 50,
+    },
+  );
+  log.info("scheduled: generate-recurring-invoices (hourly)");
+}
+
+const defaultWorker = new Worker(
   "default",
   async (job) => {
     log.info({ id: job.id, name: job.name, data: job.data }, "processing job");
-    // Route to the right handler based on job.name once modules land.
     return { ok: true };
   },
   { connection },
 );
 
-worker.on("completed", (job) => log.info({ id: job.id }, "job completed"));
-worker.on("failed", (job, err) => log.error({ id: job?.id, err }, "job failed"));
+const scheduledWorker = new Worker(
+  "scheduled",
+  async (job) => {
+    log.info({ id: job.id, name: job.name }, "scheduled job fired");
+    if (job.name === "generate-recurring-invoices") {
+      const result = await runDueRecurringInvoices(db, log);
+      log.info(result, "recurring-invoice run complete");
+      return result;
+    }
+    log.warn({ name: job.name }, "unknown scheduled job");
+    return { ok: false, reason: "unknown-job" };
+  },
+  { connection },
+);
+
+for (const w of [defaultWorker, scheduledWorker]) {
+  w.on("completed", (job) => log.info({ id: job.id, name: job.name }, "job completed"));
+  w.on("failed", (job, err) => log.error({ id: job?.id, name: job?.name, err }, "job failed"));
+}
+
+await registerSchedules();
 
 log.info("PettahPro worker started");
