@@ -176,6 +176,11 @@ export const api = {
     return request<GeneralLedger>(`/reports/general-ledger?${params.toString()}`);
   },
 
+  vatReturn: (from: string, to: string) => {
+    const params = new URLSearchParams({ from, to });
+    return request<VatReturn>(`/reports/vat-return?${params.toString()}`);
+  },
+
   listStock: () =>
     request<{ balances: StockBalanceRow[]; totalValueCents: number }>("/stock"),
   stockLedger: (itemId: string) =>
@@ -1212,6 +1217,53 @@ export interface GeneralLedger {
   totalCreditsCents: number;
   lines: GeneralLedgerLine[];
   truncated: boolean;
+}
+
+export interface VatOutputRow {
+  invoiceId: string;
+  invoiceNumber: string | null;
+  issueDate: string;
+  customerId: string;
+  customerName: string;
+  customerVatNo: string | null;
+  taxableCents: number;
+  vatCents: number;
+  totalCents: number;
+}
+
+export interface VatInputRow {
+  billId: string;
+  internalReference: string | null;
+  supplierBillNumber: string | null;
+  billDate: string;
+  supplierId: string;
+  supplierName: string;
+  supplierVatNo: string | null;
+  taxableCents: number;
+  vatCents: number;
+  totalCents: number;
+}
+
+export interface VatReturn {
+  asOfFrom: string;
+  asOfTo: string;
+  outputSummary: {
+    standardRatedTaxableCents: number;
+    standardRatedVatCents: number;
+    zeroRatedTaxableCents: number;
+    exemptTaxableCents: number;
+    totalTaxableCents: number;
+    totalVatCents: number;
+    totalInvoices: number;
+  };
+  inputSummary: {
+    standardRatedTaxableCents: number;
+    standardRatedVatCents: number;
+    totalBills: number;
+  };
+  netVatPayableCents: number;
+  outputRegister: VatOutputRow[];
+  inputRegister: VatInputRow[];
 }
 
 export interface AgingBucket {

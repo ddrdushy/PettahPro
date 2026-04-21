@@ -76,6 +76,7 @@ const nav: Group[] = [
       { label: "P&L", href: "/app/reports/profit-loss", icon: FileBarChart },
       { label: "Balance sheet", href: "/app/reports/balance-sheet", icon: FileBarChart },
       { label: "General ledger", href: "/app/reports/general-ledger", icon: FileBarChart },
+      { label: "VAT return", href: "/app/reports/vat-return", icon: FileBarChart },
     ],
   },
   {
