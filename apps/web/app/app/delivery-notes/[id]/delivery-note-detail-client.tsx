@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { ArrowLeft, Check, Loader2, X } from "lucide-react";
+import { ArrowLeft, Check, Download, Loader2, X } from "lucide-react";
 import {
   api,
   ApiError,
@@ -86,6 +86,15 @@ export function DeliveryNoteDetailClient({
             <span className={`rounded-full px-2.5 py-0.5 text-caption font-medium ${statusStyles[deliveryNote.status]}`}>
               {statusLabels[deliveryNote.status]}
             </span>
+            <a
+              href={`/app/delivery-notes/${deliveryNote.id}/pdf`}
+              target="_blank"
+              rel="noopener"
+              className="btn-secondary inline-flex items-center gap-2"
+            >
+              <Download className="h-4 w-4" aria-hidden />
+              PDF
+            </a>
             {canDeliver && (
               <button type="button" onClick={() => run("deliver")} disabled={busy !== null} className="btn-primary">
                 {busy === "deliver" ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Check className="h-4 w-4" aria-hidden />}

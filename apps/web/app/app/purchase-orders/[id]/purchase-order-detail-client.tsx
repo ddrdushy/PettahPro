@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { ArrowLeft, ArrowRight, Check, Loader2, Send, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, Download, Loader2, Send, X } from "lucide-react";
 import {
   api,
   ApiError,
@@ -101,6 +101,15 @@ export function PurchaseOrderDetailClient({
             <span className={`rounded-full px-2.5 py-0.5 text-caption font-medium ${statusStyles[purchaseOrder.status]}`}>
               {statusLabels[purchaseOrder.status]}
             </span>
+            <a
+              href={`/app/purchase-orders/${purchaseOrder.id}/pdf`}
+              target="_blank"
+              rel="noopener"
+              className="btn-secondary inline-flex items-center gap-2"
+            >
+              <Download className="h-4 w-4" aria-hidden />
+              PDF
+            </a>
             {canSend && (
               <button type="button" onClick={() => run("send")} disabled={busy !== null} className="btn-secondary">
                 {busy === "send" ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Send className="h-4 w-4" aria-hidden />}
