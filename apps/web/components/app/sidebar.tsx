@@ -10,6 +10,7 @@ import {
   Receipt,
   ShoppingCart,
   BookOpen,
+  NotebookPen,
   Wallet,
   Banknote,
   FileSignature,
@@ -56,6 +57,7 @@ const nav: Group[] = [
     title: "Accounting",
     items: [
       { label: "Chart of accounts", href: "/app/coa", icon: BookOpen },
+      { label: "Journal entries", href: "/app/journals", icon: NotebookPen },
       { label: "Cheques", href: "/app/cheques", icon: FileSignature },
     ],
   },

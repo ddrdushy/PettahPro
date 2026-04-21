@@ -9,6 +9,7 @@ import { suppliersRoutes } from "./modules/operations/suppliers.js";
 import { supplierStatementRoutes } from "./modules/operations/supplier-statement.js";
 import { itemsRoutes } from "./modules/operations/items.js";
 import { coaRoutes, taxCodesRoutes } from "./modules/accounting/coa.js";
+import { journalEntriesRoutes } from "./modules/accounting/journal-entries.js";
 import { invoicesRoutes } from "./modules/sell/invoices.js";
 import { paymentsRoutes } from "./modules/sell/payments.js";
 import { billsRoutes } from "./modules/buy/bills.js";
@@ -62,6 +63,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await server.register(itemsRoutes, { prefix: "/items" });
   await server.register(coaRoutes, { prefix: "/coa" });
   await server.register(taxCodesRoutes, { prefix: "/tax-codes" });
+  await server.register(journalEntriesRoutes, { prefix: "/journal-entries" });
   await server.register(invoicesRoutes, { prefix: "/invoices" });
   await server.register(paymentsRoutes, { prefix: "/payments" });
   await server.register(billsRoutes, { prefix: "/bills" });
