@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2, Check } from "lucide-react";
-import { api, ApiError, type TenantSettings } from "@/lib/api";
+import { api, ApiError, type TenantSettings, type StockRelieveOn } from "@/lib/api";
 
 export function SettingsFormClient({
   initial,
@@ -14,11 +14,14 @@ export function SettingsFormClient({
 }) {
   const router = useRouter();
   const [salaryDaysPerMonth, setSalaryDaysPerMonth] = useState<number>(initial.salaryDaysPerMonth);
+  const [stockRelieveOn, setStockRelieveOn] = useState<StockRelieveOn>(initial.stockRelieveOn);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<Date | null>(null);
 
-  const dirty = salaryDaysPerMonth !== initial.salaryDaysPerMonth;
+  const dirty =
+    salaryDaysPerMonth !== initial.salaryDaysPerMonth ||
+    stockRelieveOn !== initial.stockRelieveOn;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -29,7 +32,7 @@ export function SettingsFormClient({
     }
     setBusy(true);
     try {
-      await api.updateSettings({ salaryDaysPerMonth });
+      await api.updateSettings({ salaryDaysPerMonth, stockRelieveOn });
       setSavedAt(new Date());
       router.refresh();
     } catch (err) {
@@ -69,6 +72,37 @@ export function SettingsFormClient({
         </div>
       </section>
 
+      <section className="rounded-card border-hairline border-border bg-surface-elevated p-6">
+        <h2 className="text-body font-medium text-charcoal">Inventory</h2>
+        <p className="mt-1 text-caption text-text-secondary">
+          When tracked items leave inventory and the COGS journal entry is posted.
+        </p>
+
+        <div className="mt-5 space-y-3">
+          <RelieveOption
+            value="invoice"
+            current={stockRelieveOn}
+            onSelect={setStockRelieveOn}
+            title="At invoice post"
+            description="Stock leaves inventory and COGS posts at the same time the sales invoice is posted. Default — fits businesses where the invoice is the single source of truth for a sale."
+            isDefault={defaults.stockRelieveOn === "invoice"}
+          />
+          <RelieveOption
+            value="delivery_note"
+            current={stockRelieveOn}
+            onSelect={setStockRelieveOn}
+            title="At delivery note deliver"
+            description="Stock leaves inventory and COGS posts when the DN is marked delivered. Invoices post with no stock/COGS movement. Fits businesses where goods physically leave the warehouse before billing."
+            isDefault={defaults.stockRelieveOn === "delivery_note"}
+          />
+          {stockRelieveOn !== initial.stockRelieveOn && (
+            <p className="rounded-md bg-amber-50 px-3 py-2 text-caption text-amber-900">
+              Heads up: this only affects documents posted <strong>after</strong> you save. Historical invoices and DNs aren't re-posted.
+            </p>
+          )}
+        </div>
+      </section>
+
       <div className="flex items-center gap-3">
         <button
           type="submit"
@@ -87,5 +121,48 @@ export function SettingsFormClient({
         {error && <span className="text-caption text-danger">{error}</span>}
       </div>
     </form>
+  );
+}
+
+function RelieveOption({
+  value,
+  current,
+  onSelect,
+  title,
+  description,
+  isDefault,
+}: {
+  value: StockRelieveOn;
+  current: StockRelieveOn;
+  onSelect: (v: StockRelieveOn) => void;
+  title: string;
+  description: string;
+  isDefault: boolean;
+}) {
+  const selected = current === value;
+  return (
+    <label
+      className={`flex cursor-pointer items-start gap-3 rounded-md border-hairline p-3 transition ${
+        selected ? "border-charcoal bg-surface-recessed/40" : "border-border hover:bg-surface-recessed/20"
+      }`}
+    >
+      <input
+        type="radio"
+        name="stockRelieveOn"
+        value={value}
+        checked={selected}
+        onChange={() => onSelect(value)}
+        className="mt-1"
+      />
+      <div className="flex-1">
+        <div className="flex items-center gap-2">
+          <span className="text-small font-medium text-charcoal">{title}</span>
+          {isDefault && (
+            <span className="rounded-full bg-surface-recessed px-2 py-0.5 text-caption text-text-tertiary">Default</span>
+          )}
+        </div>
+        <p className="mt-0.5 text-caption text-text-secondary">{description}</p>
+      </div>
+    </label>
   );
 }

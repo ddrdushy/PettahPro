@@ -15,6 +15,7 @@ import {
   resolveDefaultWarehouse,
   resolveStockGLAccounts,
 } from "../inventory/stock-posting.js";
+import { loadTenantSettings } from "../settings/routes.js";
 
 const LineSchema = z.object({
   itemId: z.string().uuid().optional(),
@@ -547,7 +548,11 @@ export const invoicesRoutes: FastifyPluginAsync = async (fastify) => {
         });
       }
 
-      // Inventory relief + COGS for tracked items (WAVG, single default warehouse v1)
+      // Inventory relief + COGS for tracked items (WAVG, single default warehouse v1).
+      // Only runs when the tenant's stockRelieveOn setting = 'invoice' (default).
+      // In 'delivery_note' mode, stock is relieved at DN deliver instead, and
+      // this invoice post skips all stock/COGS writes.
+      const settings = await loadTenantSettings(tx);
       const trackedLines: Array<{
         line: (typeof lines)[number];
         item: typeof schema.items.$inferSelect;
@@ -555,46 +560,48 @@ export const invoicesRoutes: FastifyPluginAsync = async (fastify) => {
       }> = [];
       let totalCogsCents = 0;
 
-      const linkedItems = await tx
-        .select()
-        .from(schema.items)
-        .where(
-          and(
-            eq(schema.items.tenantId, ctx.tenantId),
-            isNull(schema.items.deletedAt),
-          ),
-        );
-      const itemById = new Map(linkedItems.map((i) => [i.id, i]));
-
       const defaultWarehouse = await resolveDefaultWarehouse(tx, ctx.tenantId);
       const { inventoryAccountId, cogsAccountId } = await resolveStockGLAccounts(
         tx,
         ctx.tenantId,
       );
 
-      for (const l of lines) {
-        if (!l.itemId) continue;
-        const item = itemById.get(l.itemId);
-        if (!item || !item.trackInventory) continue;
-        if (!defaultWarehouse) return { error: "NO_DEFAULT_WAREHOUSE" as const };
-        if (!inventoryAccountId || !cogsAccountId) return { error: "NO_STOCK_ACCOUNTS" as const };
+      if (settings.stockRelieveOn === "invoice") {
+        const linkedItems = await tx
+          .select()
+          .from(schema.items)
+          .where(
+            and(
+              eq(schema.items.tenantId, ctx.tenantId),
+              isNull(schema.items.deletedAt),
+            ),
+          );
+        const itemById = new Map(linkedItems.map((i) => [i.id, i]));
 
-        const qty = Number(l.quantity);
-        if (qty <= 0) continue;
+        for (const l of lines) {
+          if (!l.itemId) continue;
+          const item = itemById.get(l.itemId);
+          if (!item || !item.trackInventory) continue;
+          if (!defaultWarehouse) return { error: "NO_DEFAULT_WAREHOUSE" as const };
+          if (!inventoryAccountId || !cogsAccountId) return { error: "NO_STOCK_ACCOUNTS" as const };
 
-        try {
-          const { cogsCents } = await peekStockIssue(tx, {
-            tenantId: ctx.tenantId,
-            itemId: item.id,
-            warehouseId: defaultWarehouse.id,
-            quantity: qty,
-          });
-          trackedLines.push({ line: l, item, cogsCents });
-          totalCogsCents += cogsCents;
-        } catch (err) {
-          const e = err as Error & { code?: string };
-          if (e.code === "NEGATIVE_STOCK") return { error: "NEGATIVE_STOCK" as const, item };
-          throw err;
+          const qty = Number(l.quantity);
+          if (qty <= 0) continue;
+
+          try {
+            const { cogsCents } = await peekStockIssue(tx, {
+              tenantId: ctx.tenantId,
+              itemId: item.id,
+              warehouseId: defaultWarehouse.id,
+              quantity: qty,
+            });
+            trackedLines.push({ line: l, item, cogsCents });
+            totalCogsCents += cogsCents;
+          } catch (err) {
+            const e = err as Error & { code?: string };
+            if (e.code === "NEGATIVE_STOCK") return { error: "NEGATIVE_STOCK" as const, item };
+            throw err;
+          }
         }
       }
 

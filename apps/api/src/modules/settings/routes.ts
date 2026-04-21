@@ -7,14 +7,28 @@ import { requireAuth } from "../../lib/with-tenant.js";
 // Defaults applied when the stored JSON doesn't have a key.
 // Keep this as the single source of truth — the API always merges defaults
 // over the stored value, so we never need to backfill new settings.
-export const SETTINGS_DEFAULTS = {
-  salaryDaysPerMonth: 30,
-} as const;
+// Note: literal unions don't survive `typeof DEFAULTS`, so we declare the
+// shape explicitly and only use DEFAULTS for runtime values.
+export type StockRelieveOn = "invoice" | "delivery_note";
+export interface TenantSettings {
+  salaryDaysPerMonth: number;
+  // When stock is relieved from inventory (COGS journal + stock_ledger write).
+  //   "invoice"       — default; relief at invoice post.
+  //   "delivery_note" — relief at DN deliver; invoice post skips stock moves.
+  // In DN mode, posting an invoice without first delivering a DN results in
+  // no COGS recorded — this is intentional (businesses that choose this mode
+  // use DNs as the stock-flow source of truth).
+  stockRelieveOn: StockRelieveOn;
+}
 
-export type TenantSettings = typeof SETTINGS_DEFAULTS;
+export const SETTINGS_DEFAULTS: TenantSettings = {
+  salaryDaysPerMonth: 30,
+  stockRelieveOn: "invoice",
+};
 
 const PatchSchema = z.object({
   salaryDaysPerMonth: z.number().int().min(20).max(31).optional(),
+  stockRelieveOn: z.enum(["invoice", "delivery_note"]).optional(),
 });
 
 // Used server-side by modules that need a single setting (e.g. payroll).
