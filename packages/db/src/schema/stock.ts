@@ -6,6 +6,10 @@ import {
   timestamp,
   bigint,
   numeric,
+  date,
+  smallint,
+  boolean,
+  text,
 } from "drizzle-orm/pg-core";
 import { tenants } from "./tenants.js";
 import { items } from "./items.js";
@@ -51,3 +55,45 @@ export const stockLedger = pgTable("stock_ledger", {
 
 export type StockLedgerEntry = typeof stockLedger.$inferSelect;
 export type NewStockLedgerEntry = typeof stockLedger.$inferInsert;
+
+export const stockTransfers = pgTable("stock_transfers", {
+  id: uuid("id").primaryKey().default(sql`uuid_generate_v7()`),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+  transferNumber: varchar("transfer_number", { length: 48 }),
+  sourceWarehouseId: uuid("source_warehouse_id").notNull().references(() => warehouses.id, { onDelete: "restrict" }),
+  destinationWarehouseId: uuid("destination_warehouse_id").notNull().references(() => warehouses.id, { onDelete: "restrict" }),
+  status: varchar("status", { length: 16 }).notNull().default("draft"),
+  requestedDate: date("requested_date").notNull(),
+  dispatchedAt: timestamp("dispatched_at", { withTimezone: true }),
+  receivedAt: timestamp("received_at", { withTimezone: true }),
+  cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+  cancelledReason: text("cancelled_reason"),
+  dispatchedByUserId: uuid("dispatched_by_user_id"),
+  receivedByUserId: uuid("received_by_user_id"),
+  notes: text("notes"),
+  hasDiscrepancy: boolean("has_discrepancy").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  createdByUserId: uuid("created_by_user_id"),
+  deletedAt: timestamp("deleted_at", { withTimezone: true }),
+});
+
+export type StockTransfer = typeof stockTransfers.$inferSelect;
+export type NewStockTransfer = typeof stockTransfers.$inferInsert;
+
+export const stockTransferLines = pgTable("stock_transfer_lines", {
+  id: uuid("id").primaryKey().default(sql`uuid_generate_v7()`),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+  transferId: uuid("transfer_id").notNull().references(() => stockTransfers.id, { onDelete: "cascade" }),
+  lineNo: smallint("line_no").notNull(),
+  itemId: uuid("item_id").notNull().references(() => items.id, { onDelete: "restrict" }),
+  quantityRequested: numeric("quantity_requested", { precision: 18, scale: 4 }).notNull(),
+  quantityDispatched: numeric("quantity_dispatched", { precision: 18, scale: 4 }),
+  quantityReceived: numeric("quantity_received", { precision: 18, scale: 4 }),
+  unitCostCentsAtDispatch: bigint("unit_cost_cents_at_dispatch", { mode: "number" }),
+  notes: varchar("notes", { length: 255 }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type StockTransferLine = typeof stockTransferLines.$inferSelect;
+export type NewStockTransferLine = typeof stockTransferLines.$inferInsert;

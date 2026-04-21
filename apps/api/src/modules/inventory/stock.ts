@@ -85,6 +85,32 @@ export const stockRoutes: FastifyPluginAsync = async (fastify) => {
     return reply.send({ movements });
   });
 
+  // GET /stock/warehouses — simple list for transfer / transfer-receive forms.
+  fastify.get("/warehouses", async (req, reply) => {
+    const ctx = requireAuth(req, reply);
+    if (!ctx) return;
+
+    const warehouses = await withTenant(ctx.tenantId, async (tx) =>
+      tx
+        .select({
+          id: schema.warehouses.id,
+          code: schema.warehouses.code,
+          name: schema.warehouses.name,
+          isDefault: schema.warehouses.isDefault,
+          isActive: schema.warehouses.isActive,
+        })
+        .from(schema.warehouses)
+        .where(
+          and(
+            eq(schema.warehouses.tenantId, ctx.tenantId),
+            isNull(schema.warehouses.deletedAt),
+          ),
+        )
+        .orderBy(asc(schema.warehouses.code)),
+    );
+    return reply.send({ warehouses });
+  });
+
   // GET /stock/low-stock — items with reorder_point set whose total on-hand
   // (summed across warehouses) is at or below the reorder_point. Items that
   // have no balance row yet (never received) still show up with on_hand=0

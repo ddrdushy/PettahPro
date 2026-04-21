@@ -29,6 +29,7 @@ import { billsRoutes } from "./modules/buy/bills.js";
 import { debitNotesRoutes } from "./modules/buy/debit-notes.js";
 import { supplierPaymentsRoutes } from "./modules/buy/supplier-payments.js";
 import { stockRoutes } from "./modules/inventory/stock.js";
+import { stockTransfersRoutes } from "./modules/inventory/stock-transfers.js";
 import { chequesRoutes } from "./modules/cheques/routes.js";
 import { employeesRoutes } from "./modules/hr/employees.js";
 import { payrollRunsRoutes } from "./modules/hr/payroll-runs.js";
@@ -109,6 +110,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await server.register(debitNotesRoutes, { prefix: "/debit-notes" });
   await server.register(supplierPaymentsRoutes, { prefix: "/supplier-payments" });
   await server.register(stockRoutes, { prefix: "/stock" });
+  await server.register(stockTransfersRoutes, { prefix: "/stock-transfers" });
   await server.register(chequesRoutes, { prefix: "/cheques" });
   await server.register(employeesRoutes, { prefix: "/employees" });
   await server.register(employeeSalaryStructureRoutes, { prefix: "/employees" });
