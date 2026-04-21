@@ -379,6 +379,54 @@ export const api = {
       json: body,
     }),
 
+  listLeaveTypes: () => request<{ leaveTypes: LeaveType[] }>("/leave-types"),
+  createLeaveType: (body: CreateLeaveType) =>
+    request<{ leaveType: LeaveType }>("/leave-types", { method: "POST", json: body }),
+  updateLeaveType: (id: string, body: Partial<CreateLeaveType> & { isActive?: boolean }) =>
+    request<{ leaveType: LeaveType }>(`/leave-types/${id}`, { method: "PATCH", json: body }),
+
+  getEmployeeLeaveBalance: (employeeId: string, year?: number) => {
+    const qs = year ? `?year=${year}` : "";
+    return request<{ year: number; balances: EmployeeLeaveBalance[] }>(
+      `/employees/${employeeId}/leave-balance${qs}`,
+    );
+  },
+  upsertLeaveAllocation: (
+    employeeId: string,
+    body: { leaveTypeId: string; periodYear: number; allocatedDays: number; carriedForwardDays?: number },
+  ) =>
+    request<{ ok: true }>(`/employees/${employeeId}/leave-allocations`, {
+      method: "POST",
+      json: body,
+    }),
+
+  listLeaveRequests: (filter?: { status?: string; employeeId?: string }) => {
+    const params = new URLSearchParams();
+    if (filter?.status) params.set("status", filter.status);
+    if (filter?.employeeId) params.set("employeeId", filter.employeeId);
+    const qs = params.toString();
+    return request<{ leaveRequests: LeaveRequestListRow[] }>(`/leave-requests${qs ? `?${qs}` : ""}`);
+  },
+  getLeaveRequest: (id: string) =>
+    request<{
+      leaveRequest: LeaveRequestDetail;
+      employee: Employee | null;
+      leaveType: LeaveType | null;
+    }>(`/leave-requests/${id}`),
+  createLeaveRequest: (body: CreateLeaveRequest) =>
+    request<{ leaveRequest: LeaveRequestDetail }>("/leave-requests", { method: "POST", json: body }),
+  submitLeaveRequest: (id: string) =>
+    request<{ ok: true }>(`/leave-requests/${id}/submit`, { method: "POST" }),
+  approveLeaveRequest: (id: string) =>
+    request<{ ok: true }>(`/leave-requests/${id}/approve`, { method: "POST" }),
+  rejectLeaveRequest: (id: string, reason?: string) =>
+    request<{ ok: true }>(`/leave-requests/${id}/reject`, {
+      method: "POST",
+      json: reason ? { reason } : {},
+    }),
+  cancelLeaveRequest: (id: string) =>
+    request<{ ok: true }>(`/leave-requests/${id}/cancel`, { method: "POST" }),
+
   listSalaryComponents: () =>
     request<{ components: SalaryComponent[] }>("/salary-components"),
   createSalaryComponent: (body: CreateSalaryComponent) =>
@@ -1708,6 +1756,89 @@ export interface PayrollRun {
   postedAt: string | null;
   notes: string | null;
   createdAt: string;
+}
+
+export type LeaveRequestStatus = "draft" | "pending" | "approved" | "rejected" | "cancelled";
+
+export interface LeaveType {
+  id: string;
+  code: string;
+  name: string;
+  defaultDaysPerYear: string;
+  isPaid: boolean;
+  carryForwardAllowed: boolean;
+  maxCarryForwardDays: string;
+  isSystem: boolean;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateLeaveType {
+  code: string;
+  name: string;
+  defaultDaysPerYear?: number;
+  isPaid?: boolean;
+  carryForwardAllowed?: boolean;
+  maxCarryForwardDays?: number;
+}
+
+export interface EmployeeLeaveBalance {
+  leaveTypeId: string;
+  code: string;
+  name: string;
+  isPaid: boolean;
+  defaultDaysPerYear: number;
+  allocatedDays: number;
+  carriedForwardDays: number;
+  usedDays: number;
+  availableDays: number;
+}
+
+export interface LeaveRequestListRow {
+  id: string;
+  requestNumber: string | null;
+  status: LeaveRequestStatus;
+  fromDate: string;
+  toDate: string;
+  daysCount: string;
+  reason: string | null;
+  employeeId: string;
+  employeeName: string;
+  leaveTypeId: string;
+  leaveTypeCode: string;
+  leaveTypeName: string;
+  submittedAt: string | null;
+  createdAt: string;
+}
+
+export interface LeaveRequestDetail {
+  id: string;
+  requestNumber: string | null;
+  employeeId: string;
+  leaveTypeId: string;
+  fromDate: string;
+  toDate: string;
+  daysCount: string;
+  reason: string | null;
+  status: LeaveRequestStatus;
+  submittedAt: string | null;
+  approvedAt: string | null;
+  approvedByUserId: string | null;
+  rejectedAt: string | null;
+  rejectedReason: string | null;
+  cancelledAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateLeaveRequest {
+  employeeId: string;
+  leaveTypeId: string;
+  fromDate: string;
+  toDate: string;
+  daysCount: number;
+  reason?: string;
 }
 
 export type SalaryComponentKind = "earning" | "deduction";

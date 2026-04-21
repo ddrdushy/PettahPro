@@ -32,6 +32,11 @@ import {
   salaryComponentsRoutes,
   employeeSalaryStructureRoutes,
 } from "./modules/hr/salary-components.js";
+import {
+  leaveTypesRoutes,
+  employeeLeaveRoutes,
+  leaveRequestsRoutes,
+} from "./modules/hr/leave.js";
 import { dashboardRoutes } from "./modules/reports/dashboard.js";
 import { trialBalanceRoutes } from "./modules/reports/trial-balance.js";
 import { profitLossRoutes } from "./modules/reports/profit-loss.js";
@@ -94,6 +99,9 @@ export async function buildServer(): Promise<FastifyInstance> {
   await server.register(employeesRoutes, { prefix: "/employees" });
   await server.register(employeeSalaryStructureRoutes, { prefix: "/employees" });
   await server.register(salaryComponentsRoutes, { prefix: "/salary-components" });
+  await server.register(leaveTypesRoutes, { prefix: "/leave-types" });
+  await server.register(employeeLeaveRoutes, { prefix: "/employees" });
+  await server.register(leaveRequestsRoutes, { prefix: "/leave-requests" });
   await server.register(payrollRunsRoutes, { prefix: "/payroll-runs" });
   await server.register(statutoryRoutes, { prefix: "/payroll" });
   await server.register(dashboardRoutes, { prefix: "/dashboard" });

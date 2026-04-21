@@ -78,6 +78,8 @@ const nav: Group[] = [
       { label: "Employees", href: "/app/employees", icon: UserRound },
       { label: "Salary components", href: "/app/salary-components", icon: Layers },
       { label: "Payroll runs", href: "/app/payroll", icon: Briefcase },
+      { label: "Leave types", href: "/app/leave-types", icon: Layers },
+      { label: "Leave requests", href: "/app/leave-requests", icon: Briefcase },
     ],
   },
   {
