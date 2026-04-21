@@ -864,4 +864,230 @@ export const invoicesRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.send(result);
     },
   );
+
+  // POST /invoices/:id/write-off — give up on collection, clear the AR,
+  // optionally claim VAT bad-debt relief. Eligible when invoice is
+  // posted/partially_paid with a positive balance.
+  //
+  // VAT relief proration: we prorate invoice.taxCents by
+  // balance_due / total. For pure VAT invoices this is exact; for
+  // mixed VAT+SSCL this slightly over-states VAT relief (since SSCL
+  // is not reclaimable). v2 will derive VAT-only from line tax codes.
+  fastify.post<{
+    Params: { id: string };
+    Body: { reason: string; claimVatRelief?: boolean };
+  }>("/:id/write-off", async (req, reply) => {
+    const ctx = requireAuth(req, reply);
+    if (!ctx) return;
+
+    const reason = (req.body?.reason ?? "").trim();
+    if (!reason) {
+      return reply
+        .status(400)
+        .send({ error: { code: "REASON_REQUIRED", message: "Reason is required." } });
+    }
+    const claimVatRelief = req.body?.claimVatRelief === true;
+
+    const result = await withTenant(ctx.tenantId, async (tx) => {
+      const [inv] = await tx
+        .select()
+        .from(schema.invoices)
+        .where(
+          and(
+            eq(schema.invoices.tenantId, ctx.tenantId),
+            eq(schema.invoices.id, req.params.id),
+            isNull(schema.invoices.deletedAt),
+          ),
+        )
+        .limit(1);
+      if (!inv) return { error: "NOT_FOUND" as const };
+      if (inv.status !== "posted" && inv.status !== "partially_paid") {
+        return { error: "NOT_ELIGIBLE" as const };
+      }
+      if (inv.balanceDueCents <= 0) {
+        return { error: "NO_BALANCE" as const };
+      }
+
+      // Resolve accounts: AR (existing invoice.journalEntryId uses one; we
+      // just look it up again here for cleanliness), bad debt expense 6500,
+      // VAT payable 2100.
+      const coaRows = await tx
+        .select()
+        .from(schema.chartOfAccounts)
+        .where(
+          and(
+            eq(schema.chartOfAccounts.tenantId, ctx.tenantId),
+            isNull(schema.chartOfAccounts.deletedAt),
+          ),
+        );
+      const byCode = new Map(coaRows.map((a) => [a.code, a]));
+      const arAccount = coaRows.find((a) => a.accountSubtype === "ar");
+      const badDebtAccount = byCode.get("6500");
+      const vatPayable = byCode.get("2100");
+      if (!arAccount) return { error: "NO_AR_ACCOUNT" as const };
+      if (!badDebtAccount) return { error: "NO_BAD_DEBT_ACCOUNT" as const };
+
+      // Prorate VAT relief against the balance being written off. Only
+      // attempted when user opts in AND the invoice carries tax.
+      let vatRelief = 0;
+      if (claimVatRelief && inv.taxCents > 0 && inv.totalCents > 0) {
+        if (!vatPayable) return { error: "NO_VAT_ACCOUNT" as const };
+        vatRelief = Math.min(
+          inv.taxCents,
+          Math.round((inv.taxCents * inv.balanceDueCents) / inv.totalCents),
+        );
+      }
+      const principalCents = inv.balanceDueCents - vatRelief;
+
+      const lines: Parameters<typeof postJournal>[1]["lines"] = [
+        {
+          accountId: badDebtAccount.id,
+          drCents: principalCents,
+          description: `Bad debt · ${inv.invoiceNumber ?? inv.id.slice(0, 8)}`,
+          customerId: inv.customerId,
+        },
+      ];
+      if (vatRelief > 0 && vatPayable) {
+        lines.push({
+          accountId: vatPayable.id,
+          drCents: vatRelief,
+          description: `VAT bad-debt relief · ${inv.invoiceNumber ?? ""}`.trim(),
+          customerId: inv.customerId,
+        });
+      }
+      lines.push({
+        accountId: arAccount.id,
+        crCents: inv.balanceDueCents,
+        description: `Write-off · ${inv.invoiceNumber ?? ""}`.trim(),
+        customerId: inv.customerId,
+      });
+
+      const today = new Date().toISOString().slice(0, 10);
+      const { entryId, entryNumber } = await postJournal(tx, {
+        tenantId: ctx.tenantId,
+        entryDate: today,
+        memo: `Write-off · ${inv.invoiceNumber ?? inv.id.slice(0, 8)} · ${reason}`,
+        sourceType: "bad_debt_writeoff",
+        sourceId: inv.id,
+        postedByUserId: ctx.userId,
+        lines,
+      });
+
+      await tx
+        .update(schema.invoices)
+        .set({
+          status: "written_off",
+          balanceDueCents: 0,
+          writtenOffAt: new Date(),
+          writeoffReason: reason,
+          writeoffJournalEntryId: entryId,
+          writeoffVatReliefCents: vatRelief,
+          writeoffPrincipalCents: principalCents,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.invoices.id, inv.id));
+
+      return {
+        ok: true as const,
+        entryId,
+        entryNumber,
+        principalCents,
+        vatReliefCents: vatRelief,
+      };
+    });
+
+    if ("error" in result) {
+      const map: Record<string, number> = {
+        NOT_FOUND: 404,
+        NOT_ELIGIBLE: 409,
+        NO_BALANCE: 409,
+        NO_AR_ACCOUNT: 500,
+        NO_BAD_DEBT_ACCOUNT: 500,
+        NO_VAT_ACCOUNT: 500,
+      };
+      const msgs: Record<string, string> = {
+        NOT_ELIGIBLE: "Only posted or partially paid invoices can be written off.",
+        NO_BALANCE: "This invoice has no outstanding balance to write off.",
+        NO_AR_ACCOUNT: "No Accounts Receivable account configured.",
+        NO_BAD_DEBT_ACCOUNT: "No bad debt expense account (code 6500) configured.",
+        NO_VAT_ACCOUNT: "Can't claim VAT relief without a VAT Payable account.",
+      };
+      const code = result.error as string;
+      return reply.status(map[code] ?? 500).send({ error: { code, message: msgs[code] ?? code } });
+    }
+    return reply.send(result);
+  });
+
+  // POST /invoices/:id/reverse-write-off — customer paid after all. Flip
+  // the write-off journal, reopen the invoice, restore balance_due.
+  fastify.post<{ Params: { id: string }; Body: { reason?: string } }>(
+    "/:id/reverse-write-off",
+    async (req, reply) => {
+      const ctx = requireAuth(req, reply);
+      if (!ctx) return;
+      const reason = (req.body?.reason ?? "").trim();
+
+      const result = await withTenant(ctx.tenantId, async (tx) => {
+        const [inv] = await tx
+          .select()
+          .from(schema.invoices)
+          .where(
+            and(
+              eq(schema.invoices.tenantId, ctx.tenantId),
+              eq(schema.invoices.id, req.params.id),
+              isNull(schema.invoices.deletedAt),
+            ),
+          )
+          .limit(1);
+        if (!inv) return { error: "NOT_FOUND" as const };
+        if (inv.status !== "written_off") return { error: "NOT_WRITTEN_OFF" as const };
+        if (!inv.writeoffJournalEntryId) return { error: "NO_SOURCE_ENTRY" as const };
+
+        const today = new Date().toISOString().slice(0, 10);
+        const { entryId, entryNumber } = await postReversingJournal(tx, {
+          tenantId: ctx.tenantId,
+          sourceEntryId: inv.writeoffJournalEntryId,
+          reversalDate: today,
+          memo: reason
+            ? `Reverse write-off · ${inv.invoiceNumber ?? ""} · ${reason}`.trim()
+            : `Reverse write-off · ${inv.invoiceNumber ?? ""}`.trim(),
+          sourceType: "bad_debt_writeoff_reversal",
+          sourceId: inv.id,
+          postedByUserId: ctx.userId,
+        });
+
+        // Restore invoice state. If there were payments before write-off
+        // (partially_paid), go back to partially_paid; otherwise posted.
+        const restoredBalance = inv.writeoffPrincipalCents + inv.writeoffVatReliefCents;
+        const newStatus = inv.amountPaidCents > 0 ? "partially_paid" : "posted";
+
+        await tx
+          .update(schema.invoices)
+          .set({
+            status: newStatus,
+            balanceDueCents: restoredBalance,
+            writtenOffAt: null,
+            writeoffReason: null,
+            writeoffJournalEntryId: null,
+            writeoffVatReliefCents: 0,
+            writeoffPrincipalCents: 0,
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.invoices.id, inv.id));
+
+        return { ok: true as const, entryId, entryNumber };
+      });
+
+      if ("error" in result) {
+        const map: Record<string, number> = {
+          NOT_FOUND: 404,
+          NOT_WRITTEN_OFF: 409,
+          NO_SOURCE_ENTRY: 500,
+        };
+        const code = result.error as string;
+        return reply.status(map[code] ?? 500).send({ error: { code } });
+      }
+      return reply.send(result);
+    },
+  );
 };

@@ -2,11 +2,11 @@
 
 Live tracker of what's shipped, what's next, and what's backlog — cross-checked against the 23 spec files in `/docs/` (see [`_summary.md`](./_summary.md) for a per-file digest).
 
-Last updated: 2026-04-22 after PR #33.
+Last updated: 2026-04-22 after PR #36.
 
 ---
 
-## ✅ Shipped (PRs #1 – #33)
+## ✅ Shipped (PRs #1 – #36)
 
 ### Platform foundation
 - Multi-tenant Postgres with RLS (`current_tenant_id()` + `SET LOCAL app.tenant_id`)
@@ -49,6 +49,9 @@ Last updated: 2026-04-22 after PR #33.
 - Cheques (9-state lifecycle: issued → handed-over → deposited → presented → cleared | bounced | stopped | cancelled | stale, with legal-action flag)
 - **Period lock** (soft_closed / closed) enforced at `postJournal` choke point; month-end and year-end close with P&L→retained-earnings transfer; reopen audit trail
 - **WHT** withheld at supplier-payment time; `/app/accounting/wht` dashboard with per-month balance, by-supplier totals, remittance history, and remit-to-IRD action
+- **Opening balance** import for onboarding tenants from BUSY/Tally (TB grid with paste-CSV + one-shot posting guardrails)
+- **Customer credit enforcement** — credit_hold hard block + credit_limit soft block at invoice post; auto-flag on 2+ bounced cheques
+- **Bad debt write-off with VAT relief** — give up on collection cleanly, claim SL VAT Act §26 relief on 12+ month-old invoices, reverse if they pay later; `/app/reports/bad-debts` tallies it
 
 ### HR / Payroll
 - Employees (CRUD + salary structure assignments)
@@ -75,12 +78,9 @@ Each item has a spec reference, one-sentence description, and rough sizing (**S*
 
 | # | Feature | Spec | What it does | Size |
 |---|---|---|---|---|
-| 1 | **Opening balance upload** | accounting §7 | Trial-balance CSV + per-module detail screens (debtors / creditors / stock / fixed assets / bank) for tenant migration. | L |
-| 2 | **Customer credit limit enforcement** | business-tenant-layer2 §8 | Block/warn at invoice post when exposure > limit; 2-bounce auto-flag. | M |
-| 3 | **Bad debt write-off with VAT relief** | accounting §11 | Write-off entry + auto VAT bad-debt relief claim + recovery reversal. | M |
-| 4 | **Journal entry approval workflow** | accounting §16 | Above-threshold manual JEs need a second approver before posting. | M |
+| 1 | **Journal entry approval workflow** | accounting §16 | Above-threshold manual JEs need a second approver before posting. | M |
 
-*Previously on this list: **Period lock + year-end close** (PR #32) and **WHT auto-derivation & remittance** (PR #33) — both shipped.*
+*Previously on this list: **Period lock + year-end close** (PR #32), **WHT auto-derivation & remittance** (PR #33), **Opening balance upload** (PR #34), **Customer credit enforcement** (PR #35), **Bad debt write-off with VAT relief** (PR #36) — all shipped.*
 
 ### Should-have (convenience/polish)
 
@@ -145,6 +145,4 @@ These are their own workstreams — track separately from this roadmap.
 
 One PR = one feature. Ship, merge, move on. Batched PRs allowed when features are clearly related (e.g. DN + PO PDFs were batched because they follow the same pattern).
 
-Current recommendation: **next up is #1 Opening balance upload** — unlocks onboarding for tenants migrating from BUSY/Tally. Without it, every new customer starts with empty books on Day 1, which is a non-starter for established businesses.
-
-After that, work through the remaining must-haves (customer credit limit, bad-debt write-off, JE approvals), then dip into should-haves based on user pull.
+Current recommendation: **#1 Journal entry approval workflow** is the last must-have. After that, the backlog is all convenience / polish — no hard compliance gaps remain. Pick from should-haves based on what real users start asking for.

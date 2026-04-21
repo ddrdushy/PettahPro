@@ -11,6 +11,7 @@ import { PostInvoiceButton } from "./post-button";
 import { RecordPaymentButton } from "./record-payment-button";
 import { DuplicateInvoiceButton } from "./duplicate-button";
 import { InvoiceVoidButton } from "@/components/app/void-button";
+import { WriteOffButton, ReverseWriteOffButton } from "./write-off-button";
 
 export const metadata: Metadata = { title: "Invoice" };
 
@@ -47,6 +48,12 @@ export default async function InvoiceDetailPage({ params }: { params: { id: stri
   const canVoid =
     (invoice.status === "posted" || invoice.status === "partially_paid") &&
     invoice.amountPaidCents === 0;
+
+  const canWriteOff =
+    (invoice.status === "posted" || invoice.status === "partially_paid") &&
+    invoice.balanceDueCents > 0;
+
+  const canReverseWriteOff = invoice.status === "written_off";
   const voidDisabledReason =
     invoice.status === "void"
       ? "Already void."
@@ -95,6 +102,22 @@ export default async function InvoiceDetailPage({ params }: { params: { id: stri
                 invoiceNumber={invoice.invoiceNumber ?? invoice.id.slice(0, 8)}
                 balanceDueCents={invoice.balanceDueCents}
                 bankAccounts={bankAccounts}
+              />
+            )}
+            {canWriteOff && (
+              <WriteOffButton
+                invoiceId={invoice.id}
+                invoiceNumber={invoice.invoiceNumber ?? invoice.id.slice(0, 8)}
+                issueDate={invoice.issueDate}
+                balanceDueCents={invoice.balanceDueCents}
+                taxCents={invoice.taxCents}
+                totalCents={invoice.totalCents}
+              />
+            )}
+            {canReverseWriteOff && (
+              <ReverseWriteOffButton
+                invoiceId={invoice.id}
+                invoiceNumber={invoice.invoiceNumber ?? invoice.id.slice(0, 8)}
               />
             )}
             {(canVoid || invoice.status === "void") && (
