@@ -12,6 +12,7 @@ import {
   BookOpen,
   NotebookPen,
   Box,
+  Building2,
   Wallet,
   Banknote,
   FileSignature,
@@ -85,7 +86,10 @@ const nav: Group[] = [
   },
   {
     title: "Admin",
-    items: [{ label: "Settings", href: "/app/settings", icon: Settings, badge: "Soon" }],
+    items: [
+      { label: "Branches", href: "/app/branches", icon: Building2 },
+      { label: "Settings", href: "/app/settings", icon: Settings, badge: "Soon" },
+    ],
   },
 ];
 

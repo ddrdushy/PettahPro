@@ -4,6 +4,7 @@ import { tenantContextPlugin } from "./plugins/tenant-context.js";
 import { identityPlugin } from "./modules/identity/plugin.js";
 import { healthRoutes } from "./routes/health.js";
 import { customersRoutes } from "./modules/operations/customers.js";
+import { branchesRoutes } from "./modules/operations/branches.js";
 import { customerStatementRoutes } from "./modules/operations/customer-statement.js";
 import { suppliersRoutes } from "./modules/operations/suppliers.js";
 import { supplierStatementRoutes } from "./modules/operations/supplier-statement.js";
@@ -61,6 +62,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await server.register(identityPlugin);
   await server.register(healthRoutes, { prefix: "/health" });
   await server.register(customersRoutes, { prefix: "/customers" });
+  await server.register(branchesRoutes, { prefix: "/branches" });
   await server.register(customerStatementRoutes, { prefix: "/customers" });
   await server.register(suppliersRoutes, { prefix: "/suppliers" });
   await server.register(supplierStatementRoutes, { prefix: "/suppliers" });

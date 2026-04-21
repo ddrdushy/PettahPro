@@ -96,6 +96,13 @@ export const api = {
   listCoa: () => request<{ accounts: Account[] }>("/coa"),
   listTaxCodes: () => request<{ taxCodes: TaxCode[] }>("/tax-codes"),
 
+  listBranches: () => request<{ branches: Branch[] }>("/branches"),
+  getBranch: (id: string) => request<{ branch: Branch }>(`/branches/${id}`),
+  createBranch: (body: CreateBranch) =>
+    request<{ branch: Branch }>("/branches", { method: "POST", json: body }),
+  updateBranch: (id: string, body: UpdateBranch) =>
+    request<{ branch: Branch }>(`/branches/${id}`, { method: "PATCH", json: body }),
+
   listJournalEntries: (limit?: number, offset?: number) => {
     const params = new URLSearchParams();
     if (limit !== undefined) params.set("limit", String(limit));
@@ -618,6 +625,36 @@ export interface Account {
   normalSide: "dr" | "cr";
   isSystem: boolean;
   isActive: boolean;
+}
+
+export interface Branch {
+  id: string;
+  code: string;
+  name: string;
+  isHeadOffice: boolean;
+  addressLine1: string | null;
+  addressLine2: string | null;
+  city: string | null;
+  postalCode: string | null;
+  phone: string | null;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateBranch {
+  code: string;
+  name: string;
+  isHeadOffice?: boolean;
+  addressLine1?: string;
+  addressLine2?: string;
+  city?: string;
+  postalCode?: string;
+  phone?: string;
+}
+
+export interface UpdateBranch extends Partial<CreateBranch> {
+  isActive?: boolean;
 }
 
 export interface JournalEntryListRow {
