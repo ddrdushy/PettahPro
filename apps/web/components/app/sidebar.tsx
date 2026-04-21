@@ -102,6 +102,7 @@ const nav: Group[] = [
       { label: "Receivables aging", href: "/app/reports/ar-aging", icon: FileBarChart },
       { label: "Payables aging", href: "/app/reports/ap-aging", icon: FileBarChart },
       { label: "3-way match", href: "/app/reports/three-way-match", icon: FileBarChart },
+      { label: "Bad debts", href: "/app/reports/bad-debts", icon: FileBarChart },
     ],
   },
   {

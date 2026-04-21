@@ -210,6 +210,7 @@ export function InvoicePDF({
     partially_paid: styles.statusPartial,
     paid: styles.statusPaid,
     void: styles.statusDraft,
+    written_off: styles.statusDraft,
   }[invoice.status];
 
   return (

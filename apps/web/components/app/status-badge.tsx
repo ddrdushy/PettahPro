@@ -6,6 +6,7 @@ const styles: Record<InvoiceStatus, string> = {
   partially_paid: "bg-warning-bg text-warning",
   paid: "bg-mint text-mint-dark",
   void: "bg-danger-bg/60 text-danger",
+  written_off: "bg-amber-50 text-amber-800",
 };
 
 const labels: Record<InvoiceStatus, string> = {
@@ -14,6 +15,7 @@ const labels: Record<InvoiceStatus, string> = {
   partially_paid: "Partial",
   paid: "Paid",
   void: "Void",
+  written_off: "Written off",
 };
 
 export function StatusBadge({ status }: { status: InvoiceStatus }) {

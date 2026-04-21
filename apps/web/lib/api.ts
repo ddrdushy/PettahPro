@@ -167,6 +167,21 @@ export const api = {
     }),
   duplicateInvoice: (id: string) =>
     request<{ invoice: InvoiceDetail }>(`/invoices/${id}/duplicate`, { method: "POST" }),
+  writeOffInvoice: (id: string, body: { reason: string; claimVatRelief?: boolean }) =>
+    request<{
+      ok: true;
+      entryId: string;
+      entryNumber: string;
+      principalCents: number;
+      vatReliefCents: number;
+    }>(`/invoices/${id}/write-off`, { method: "POST", json: body }),
+  reverseWriteOff: (id: string, reason?: string) =>
+    request<{ ok: true; entryId: string; entryNumber: string }>(
+      `/invoices/${id}/reverse-write-off`,
+      { method: "POST", json: reason ? { reason } : {} },
+    ),
+
+  badDebtsReport: () => request<BadDebtReport>("/reports/bad-debts"),
 
   listRecurringInvoices: () =>
     request<{ recurringInvoices: RecurringInvoiceListRow[] }>("/recurring-invoices"),
@@ -1072,7 +1087,7 @@ export interface CreateFixedAsset {
   notes?: string;
 }
 
-export type InvoiceStatus = "draft" | "posted" | "partially_paid" | "paid" | "void";
+export type InvoiceStatus = "draft" | "posted" | "partially_paid" | "paid" | "void" | "written_off";
 export type BillStatus = InvoiceStatus;
 
 export interface BillListRow {
@@ -1273,6 +1288,11 @@ export interface InvoiceDetail {
   terms: string | null;
   journalEntryId: string | null;
   postedAt: string | null;
+  writtenOffAt: string | null;
+  writeoffReason: string | null;
+  writeoffJournalEntryId: string | null;
+  writeoffVatReliefCents: number;
+  writeoffPrincipalCents: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -2387,6 +2407,30 @@ export interface CashFlowSection {
   kind: "operating" | "investing" | "financing";
   accounts: CashFlowRow[];
   totalCents: number;
+}
+
+export interface BadDebtWriteOff {
+  invoiceId: string;
+  invoiceNumber: string | null;
+  issueDate: string;
+  writtenOffAt: string;
+  customerId: string;
+  customerName: string;
+  writeoffReason: string | null;
+  principalCents: number;
+  vatReliefCents: number;
+  totalCents: number;
+  writeoffJournalEntryId: string | null;
+}
+
+export interface BadDebtReport {
+  writeOffs: BadDebtWriteOff[];
+  totals: {
+    principalCents: number;
+    vatReliefCents: number;
+    totalCents: number;
+    count: number;
+  };
 }
 
 export type AgingBucketLabel = "current" | "0-30" | "30-60" | "60-90" | "90+";

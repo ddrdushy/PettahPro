@@ -51,6 +51,7 @@ import { vatReturnRoutes } from "./modules/reports/vat-return.js";
 import { cashFlowRoutes } from "./modules/reports/cash-flow.js";
 import { threeWayMatchRoutes } from "./modules/reports/three-way-match.js";
 import { arAgingRoutes, apAgingRoutes } from "./modules/reports/aging.js";
+import { badDebtsRoutes } from "./modules/reports/bad-debts.js";
 import { notificationsRoutes } from "./modules/notifications/routes.js";
 import { settingsRoutes } from "./modules/settings/routes.js";
 
@@ -127,6 +128,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await server.register(threeWayMatchRoutes, { prefix: "/reports/three-way-match" });
   await server.register(arAgingRoutes, { prefix: "/reports/ar-aging" });
   await server.register(apAgingRoutes, { prefix: "/reports/ap-aging" });
+  await server.register(badDebtsRoutes, { prefix: "/reports/bad-debts" });
   await server.register(notificationsRoutes, { prefix: "/notifications" });
   await server.register(settingsRoutes, { prefix: "/settings" });
 
