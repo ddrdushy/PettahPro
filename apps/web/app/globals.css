@@ -77,6 +77,10 @@
     @apply rounded-card border-hairline border-border bg-surface-elevated p-6;
   }
 
+  .input {
+    @apply w-full rounded-md border-hairline border-border-emphasis bg-surface-elevated px-3 py-2 text-small text-charcoal focus:border-charcoal focus:outline-none;
+  }
+
   .eyebrow {
     @apply inline-flex items-center rounded-full bg-mint-surface px-3 py-1 text-micro uppercase tracking-wide text-mint-dark;
   }

@@ -57,6 +57,11 @@ BEGIN
     VALUES (p_tenant_id, '1200', 'Inventory',               'asset',     'inventory', 'dr', true) RETURNING id INTO v_inv_id;
   INSERT INTO chart_of_accounts (tenant_id, code, name, account_type, account_subtype, normal_side, is_system)
     VALUES (p_tenant_id, '1300', 'VAT recoverable',         'asset',     'tax',       'dr', true) RETURNING id INTO v_vat_rec_id;
+  -- Fixed assets (1500-range, capitalized long-lived resources; depreciated via accumulated depreciation contra)
+  INSERT INTO chart_of_accounts (tenant_id, code, name, account_type, account_subtype, normal_side, is_system)
+    VALUES (p_tenant_id, '1500', 'Plant, equipment & vehicles', 'asset', 'fixed_asset',              'dr', true);
+  INSERT INTO chart_of_accounts (tenant_id, code, name, account_type, account_subtype, normal_side, is_system)
+    VALUES (p_tenant_id, '1590', 'Accumulated depreciation',    'asset', 'accumulated_depreciation', 'cr', true);
 
   -- Liabilities (2xxx)
   INSERT INTO chart_of_accounts (tenant_id, code, name, account_type, account_subtype, normal_side, is_system)
@@ -105,6 +110,8 @@ BEGIN
     VALUES (p_tenant_id, '6200', 'Utilities',               'expense',   'utilities', 'dr', true) RETURNING id INTO v_util_id;
   INSERT INTO chart_of_accounts (tenant_id, code, name, account_type, account_subtype, normal_side, is_system)
     VALUES (p_tenant_id, '6300', 'Bank charges',            'expense',   'bank_fees', 'dr', true);
+  INSERT INTO chart_of_accounts (tenant_id, code, name, account_type, account_subtype, normal_side, is_system)
+    VALUES (p_tenant_id, '6400', 'Depreciation expense',    'expense',   'depreciation_expense', 'dr', true);
   INSERT INTO chart_of_accounts (tenant_id, code, name, account_type, account_subtype, normal_side, is_system)
     VALUES (p_tenant_id, '6900', 'Other operating expenses','expense',   'other',     'dr', true) RETURNING id INTO v_other_exp_id;
 

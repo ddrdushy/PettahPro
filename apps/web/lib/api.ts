@@ -111,6 +111,25 @@ export const api = {
       json: body,
     }),
 
+  listFixedAssets: () =>
+    request<{
+      assets: FixedAssetRow[];
+      totals: { costCents: number; accumulatedCents: number; netBookValueCents: number; count: number };
+    }>("/fixed-assets"),
+  getFixedAsset: (id: string) =>
+    request<{ asset: FixedAssetRow; history: FixedAssetDepreciationEntry[] }>(`/fixed-assets/${id}`),
+  createFixedAsset: (body: CreateFixedAsset) =>
+    request<{ asset: FixedAssetRow }>("/fixed-assets", { method: "POST", json: body }),
+  runDepreciation: (year: number, month: number) =>
+    request<{
+      ok: true;
+      processed: number;
+      skipped: Array<{ id: string; name: string; reason: string }>;
+      totalDepreciationCents: number;
+      entryNumber?: string;
+      runDate?: string;
+    }>("/fixed-assets/run-depreciation", { method: "POST", json: { year, month } }),
+
   listInvoices: () => request<{ invoices: InvoiceListRow[] }>("/invoices"),
   getInvoice: (id: string) =>
     request<{ invoice: InvoiceDetail; lines: InvoiceLine[]; customer: Customer | null }>(
@@ -653,6 +672,72 @@ export interface CreateJournalEntry {
   entryDate: string;
   memo?: string;
   lines: CreateJournalEntryLine[];
+}
+
+export type FixedAssetCategory =
+  | "vehicle"
+  | "equipment"
+  | "furniture"
+  | "building"
+  | "it_hardware"
+  | "software"
+  | "land"
+  | "other";
+
+export type FixedAssetStatus = "active" | "disposed" | "written_off";
+
+export interface FixedAssetRow {
+  id: string;
+  code: string | null;
+  name: string;
+  category: FixedAssetCategory;
+  assetAccountId: string | null;
+  accumulatedDepreciationAccountId: string | null;
+  depreciationExpenseAccountId: string | null;
+  acquisitionDate: string;
+  depreciationStartDate: string;
+  costCents: number;
+  salvageCents: number;
+  usefulLifeMonths: number;
+  depreciationMethod: "straight_line";
+  accumulatedDepreciationCents: number;
+  netBookValueCents: number;
+  lastDepreciationRunDate: string | null;
+  status: FixedAssetStatus;
+  supplierId: string | null;
+  billId: string | null;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface FixedAssetDepreciationEntry {
+  id: string;
+  fixedAssetId: string;
+  runDate: string;
+  periodYear: number;
+  periodMonth: number;
+  depreciationCents: number;
+  accumulatedAfterCents: number;
+  journalEntryId: string | null;
+  createdAt: string;
+}
+
+export interface CreateFixedAsset {
+  code?: string;
+  name: string;
+  category?: FixedAssetCategory;
+  acquisitionDate: string;
+  depreciationStartDate?: string;
+  costCents: number;
+  salvageCents?: number;
+  usefulLifeMonths: number;
+  assetAccountId?: string;
+  accumulatedDepreciationAccountId?: string;
+  depreciationExpenseAccountId?: string;
+  supplierId?: string;
+  billId?: string;
+  notes?: string;
 }
 
 export type InvoiceStatus = "draft" | "posted" | "partially_paid" | "paid" | "void";
