@@ -96,6 +96,21 @@ export const api = {
   listCoa: () => request<{ accounts: Account[] }>("/coa"),
   listTaxCodes: () => request<{ taxCodes: TaxCode[] }>("/tax-codes"),
 
+  listJournalEntries: (limit?: number, offset?: number) => {
+    const params = new URLSearchParams();
+    if (limit !== undefined) params.set("limit", String(limit));
+    if (offset !== undefined) params.set("offset", String(offset));
+    const q = params.toString();
+    return request<{ entries: JournalEntryListRow[] }>(`/journal-entries${q ? `?${q}` : ""}`);
+  },
+  getJournalEntry: (id: string) =>
+    request<{ entry: JournalEntryHeader; lines: JournalEntryLine[] }>(`/journal-entries/${id}`),
+  createJournalEntry: (body: CreateJournalEntry) =>
+    request<{ ok: true; entryId: string; entryNumber: string }>("/journal-entries", {
+      method: "POST",
+      json: body,
+    }),
+
   listInvoices: () => request<{ invoices: InvoiceListRow[] }>("/invoices"),
   getInvoice: (id: string) =>
     request<{ invoice: InvoiceDetail; lines: InvoiceLine[]; customer: Customer | null }>(
@@ -547,6 +562,60 @@ export interface Account {
   normalSide: "dr" | "cr";
   isSystem: boolean;
   isActive: boolean;
+}
+
+export interface JournalEntryListRow {
+  id: string;
+  entryNumber: string;
+  entryDate: string;
+  memo: string | null;
+  sourceType: string | null;
+  sourceId: string | null;
+  isReversed: boolean;
+  postedAt: string;
+  totalCents: number;
+  lineCount: number;
+}
+
+export interface JournalEntryHeader {
+  id: string;
+  entryNumber: string;
+  entryDate: string;
+  memo: string | null;
+  sourceType: string | null;
+  sourceId: string | null;
+  isReversed: boolean;
+  postedAt: string;
+}
+
+export interface JournalEntryLine {
+  id: string;
+  lineNo: number;
+  accountId: string;
+  accountCode: string;
+  accountName: string;
+  drCents: number;
+  crCents: number;
+  description: string | null;
+  customerId: string | null;
+  customerName: string | null;
+  supplierId: string | null;
+  supplierName: string | null;
+}
+
+export interface CreateJournalEntryLine {
+  accountId: string;
+  drCents?: number;
+  crCents?: number;
+  description?: string;
+  customerId?: string;
+  supplierId?: string;
+}
+
+export interface CreateJournalEntry {
+  entryDate: string;
+  memo?: string;
+  lines: CreateJournalEntryLine[];
 }
 
 export type InvoiceStatus = "draft" | "posted" | "partially_paid" | "paid" | "void";
