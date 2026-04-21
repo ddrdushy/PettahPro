@@ -25,6 +25,11 @@ const CreateSchema = z.object({
   chequeDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   memo: z.string().optional().or(z.literal("")),
   allocations: z.array(AllocationSchema).min(1),
+  // Withholding tax: when non-zero, the buyer withholds this portion of
+  // amountCents (which still fully settles the bill) and books it to
+  // WHT Payable for later remittance to IRD. The bank only sees the net.
+  whtCents: z.number().int().min(0).default(0),
+  whtTaxCodeId: z.string().uuid().optional(),
 });
 
 export const supplierPaymentsRoutes: FastifyPluginAsync = async (fastify) => {
@@ -169,11 +174,90 @@ export const supplierPaymentsRoutes: FastifyPluginAsync = async (fastify) => {
         creditAccountId = bankTransitAccountId;
       }
 
+      // Resolve WHT payable account if withholding is applied. The tax
+      // code's payable_account_id wins; falls back to the tenant's 2110
+      // "WHT payable" account (seeded per tenant).
+      let whtAccountId: string | null = null;
+      let whtTaxCodeId: string | null = null;
+      if (input.whtCents > 0) {
+        if (input.whtCents >= input.amountCents) {
+          return { error: "WHT_EXCEEDS_PAYMENT" as const };
+        }
+        if (input.whtTaxCodeId) {
+          const [tc] = await tx
+            .select({ id: schema.taxCodes.id, payableAccountId: schema.taxCodes.payableAccountId })
+            .from(schema.taxCodes)
+            .where(
+              and(
+                eq(schema.taxCodes.tenantId, ctx.tenantId),
+                eq(schema.taxCodes.id, input.whtTaxCodeId),
+                isNull(schema.taxCodes.deletedAt),
+              ),
+            )
+            .limit(1);
+          if (!tc) return { error: "WHT_TAX_CODE_NOT_FOUND" as const };
+          whtTaxCodeId = tc.id;
+          whtAccountId = tc.payableAccountId;
+        }
+        if (!whtAccountId) {
+          // Fall back to the seeded "WHT payable" account by code 2110.
+          const [fallback] = await tx
+            .select({ id: schema.chartOfAccounts.id })
+            .from(schema.chartOfAccounts)
+            .where(
+              and(
+                eq(schema.chartOfAccounts.tenantId, ctx.tenantId),
+                eq(schema.chartOfAccounts.code, "2110"),
+                isNull(schema.chartOfAccounts.deletedAt),
+              ),
+            )
+            .limit(1);
+          if (!fallback) return { error: "NO_WHT_ACCOUNT" as const };
+          whtAccountId = fallback.id;
+        }
+      }
+
       const [{ number: paymentNumber }] = (await tx.execute(
         sql`SELECT next_document_number('payment') AS number`,
       )) as unknown as Array<{ number: string }>;
 
-      // Journal: DR AP, CR Bank (or Bank-in-Transit for cheques)
+      // Journal:
+      //   DR AP                          (gross — fully settles the bill)
+      //   CR Bank / Bank-in-Transit      (net = amount − wht)
+      //   CR WHT Payable                 (wht portion; only if withholding)
+      const netBankCents = input.amountCents - input.whtCents;
+      const lines: Array<{
+        accountId: string;
+        drCents?: number;
+        crCents?: number;
+        description?: string;
+        supplierId?: string | null;
+      }> = [
+        {
+          accountId: ap.id,
+          drCents: input.amountCents,
+          description: `AP cleared · ${paymentNumber}`,
+          supplierId: supplier.id,
+        },
+        {
+          accountId: creditAccountId,
+          crCents: netBankCents,
+          description:
+            input.method === "cheque"
+              ? `Cheque in transit · ${paymentNumber}`
+              : `Payment sent · ${paymentNumber}`,
+          supplierId: supplier.id,
+        },
+      ];
+      if (input.whtCents > 0 && whtAccountId) {
+        lines.push({
+          accountId: whtAccountId,
+          crCents: input.whtCents,
+          description: `WHT withheld · ${paymentNumber}`,
+          supplierId: supplier.id,
+        });
+      }
+
       const { entryId, entryNumber } = await postJournal(tx, {
         tenantId: ctx.tenantId,
         entryDate: input.paymentDate ?? new Date().toISOString().slice(0, 10),
@@ -183,23 +267,7 @@ export const supplierPaymentsRoutes: FastifyPluginAsync = async (fastify) => {
             : `Payment ${paymentNumber} to ${supplier.name}`,
         sourceType: "supplier_payment",
         postedByUserId: ctx.userId,
-        lines: [
-          {
-            accountId: ap.id,
-            drCents: input.amountCents,
-            description: `AP cleared · ${paymentNumber}`,
-            supplierId: supplier.id,
-          },
-          {
-            accountId: creditAccountId,
-            crCents: input.amountCents,
-            description:
-              input.method === "cheque"
-                ? `Cheque in transit · ${paymentNumber}`
-                : `Payment sent · ${paymentNumber}`,
-            supplierId: supplier.id,
-          },
-        ],
+        lines,
       });
 
       const [payment] = await tx
@@ -216,6 +284,9 @@ export const supplierPaymentsRoutes: FastifyPluginAsync = async (fastify) => {
           reference: input.reference || null,
           chequeNumber: input.chequeNumber || null,
           chequeDate: input.chequeDate ?? null,
+          whtCents: input.whtCents,
+          whtTaxCodeId,
+          whtAccountId,
           memo: input.memo || null,
           status: "posted",
           journalEntryId: entryId,
@@ -290,6 +361,9 @@ export const supplierPaymentsRoutes: FastifyPluginAsync = async (fastify) => {
         NO_AP_ACCOUNT: 500,
         NO_BANK_TRANSIT_ACCOUNT: 500,
         CHEQUE_NUMBER_REQUIRED: 400,
+        WHT_EXCEEDS_PAYMENT: 400,
+        WHT_TAX_CODE_NOT_FOUND: 400,
+        NO_WHT_ACCOUNT: 500,
       };
       const messages: Record<string, string> = {
         SUPPLIER_NOT_FOUND: "Supplier not found.",
@@ -302,6 +376,9 @@ export const supplierPaymentsRoutes: FastifyPluginAsync = async (fastify) => {
         NO_AP_ACCOUNT: "No Accounts Payable account configured.",
         NO_BANK_TRANSIT_ACCOUNT: "No Bank-in-transit account configured — needed for cheque payments.",
         CHEQUE_NUMBER_REQUIRED: "Cheque number is required.",
+        WHT_EXCEEDS_PAYMENT: "Withheld amount can't match or exceed the payment total.",
+        WHT_TAX_CODE_NOT_FOUND: "Selected WHT tax code not found.",
+        NO_WHT_ACCOUNT: "No WHT payable account configured.",
       };
       const code = result.error as string;
       return reply

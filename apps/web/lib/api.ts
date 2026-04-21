@@ -402,6 +402,19 @@ export const api = {
   reconcileBankImport: (id: string) =>
     request<{ ok: true }>(`/bank-reconciliation/imports/${id}/reconcile`, { method: "POST" }),
 
+  whtSummary: () => request<WhtSummary>("/wht"),
+  remitWht: (body: {
+    bankAccountId: string;
+    amountCents: number;
+    paymentDate?: string;
+    reference?: string;
+    memo?: string;
+  }) =>
+    request<{ ok: true; entryId: string; entryNumber: string }>("/wht/remit", {
+      method: "POST",
+      json: body,
+    }),
+
   listPeriods: () => request<{ periods: FiscalPeriod[] }>("/periods"),
   softClosePeriod: (id: string, reason: string) =>
     request<{ ok: true }>(`/periods/${id}/soft-close`, { method: "POST", json: { reason } }),
@@ -2503,6 +2516,37 @@ export interface TenantSettings {
   stockRelieveOn: StockRelieveOn;
 }
 
+export interface WhtPerMonth {
+  year: number;
+  month: number;
+  withheldCents: number;
+  remittedCents: number;
+  netBalanceCents: number;
+}
+
+export interface WhtBySupplier {
+  supplierId: string;
+  supplierName: string;
+  withheldCents: number;
+  paymentCount: number;
+}
+
+export interface WhtRemittance {
+  id: string;
+  entryNumber: string | null;
+  entryDate: string;
+  amountCents: number;
+  reference: string | null;
+  memo: string | null;
+}
+
+export interface WhtSummary {
+  balanceCents: number;
+  perMonth: WhtPerMonth[];
+  suppliers: WhtBySupplier[];
+  remittances: WhtRemittance[];
+}
+
 export type PeriodStatus = "open" | "soft_closed" | "closed";
 
 export interface FiscalPeriod {
@@ -2743,6 +2787,8 @@ export interface CreateSupplierPayment {
   chequeDate?: string;
   memo?: string;
   allocations: { billId: string; allocatedCents: number }[];
+  whtCents?: number;
+  whtTaxCodeId?: string;
 }
 
 export interface CreatePayment {

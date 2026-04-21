@@ -3,7 +3,7 @@ import Link from "next/link";
 import { cookies } from "next/headers";
 import { notFound } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
-import type { Account, BillDetail, BillLine, Supplier } from "@/lib/api";
+import type { Account, BillDetail, BillLine, Supplier, TaxCode } from "@/lib/api";
 import { PageHeader } from "@/components/app/page-header";
 import { StatusBadge } from "@/components/app/status-badge";
 import { formatLKR, formatDate } from "@/lib/format";
@@ -16,9 +16,10 @@ export const metadata: Metadata = { title: "Bill" };
 async function fetchBill(id: string) {
   const base = process.env.INTERNAL_API_URL ?? "http://api:4000";
   const cookieHeader = cookies().toString();
-  const [bRes, coaRes] = await Promise.all([
+  const [bRes, coaRes, txRes] = await Promise.all([
     fetch(`${base}/bills/${id}`, { headers: { cookie: cookieHeader }, cache: "no-store" }),
     fetch(`${base}/coa`, { headers: { cookie: cookieHeader }, cache: "no-store" }),
+    fetch(`${base}/tax-codes`, { headers: { cookie: cookieHeader }, cache: "no-store" }),
   ]);
   if (bRes.status === 404) return null;
   if (!bRes.ok) return null;
@@ -31,13 +32,15 @@ async function fetchBill(id: string) {
   const bankAccounts = coa.filter(
     (a) => a.accountType === "asset" && (a.accountSubtype === "bank" || a.accountSubtype === "cash"),
   );
-  return { ...data, bankAccounts };
+  const taxCodes = txRes.ok ? ((await txRes.json()) as { taxCodes: TaxCode[] }).taxCodes : [];
+  const whtTaxCodes = taxCodes.filter((t) => t.taxType === "wht");
+  return { ...data, bankAccounts, whtTaxCodes };
 }
 
 export default async function BillDetailPage({ params }: { params: { id: string } }) {
   const data = await fetchBill(params.id);
   if (!data) notFound();
-  const { bill, lines, supplier, bankAccounts } = data;
+  const { bill, lines, supplier, bankAccounts, whtTaxCodes } = data;
 
   const isPayable =
     (bill.status === "posted" || bill.status === "partially_paid") && bill.balanceDueCents > 0;
@@ -78,6 +81,8 @@ export default async function BillDetailPage({ params }: { params: { id: string 
                 billReference={bill.internalReference ?? bill.id.slice(0, 8)}
                 balanceDueCents={bill.balanceDueCents}
                 bankAccounts={bankAccounts}
+                whtTaxCodes={whtTaxCodes}
+                defaultWhtTaxCodeId={supplier.defaultWhtTaxCodeId ?? null}
               />
             )}
             {(canVoid || bill.status === "void") && (
