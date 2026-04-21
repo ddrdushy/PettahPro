@@ -73,6 +73,7 @@ const nav: Group[] = [
       { label: "Trial balance", href: "/app/reports/trial-balance", icon: FileBarChart },
       { label: "P&L", href: "/app/reports/profit-loss", icon: FileBarChart },
       { label: "Balance sheet", href: "/app/reports/balance-sheet", icon: FileBarChart },
+      { label: "General ledger", href: "/app/reports/general-ledger", icon: FileBarChart },
     ],
   },
   {
