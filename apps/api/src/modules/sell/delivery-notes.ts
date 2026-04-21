@@ -3,6 +3,14 @@ import { and, eq, isNull, desc, asc, sql } from "drizzle-orm";
 import { z } from "zod";
 import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
+import { postJournal } from "../accounting/journal-posting.js";
+import {
+  applyStockIssue,
+  peekStockIssue,
+  resolveDefaultWarehouse,
+  resolveStockGLAccounts,
+} from "../inventory/stock-posting.js";
+import { loadTenantSettings } from "../settings/routes.js";
 
 const LineSchema = z.object({
   itemId: z.string().uuid().optional(),
@@ -266,6 +274,115 @@ export const deliveryNotesRoutes: FastifyPluginAsync = async (fastify) => {
         const dnNumber = numRows[0]?.number;
         if (!dnNumber) return { error: "NUMBER_ALLOC_FAILED" as const };
 
+        // If tenant has opted into DN-based stock relief, this is where stock
+        // actually leaves inventory (COGS journal + stock_ledger writes).
+        // In 'invoice' mode (default), the invoice post already handled it —
+        // we just flip status here.
+        const settings = await loadTenantSettings(tx);
+        if (settings.stockRelieveOn === "delivery_note") {
+          const dnLines = await tx
+            .select()
+            .from(schema.deliveryNoteLines)
+            .where(
+              and(
+                eq(schema.deliveryNoteLines.tenantId, ctx.tenantId),
+                eq(schema.deliveryNoteLines.deliveryNoteId, dn.id),
+              ),
+            );
+
+          const linkedItems = await tx
+            .select()
+            .from(schema.items)
+            .where(
+              and(
+                eq(schema.items.tenantId, ctx.tenantId),
+                isNull(schema.items.deletedAt),
+              ),
+            );
+          const itemById = new Map(linkedItems.map((i) => [i.id, i]));
+
+          const defaultWarehouse = await resolveDefaultWarehouse(tx, ctx.tenantId);
+          const { inventoryAccountId, cogsAccountId } = await resolveStockGLAccounts(
+            tx,
+            ctx.tenantId,
+          );
+
+          const trackedLines: Array<{
+            line: (typeof dnLines)[number];
+            item: typeof schema.items.$inferSelect;
+            cogsCents: number;
+          }> = [];
+          let totalCogsCents = 0;
+
+          for (const l of dnLines) {
+            if (!l.itemId) continue;
+            const item = itemById.get(l.itemId);
+            if (!item || !item.trackInventory) continue;
+            if (!defaultWarehouse) return { error: "NO_DEFAULT_WAREHOUSE" as const };
+            if (!inventoryAccountId || !cogsAccountId) {
+              return { error: "NO_STOCK_ACCOUNTS" as const };
+            }
+
+            const qty = Number(l.quantity);
+            if (qty <= 0) continue;
+
+            try {
+              const { cogsCents } = await peekStockIssue(tx, {
+                tenantId: ctx.tenantId,
+                itemId: item.id,
+                warehouseId: defaultWarehouse.id,
+                quantity: qty,
+              });
+              trackedLines.push({ line: l, item, cogsCents });
+              totalCogsCents += cogsCents;
+            } catch (err) {
+              const e = err as Error & { code?: string };
+              if (e.code === "NEGATIVE_STOCK") return { error: "NEGATIVE_STOCK" as const };
+              throw err;
+            }
+          }
+
+          if (totalCogsCents > 0 && cogsAccountId && inventoryAccountId) {
+            const { entryId } = await postJournal(tx, {
+              tenantId: ctx.tenantId,
+              entryDate: dn.deliveryDate,
+              memo: `Delivery ${dnNumber}`,
+              sourceType: "delivery_note",
+              sourceId: dn.id,
+              postedByUserId: ctx.userId,
+              lines: [
+                {
+                  accountId: cogsAccountId,
+                  drCents: totalCogsCents,
+                  description: `COGS · ${dnNumber}`,
+                  customerId: dn.customerId,
+                },
+                {
+                  accountId: inventoryAccountId,
+                  crCents: totalCogsCents,
+                  description: `Inventory relief · ${dnNumber}`,
+                  customerId: dn.customerId,
+                },
+              ],
+            });
+
+            for (const t of trackedLines) {
+              await applyStockIssue(tx, {
+                tenantId: ctx.tenantId,
+                itemId: t.item.id,
+                warehouseId: defaultWarehouse!.id,
+                quantity: Number(t.line.quantity),
+                sourceDocumentType: "delivery_note",
+                sourceDocumentId: dn.id,
+                sourceLineId: t.line.id,
+                journalEntryId: entryId,
+                postedByUserId: ctx.userId,
+                memo: `Delivery ${dnNumber}`,
+              });
+            }
+          }
+        }
+
         const now = new Date();
         await tx
           .update(schema.deliveryNotes)
@@ -286,6 +403,9 @@ export const deliveryNotesRoutes: FastifyPluginAsync = async (fastify) => {
           NOT_FOUND: "Delivery note not found.",
           NOT_DRAFT: "Only draft delivery notes can be marked delivered.",
           NUMBER_ALLOC_FAILED: "Couldn't allocate a DN number.",
+          NO_DEFAULT_WAREHOUSE: "No default warehouse is configured for this tenant.",
+          NO_STOCK_ACCOUNTS: "Inventory or COGS account isn't set up.",
+          NEGATIVE_STOCK: "Not enough stock on hand to fulfill this delivery.",
         };
         const code = result.error as string;
         return reply

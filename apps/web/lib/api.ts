@@ -2336,8 +2336,11 @@ export interface CashFlow {
   sections: CashFlowSection[];
 }
 
+export type StockRelieveOn = "invoice" | "delivery_note";
+
 export interface TenantSettings {
   salaryDaysPerMonth: number;
+  stockRelieveOn: StockRelieveOn;
 }
 
 export interface TenantSettingsResponse {
