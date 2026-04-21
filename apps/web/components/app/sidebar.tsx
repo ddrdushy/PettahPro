@@ -23,6 +23,7 @@ import {
   Briefcase,
   Layers,
   FileBarChart,
+  Lock,
   Settings,
   type LucideIcon,
 } from "lucide-react";
@@ -71,6 +72,7 @@ const nav: Group[] = [
     items: [
       { label: "Chart of accounts", href: "/app/coa", icon: BookOpen },
       { label: "Journal entries", href: "/app/journals", icon: NotebookPen },
+      { label: "Fiscal periods", href: "/app/accounting/periods", icon: Lock },
       { label: "Fixed assets", href: "/app/fixed-assets", icon: Box },
       { label: "Bank reconciliation", href: "/app/bank-reconciliation", icon: ScrollText },
       { label: "Cheques", href: "/app/cheques", icon: FileSignature },
