@@ -4,6 +4,7 @@ import { z } from "zod";
 import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
 import { postJournal } from "../accounting/journal-posting.js";
+import { emitNotification } from "../notifications/emit.js";
 import {
   postReversingJournal,
   rewindStockForSource,
@@ -465,6 +466,32 @@ export const billsRoutes: FastifyPluginAsync = async (fastify) => {
           updatedAt: new Date(),
         })
         .where(eq(schema.bills.id, bill.id));
+
+      const [sup] = await tx
+        .select({ name: schema.suppliers.name })
+        .from(schema.suppliers)
+        .where(eq(schema.suppliers.id, bill.supplierId))
+        .limit(1);
+
+      const tenantUsers = await tx.execute(sql`
+        SELECT id FROM users WHERE tenant_id = current_tenant_id()
+      `);
+      const formattedTotal = (bill.totalCents / 100).toLocaleString("en-LK", {
+        style: "currency",
+        currency: bill.currency || "LKR",
+        maximumFractionDigits: 2,
+      });
+      for (const u of tenantUsers as unknown as Array<{ id: string }>) {
+        await emitNotification(tx, {
+          tenantId: ctx.tenantId,
+          userId: u.id,
+          kind: "bill_posted",
+          title: `Bill ${internalReference} posted`,
+          body: `${sup?.name ?? "Supplier"} · ${formattedTotal}`,
+          refType: "bill",
+          refId: bill.id,
+        });
+      }
 
       return { ok: true as const, internalReference, entryNumber };
     });

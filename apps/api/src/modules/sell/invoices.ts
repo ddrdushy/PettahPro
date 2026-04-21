@@ -4,6 +4,7 @@ import { z } from "zod";
 import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
 import { postJournal } from "../accounting/journal-posting.js";
+import { emitNotification } from "../notifications/emit.js";
 import {
   postReversingJournal,
   rewindStockForSource,
@@ -651,6 +652,36 @@ export const invoicesRoutes: FastifyPluginAsync = async (fastify) => {
           updatedAt: new Date(),
         })
         .where(eq(schema.invoices.id, invoice.id));
+
+      // Customer name for a friendlier title — cheap single-row join on id.
+      const [cust] = await tx
+        .select({ name: schema.customers.name })
+        .from(schema.customers)
+        .where(eq(schema.customers.id, invoice.customerId))
+        .limit(1);
+
+      // v1 sends notifications to every user in the tenant — small tenants
+      // today, multi-user fan-out is fine inline. A receipts table can
+      // replace this when it stops scaling.
+      const tenantUsers = await tx.execute(sql`
+        SELECT id FROM users WHERE tenant_id = current_tenant_id()
+      `);
+      const formattedTotal = (invoice.totalCents / 100).toLocaleString("en-LK", {
+        style: "currency",
+        currency: invoice.currency || "LKR",
+        maximumFractionDigits: 2,
+      });
+      for (const u of tenantUsers as unknown as Array<{ id: string }>) {
+        await emitNotification(tx, {
+          tenantId: ctx.tenantId,
+          userId: u.id,
+          kind: "invoice_posted",
+          title: `Invoice ${invoiceNumber} posted`,
+          body: `${cust?.name ?? "Customer"} · ${formattedTotal}`,
+          refType: "invoice",
+          refId: invoice.id,
+        });
+      }
 
       return { ok: true as const, invoiceNumber, entryNumber };
     });
