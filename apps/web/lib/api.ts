@@ -1969,6 +1969,8 @@ export interface PayrollRunLine {
   wasEpfEligible: boolean;
   wasEtfEligible: boolean;
   wasPayeApplicable: boolean;
+  paidLeaveDays: string;
+  unpaidLeaveDays: string;
   bankName: string | null;
   bankAccountNo: string | null;
   bankBranch: string | null;

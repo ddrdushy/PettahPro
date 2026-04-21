@@ -223,25 +223,27 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
         assignmentsByEmployee.set(a.employeeId, list);
       }
 
-      // Approved no-pay leave days per employee within the period. SL salary
-      // convention defaults to a 30-day month for prorating; can be overridden
-      // per-tenant via settings.salaryDaysPerMonth. We only look at unpaid
-      // (is_paid=false) leave types — paid leave doesn't reduce salary by
-      // construction.
+      // Approved leave days per employee within the period, split by whether
+      // the leave type is paid or unpaid:
+      //   - unpaid (np) → auto-injected NOPAY-LV deduction below, prorated by
+      //     tenantSettings.salaryDaysPerMonth.
+      //   - paid        → informational only; surfaces on the payslip so the
+      //     employee can see the consumption against their allocation.
       const tenantSettings = await loadTenantSettings(tx);
       const npDaysByEmployee = new Map<string, number>();
-      const npLeaveRows = (await tx.execute(sql`
+      const paidDaysByEmployee = new Map<string, number>();
+      const leaveRows = (await tx.execute(sql`
         SELECT lr.employee_id,
                lr.from_date::text AS from_date,
                lr.to_date::text   AS to_date,
-               lr.days_count
+               lr.days_count,
+               lt.is_paid
         FROM leave_requests lr
         INNER JOIN leave_types lt
           ON lt.id = lr.leave_type_id
          AND lt.tenant_id = lr.tenant_id
         WHERE lr.tenant_id = current_tenant_id()
           AND lr.status = 'approved'
-          AND lt.is_paid = false
           AND lt.deleted_at IS NULL
           AND lr.from_date <= ${periodEnd}::date
           AND lr.to_date   >= ${periodStart}::date
@@ -250,11 +252,12 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
         from_date: string;
         to_date: string;
         days_count: string | number;
+        is_paid: boolean;
       }>;
 
       const SALARY_DAYS_PER_MONTH = tenantSettings.salaryDaysPerMonth;
       const msPerDay = 86_400_000;
-      for (const r of npLeaveRows) {
+      for (const r of leaveRows) {
         const reqStart = new Date(r.from_date).getTime();
         const reqEnd = new Date(r.to_date).getTime();
         const windowStart = Math.max(reqStart, new Date(periodStart).getTime());
@@ -267,8 +270,8 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
         const portion =
           totalCalendarDays > 0 ? overlapCalendarDays / totalCalendarDays : 1;
         const days = Number(r.days_count) * portion;
-        const current = npDaysByEmployee.get(r.employee_id) ?? 0;
-        npDaysByEmployee.set(r.employee_id, current + days);
+        const bucket = r.is_paid ? paidDaysByEmployee : npDaysByEmployee;
+        bucket.set(r.employee_id, (bucket.get(r.employee_id) ?? 0) + days);
       }
 
       // Compute each line and persist
@@ -426,6 +429,8 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
             wasEpfEligible: e.epfEligible,
             wasEtfEligible: e.etfEligible,
             wasPayeApplicable: e.payeApplicable,
+            paidLeaveDays: (paidDaysByEmployee.get(e.id) ?? 0).toFixed(2),
+            unpaidLeaveDays: (npDaysByEmployee.get(e.id) ?? 0).toFixed(2),
             bankName: e.bankName,
             bankAccountNo: e.bankAccountNo,
             bankBranch: e.bankBranch,
