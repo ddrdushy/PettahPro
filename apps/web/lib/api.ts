@@ -65,6 +65,13 @@ export const api = {
   listCustomers: (q?: string) =>
     request<{ customers: Customer[] }>(`/customers${q ? `?q=${encodeURIComponent(q)}` : ""}`),
   getCustomer: (id: string) => request<CustomerDetail>(`/customers/${id}`),
+  customerStatement: (id: string, from?: string, to?: string) => {
+    const params = new URLSearchParams();
+    if (from) params.set("from", from);
+    if (to) params.set("to", to);
+    const q = params.toString();
+    return request<CustomerStatement>(`/customers/${id}/statement${q ? `?${q}` : ""}`);
+  },
   createCustomer: (body: CreateCustomer) =>
     request<{ customer: Customer }>("/customers", { method: "POST", json: body }),
 
@@ -351,6 +358,30 @@ export interface CustomerDetail {
     reference: string | null;
     status: string;
   }>;
+}
+
+export interface CustomerStatementTransaction {
+  kind: "invoice" | "payment";
+  id: string;
+  number: string | null;
+  date: string;
+  dueDate: string | null;
+  description: string;
+  debitCents: number;
+  creditCents: number;
+  runningBalanceCents: number;
+}
+
+export interface CustomerStatement {
+  customer: Customer;
+  asOfFrom: string;
+  asOfTo: string;
+  openingBalanceCents: number;
+  closingBalanceCents: number;
+  totalBilledCents: number;
+  totalReceivedCents: number;
+  transactions: CustomerStatementTransaction[];
+  aging: PartyAgingBucket[];
 }
 
 export interface SupplierDetail {
