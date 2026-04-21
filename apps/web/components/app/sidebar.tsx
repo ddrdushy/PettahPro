@@ -35,6 +35,7 @@ const nav: Group[] = [
     items: [
       { label: "Customers", href: "/app/customers", icon: Users },
       { label: "Invoices", href: "/app/invoices", icon: Receipt },
+      { label: "Credit notes", href: "/app/credit-notes", icon: Receipt },
       { label: "Payments", href: "/app/payments", icon: Wallet },
     ],
   },

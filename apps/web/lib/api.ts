@@ -129,6 +129,22 @@ export const api = {
       json: reason ? { reason } : {},
     }),
 
+  listCreditNotes: () => request<{ creditNotes: CreditNoteListRow[] }>("/credit-notes"),
+  getCreditNote: (id: string) =>
+    request<{
+      creditNote: CreditNoteDetail;
+      lines: CreditNoteLine[];
+      customer: Customer | null;
+      invoice: CreditNoteLinkedInvoice | null;
+    }>(`/credit-notes/${id}`),
+  createCreditNote: (body: CreateCreditNote) =>
+    request<{ creditNote: CreditNoteDetail }>("/credit-notes", { method: "POST", json: body }),
+  postCreditNote: (id: string) =>
+    request<{ ok: true; creditNoteNumber: string; entryNumber: string; appliedCents: number }>(
+      `/credit-notes/${id}/post`,
+      { method: "POST" },
+    ),
+
   listBills: () => request<{ bills: BillListRow[] }>("/bills"),
   getBill: (id: string) =>
     request<{ bill: BillDetail; lines: BillLine[]; supplier: Supplier | null }>(`/bills/${id}`),
@@ -777,6 +793,95 @@ export interface CreateInvoice {
   notes?: string;
   terms?: string;
   lines: CreateInvoiceLine[];
+}
+
+export type CreditNoteStatus = "draft" | "posted" | "void";
+
+export type CreditNoteReason =
+  | "return"
+  | "price_adjustment"
+  | "discount"
+  | "goodwill"
+  | "write_off"
+  | "other";
+
+export interface CreditNoteListRow {
+  id: string;
+  creditNoteNumber: string | null;
+  status: CreditNoteStatus;
+  issueDate: string;
+  customerId: string;
+  customerName: string;
+  invoiceId: string | null;
+  currency: string;
+  totalCents: number;
+  appliedCents: number;
+  reason: CreditNoteReason;
+  createdAt: string;
+}
+
+export interface CreditNoteDetail {
+  id: string;
+  creditNoteNumber: string | null;
+  customerId: string;
+  branchId: string | null;
+  invoiceId: string | null;
+  status: CreditNoteStatus;
+  issueDate: string;
+  currency: string;
+  subtotalCents: number;
+  discountCents: number;
+  taxCents: number;
+  totalCents: number;
+  appliedCents: number;
+  reason: CreditNoteReason;
+  notes: string | null;
+  journalEntryId: string | null;
+  postedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreditNoteLine {
+  id: string;
+  lineNo: number;
+  itemId: string | null;
+  description: string;
+  quantity: string;
+  unitPriceCents: number;
+  lineSubtotalCents: number;
+  discountPctBps: number;
+  discountCents: number;
+  taxCodeId: string | null;
+  taxRateBps: number;
+  taxCents: number;
+  lineTotalCents: number;
+  incomeAccountId: string | null;
+}
+
+export interface CreditNoteLinkedInvoice {
+  id: string;
+  invoiceNumber: string | null;
+  totalCents: number;
+  balanceDueCents: number;
+}
+
+export interface CreateCreditNoteLine {
+  itemId?: string;
+  description: string;
+  quantity: number;
+  unitPriceCents: number;
+  discountPctBps?: number;
+  taxCodeId?: string;
+}
+
+export interface CreateCreditNote {
+  customerId: string;
+  invoiceId?: string;
+  issueDate?: string;
+  reason?: CreditNoteReason;
+  notes?: string;
+  lines: CreateCreditNoteLine[];
 }
 
 export type ChequeStatus =
