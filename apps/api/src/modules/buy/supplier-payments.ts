@@ -291,7 +291,22 @@ export const supplierPaymentsRoutes: FastifyPluginAsync = async (fastify) => {
         NO_BANK_TRANSIT_ACCOUNT: 500,
         CHEQUE_NUMBER_REQUIRED: 400,
       };
-      return reply.status(map[result.error] ?? 500).send({ error: { code: result.error } });
+      const messages: Record<string, string> = {
+        SUPPLIER_NOT_FOUND: "Supplier not found.",
+        BANK_NOT_FOUND: "Bank account not found.",
+        INVALID_BANK_ACCOUNT: "That account isn't a bank/cash account — pick a different one.",
+        BILL_NOT_FOUND: "One of the allocated bills wasn't found.",
+        BILL_WRONG_SUPPLIER: "An allocated bill belongs to a different supplier.",
+        BILL_NOT_PAYABLE: "One of the allocated bills isn't open for payment (it's draft, void, or fully paid).",
+        ALLOCATION_EXCEEDS_BALANCE: "Allocated amount exceeds the bill's outstanding balance.",
+        NO_AP_ACCOUNT: "No Accounts Payable account configured.",
+        NO_BANK_TRANSIT_ACCOUNT: "No Bank-in-transit account configured — needed for cheque payments.",
+        CHEQUE_NUMBER_REQUIRED: "Cheque number is required.",
+      };
+      const code = result.error as string;
+      return reply
+        .status(map[code] ?? 500)
+        .send({ error: { code, message: messages[code] ?? code } });
     }
     return reply.status(201).send(result);
   });

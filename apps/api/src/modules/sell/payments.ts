@@ -317,7 +317,22 @@ export const paymentsRoutes: FastifyPluginAsync = async (fastify) => {
         NO_BANK_CLEARING_ACCOUNT: 500,
         CHEQUE_NUMBER_REQUIRED: 400,
       };
-      return reply.status(map[result.error] ?? 500).send({ error: { code: result.error } });
+      const messages: Record<string, string> = {
+        CUSTOMER_NOT_FOUND: "Customer not found.",
+        BANK_NOT_FOUND: "Bank account not found.",
+        INVALID_BANK_ACCOUNT: "That account isn't a bank/cash account — pick a different one.",
+        INVOICE_NOT_FOUND: "One of the allocated invoices wasn't found.",
+        INVOICE_WRONG_CUSTOMER: "An allocated invoice belongs to a different customer.",
+        INVOICE_NOT_POSTABLE: "One of the allocated invoices isn't open for payment (it's draft, void, or fully paid).",
+        ALLOCATION_EXCEEDS_BALANCE: "Allocated amount exceeds the invoice's outstanding balance.",
+        NO_AR_ACCOUNT: "No Accounts Receivable account configured.",
+        NO_BANK_CLEARING_ACCOUNT: "No Bank-in-clearing account configured — needed for cheque payments.",
+        CHEQUE_NUMBER_REQUIRED: "Cheque number is required. Enter it in the Reference field.",
+      };
+      const code = result.error as string;
+      return reply
+        .status(map[code] ?? 500)
+        .send({ error: { code, message: messages[code] ?? code } });
     }
     return reply.status(201).send(result);
   });

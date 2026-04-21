@@ -55,6 +55,11 @@ export function RecordPaymentButton(props: {
       setBusy(false);
       return;
     }
+    if (method === "cheque" && !String(f.get("reference") ?? "").trim()) {
+      setError("Cheque number is required. Enter it in the Reference field.");
+      setBusy(false);
+      return;
+    }
 
     try {
       await api.createPayment({
@@ -153,9 +158,11 @@ export function RecordPaymentButton(props: {
             </div>
 
             <Field
-              label="Reference"
+              label={method === "cheque" ? "Cheque number" : "Reference"}
               name="reference"
-              placeholder={method === "cheque" ? "Cheque number" : method === "bank_transfer" ? "Bank reference" : "Optional"}
+              placeholder={method === "cheque" ? "e.g. 012345" : method === "bank_transfer" ? "Bank reference" : "Optional"}
+              required={method === "cheque"}
+              hint={method === "cheque" ? "Required — printed on the cheque" : undefined}
             />
 
             {method === "cheque" && (
