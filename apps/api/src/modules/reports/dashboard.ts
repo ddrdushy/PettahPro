@@ -18,11 +18,16 @@ interface DashboardPayload {
   openInvoiceCount: number;
   overdueCents: number;
   overdueCount: number;
+  apTotalCents: number;
+  openBillCount: number;
+  overdueBillsCents: number;
+  overdueBillsCount: number;
   revenueThisMonthCents: number;
   revenueLastMonthCents: number;
   invoicesThisMonth: number;
   paymentsThisMonthCents: number;
   aging: AgingBucket[];
+  apAging: AgingBucket[];
   recentInvoices: Array<{
     id: string;
     invoiceNumber: string | null;
@@ -117,6 +122,57 @@ export const dashboardRoutes: FastifyPluginAsync = async (fastify) => {
         { label: "90+", lowerDays: 91, upperDays: null, balanceCents: 0, invoiceCount: 0 },
       ].map((b) => {
         const row = agingMap.get(b.label);
+        return row
+          ? { ...b, balanceCents: Number(row.balance_cents), invoiceCount: row.inv_count }
+          : b;
+      });
+
+      // -- AP outstanding
+      const [apStats] = (await tx.execute(sql`
+        SELECT
+          COALESCE(SUM(balance_due_cents), 0)::bigint AS ap_total_cents,
+          COUNT(*) FILTER (WHERE status IN ('posted','partially_paid'))::int AS open_count,
+          COALESCE(SUM(balance_due_cents) FILTER (WHERE due_date < current_date), 0)::bigint AS overdue_cents,
+          COUNT(*) FILTER (WHERE status IN ('posted','partially_paid') AND due_date < current_date)::int AS overdue_count
+        FROM bills
+        WHERE tenant_id = current_tenant_id()
+          AND deleted_at IS NULL
+          AND status IN ('posted','partially_paid')
+      `)) as unknown as Array<{
+        ap_total_cents: number | string;
+        open_count: number;
+        overdue_cents: number | string;
+        overdue_count: number;
+      }>;
+
+      // -- AP aging buckets
+      const apAgingRows = (await tx.execute(sql`
+        SELECT
+          CASE
+            WHEN due_date >= current_date            THEN 'current'
+            WHEN current_date - due_date BETWEEN 1 AND 30   THEN '0-30'
+            WHEN current_date - due_date BETWEEN 31 AND 60  THEN '30-60'
+            WHEN current_date - due_date BETWEEN 61 AND 90  THEN '60-90'
+            ELSE '90+'
+          END AS bucket,
+          COALESCE(SUM(balance_due_cents), 0)::bigint AS balance_cents,
+          COUNT(*)::int AS inv_count
+        FROM bills
+        WHERE tenant_id = current_tenant_id()
+          AND deleted_at IS NULL
+          AND status IN ('posted','partially_paid')
+        GROUP BY bucket
+      `)) as unknown as Array<{ bucket: AgingBucket["label"]; balance_cents: number | string; inv_count: number }>;
+
+      const apAgingMap = new Map(apAgingRows.map((r) => [r.bucket, r]));
+      const apAging: AgingBucket[] = [
+        { label: "current", lowerDays: 0, upperDays: 0, balanceCents: 0, invoiceCount: 0 },
+        { label: "0-30", lowerDays: 1, upperDays: 30, balanceCents: 0, invoiceCount: 0 },
+        { label: "30-60", lowerDays: 31, upperDays: 60, balanceCents: 0, invoiceCount: 0 },
+        { label: "60-90", lowerDays: 61, upperDays: 90, balanceCents: 0, invoiceCount: 0 },
+        { label: "90+", lowerDays: 91, upperDays: null, balanceCents: 0, invoiceCount: 0 },
+      ].map((b) => {
+        const row = apAgingMap.get(b.label);
         return row
           ? { ...b, balanceCents: Number(row.balance_cents), invoiceCount: row.inv_count }
           : b;
@@ -228,11 +284,16 @@ export const dashboardRoutes: FastifyPluginAsync = async (fastify) => {
         openInvoiceCount: Number(arStats?.open_count ?? 0),
         overdueCents: Number(arStats?.overdue_cents ?? 0),
         overdueCount: Number(arStats?.overdue_count ?? 0),
+        apTotalCents: Number(apStats?.ap_total_cents ?? 0),
+        openBillCount: Number(apStats?.open_count ?? 0),
+        overdueBillsCents: Number(apStats?.overdue_cents ?? 0),
+        overdueBillsCount: Number(apStats?.overdue_count ?? 0),
         revenueThisMonthCents: Number(revStats?.rev_this_month ?? 0),
         revenueLastMonthCents: Number(revStats?.rev_last_month ?? 0),
         invoicesThisMonth: Number(revStats?.invoices_this_month ?? 0),
         paymentsThisMonthCents: Number(payStats?.paid_this_month ?? 0),
         aging,
+        apAging,
         recentInvoices: recentInvoices.map((r) => ({
           id: r.id,
           invoiceNumber: r.invoice_number,

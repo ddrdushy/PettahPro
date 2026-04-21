@@ -1058,11 +1058,16 @@ export interface Dashboard {
   openInvoiceCount: number;
   overdueCents: number;
   overdueCount: number;
+  apTotalCents: number;
+  openBillCount: number;
+  overdueBillsCents: number;
+  overdueBillsCount: number;
   revenueThisMonthCents: number;
   revenueLastMonthCents: number;
   invoicesThisMonth: number;
   paymentsThisMonthCents: number;
   aging: AgingBucket[];
+  apAging: AgingBucket[];
   recentInvoices: Array<{
     id: string;
     invoiceNumber: string | null;
