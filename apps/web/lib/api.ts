@@ -618,6 +618,8 @@ export interface Customer {
   email: string | null;
   phone: string | null;
   whatsapp: string | null;
+  addressLine1: string | null;
+  addressLine2: string | null;
   city: string | null;
   country: string;
   tin: string | null;
