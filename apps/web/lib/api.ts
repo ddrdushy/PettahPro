@@ -140,6 +140,13 @@ export const api = {
     return request<BalanceSheet>(`/reports/balance-sheet${qs}`);
   },
 
+  generalLedger: (accountId: string, from?: string, to?: string) => {
+    const params = new URLSearchParams({ accountId });
+    if (from) params.set("from", from);
+    if (to) params.set("to", to);
+    return request<GeneralLedger>(`/reports/general-ledger?${params.toString()}`);
+  },
+
   listStock: () =>
     request<{ balances: StockBalanceRow[]; totalValueCents: number }>("/stock"),
   stockLedger: (itemId: string) =>
@@ -1041,6 +1048,39 @@ export interface TrialBalance {
   balanced: boolean;
   asOfFrom: string | null;
   asOfTo: string | null;
+}
+
+export interface GeneralLedgerLine {
+  journalEntryId: string;
+  entryNumber: string;
+  entryDate: string;
+  memo: string | null;
+  sourceType: string | null;
+  sourceId: string | null;
+  lineNo: number;
+  description: string | null;
+  drCents: number;
+  crCents: number;
+  runningBalanceCents: number;
+}
+
+export interface GeneralLedger {
+  account: {
+    id: string;
+    code: string;
+    name: string;
+    accountType: "asset" | "liability" | "equity" | "income" | "expense";
+    accountSubtype: string | null;
+    normalSide: "dr" | "cr";
+  };
+  asOfFrom: string | null;
+  asOfTo: string | null;
+  openingBalanceCents: number;
+  closingBalanceCents: number;
+  totalDebitsCents: number;
+  totalCreditsCents: number;
+  lines: GeneralLedgerLine[];
+  truncated: boolean;
 }
 
 export interface AgingBucket {

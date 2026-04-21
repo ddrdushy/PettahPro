@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { cookies } from "next/headers";
 import { Check, AlertTriangle } from "lucide-react";
 import type { TrialBalance, TrialBalanceAccount } from "@/lib/api";
@@ -189,11 +190,20 @@ export default async function TrialBalancePage({
                       </span>
                     </td>
                   </tr>
-                  {rows.map((a) => (
-                    <tr key={a.accountId}>
+                  {rows.map((a) => {
+                    const glParams = new URLSearchParams({ accountId: a.accountId });
+                    if (data.asOfFrom) glParams.set("from", data.asOfFrom);
+                    if (data.asOfTo) glParams.set("to", data.asOfTo);
+                    return (
+                    <tr key={a.accountId} className="group">
                       <td className="px-4 py-3 tabular-nums text-text-secondary">{a.code}</td>
                       <td className="px-4 py-3">
-                        <p className="text-charcoal">{a.name}</p>
+                        <Link
+                          href={`/app/reports/general-ledger?${glParams.toString()}`}
+                          className="text-charcoal underline-offset-4 hover:underline"
+                        >
+                          {a.name}
+                        </Link>
                         {a.accountSubtype && (
                           <p className="text-caption text-text-tertiary">{a.accountSubtype}</p>
                         )}
@@ -216,7 +226,8 @@ export default async function TrialBalancePage({
                         {formatLKR(a.balanceCents)}
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                   <tr key={`sub-${type}`} className="bg-surface-recessed/30">
                     <td className="px-4 py-2" />
                     <td className="px-4 py-2 text-caption text-text-secondary">
