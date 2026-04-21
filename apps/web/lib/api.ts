@@ -21,11 +21,16 @@ async function request<T>(
   init: RequestInit & { json?: unknown } = {},
 ): Promise<T> {
   const { json, headers, ...rest } = init;
+  // Only advertise application/json when we actually have a body — Fastify
+  // rejects empty bodies with "Body cannot be empty when content-type is
+  // set to 'application/json'", which broke action POSTs like
+  // /invoices/:id/post that take no body.
+  const hasBody = json !== undefined || rest.body != null;
   const res = await fetch(`${API_BASE}${path}`, {
     ...rest,
     credentials: "include",
     headers: {
-      "Content-Type": "application/json",
+      ...(hasBody ? { "Content-Type": "application/json" } : {}),
       ...(headers ?? {}),
     },
     body: json !== undefined ? JSON.stringify(json) : rest.body,
