@@ -10,6 +10,7 @@ import {
   bigint,
   boolean,
   text,
+  numeric,
 } from "drizzle-orm/pg-core";
 import { tenants } from "./tenants.js";
 import { employees } from "./employees.js";
@@ -71,6 +72,8 @@ export const payrollRunLines = pgTable("payroll_run_lines", {
   wasEpfEligible: boolean("was_epf_eligible").notNull(),
   wasEtfEligible: boolean("was_etf_eligible").notNull(),
   wasPayeApplicable: boolean("was_paye_applicable").notNull(),
+  paidLeaveDays: numeric("paid_leave_days", { precision: 6, scale: 2 }).notNull().default("0"),
+  unpaidLeaveDays: numeric("unpaid_leave_days", { precision: 6, scale: 2 }).notNull().default("0"),
   bankName: varchar("bank_name", { length: 128 }),
   bankAccountNo: varchar("bank_account_no", { length: 64 }),
   bankBranch: varchar("bank_branch", { length: 128 }),

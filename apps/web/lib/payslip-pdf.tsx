@@ -164,6 +164,13 @@ function formatLKR(cents: number): string {
   return `${negative ? "-" : ""}LKR ${formatted}`;
 }
 
+function formatDays(days: string | number): string {
+  const n = Number(days);
+  if (!Number.isFinite(n)) return "0 days";
+  const rounded = Number.isInteger(n) ? n.toString() : n.toFixed(2);
+  return `${rounded} ${n === 1 ? "day" : "days"}`;
+}
+
 function formatDate(iso: string): string {
   const d = new Date(iso);
   return d.toLocaleDateString("en-GB", {
@@ -335,6 +342,24 @@ export function PayslipPDF({
           <Text style={styles.netLabel}>Net take-home pay</Text>
           <Text style={styles.netValue}>{formatLKR(line.netPayCents)}</Text>
         </View>
+
+        {(Number(line.paidLeaveDays) > 0 || Number(line.unpaidLeaveDays) > 0) && (
+          <View style={styles.employerNote}>
+            <Text style={styles.employerTitle}>Leave taken this period</Text>
+            {Number(line.paidLeaveDays) > 0 && (
+              <View style={styles.employerRow}>
+                <Text style={styles.lineLabel}>Paid leave</Text>
+                <Text style={styles.lineValue}>{formatDays(line.paidLeaveDays)}</Text>
+              </View>
+            )}
+            {Number(line.unpaidLeaveDays) > 0 && (
+              <View style={styles.employerRow}>
+                <Text style={styles.lineLabel}>No-pay leave</Text>
+                <Text style={styles.lineValue}>{formatDays(line.unpaidLeaveDays)}</Text>
+              </View>
+            )}
+          </View>
+        )}
 
         {(line.epfEmployerCents > 0 || line.etfEmployerCents > 0) && (
           <View style={styles.employerNote}>

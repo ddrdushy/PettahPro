@@ -11,6 +11,13 @@ import { PayRunButton } from "./pay-button";
 
 export const metadata: Metadata = { title: "Payroll run" };
 
+function formatDays(days: string | number): string {
+  const n = Number(days);
+  if (!Number.isFinite(n) || n === 0) return "0 days";
+  const rounded = Number.isInteger(n) ? n.toString() : n.toFixed(2);
+  return `${rounded} ${n === 1 ? "day" : "days"}`;
+}
+
 const MONTHS = [
   "January",
   "February",
@@ -131,9 +138,27 @@ export default async function PayrollRunDetailPage({ params }: { params: { id: s
                 <tr key={l.id}>
                   <td className="px-4 py-3">
                     <p className="font-medium text-charcoal">{l.employeeFullName}</p>
-                    {l.employeeCode && (
-                      <p className="text-caption text-text-tertiary">{l.employeeCode}</p>
-                    )}
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {l.employeeCode && (
+                        <span className="text-caption text-text-tertiary">{l.employeeCode}</span>
+                      )}
+                      {Number(l.paidLeaveDays) > 0 && (
+                        <span
+                          className="rounded-full bg-mint-surface/60 px-1.5 py-0.5 text-micro text-mint-dark"
+                          title="Paid leave days consumed in this period"
+                        >
+                          {formatDays(l.paidLeaveDays)} paid
+                        </span>
+                      )}
+                      {Number(l.unpaidLeaveDays) > 0 && (
+                        <span
+                          className="rounded-full bg-amber-50 px-1.5 py-0.5 text-micro text-amber-800"
+                          title="No-pay leave days (already deducted below)"
+                        >
+                          {formatDays(l.unpaidLeaveDays)} no-pay
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td className="px-4 py-3">
                     {l.designation && <p className="text-charcoal">{l.designation}</p>}
