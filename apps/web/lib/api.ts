@@ -340,6 +340,15 @@ export const api = {
     return request<CashFlow>(`/reports/cash-flow?${params.toString()}`);
   },
 
+  threeWayMatch: (filter?: { status?: ThreeWayMatchFilter; from?: string; to?: string }) => {
+    const params = new URLSearchParams();
+    if (filter?.status) params.set("status", filter.status);
+    if (filter?.from) params.set("from", filter.from);
+    if (filter?.to) params.set("to", filter.to);
+    const q = params.toString();
+    return request<ThreeWayMatchReport>(`/reports/three-way-match${q ? `?${q}` : ""}`);
+  },
+
   listBankImports: () => request<{ imports: BankImportRow[] }>("/bank-reconciliation/imports"),
   getBankImport: (id: string) =>
     request<{
@@ -2264,6 +2273,54 @@ export interface CashFlowSection {
   kind: "operating" | "investing" | "financing";
   accounts: CashFlowRow[];
   totalCents: number;
+}
+
+export type ThreeWayMatchStatus =
+  | "ok"
+  | "awaiting_grn"
+  | "awaiting_bill"
+  | "under_received"
+  | "over_received"
+  | "bill_mismatch";
+export type ThreeWayMatchFilter = ThreeWayMatchStatus | "variance";
+
+export interface ThreeWayMatchLine {
+  lineId: string;
+  lineNo: number;
+  itemId: string | null;
+  description: string;
+  orderedQty: number;
+  receivedQty: number;
+  billedQty: number;
+  status: ThreeWayMatchStatus;
+}
+
+export interface ThreeWayMatchPo {
+  poId: string;
+  poNumber: string | null;
+  supplierId: string;
+  supplierName: string;
+  orderDate: string;
+  poStatus: string;
+  totalCents: number;
+  convertedBillId: string | null;
+  lines: ThreeWayMatchLine[];
+  status: ThreeWayMatchStatus;
+  lineCount: number;
+  varianceCount: number;
+}
+
+export interface ThreeWayMatchReport {
+  purchaseOrders: ThreeWayMatchPo[];
+  summary: {
+    total: number;
+    ok: number;
+    awaitingGrn: number;
+    awaitingBill: number;
+    underReceived: number;
+    overReceived: number;
+    billMismatch: number;
+  };
 }
 
 export interface CashFlow {

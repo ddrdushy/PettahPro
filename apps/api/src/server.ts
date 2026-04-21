@@ -45,6 +45,7 @@ import { balanceSheetRoutes } from "./modules/reports/balance-sheet.js";
 import { generalLedgerRoutes } from "./modules/reports/general-ledger.js";
 import { vatReturnRoutes } from "./modules/reports/vat-return.js";
 import { cashFlowRoutes } from "./modules/reports/cash-flow.js";
+import { threeWayMatchRoutes } from "./modules/reports/three-way-match.js";
 import { notificationsRoutes } from "./modules/notifications/routes.js";
 
 export async function buildServer(): Promise<FastifyInstance> {
@@ -113,6 +114,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await server.register(generalLedgerRoutes, { prefix: "/reports/general-ledger" });
   await server.register(vatReturnRoutes, { prefix: "/reports/vat-return" });
   await server.register(cashFlowRoutes, { prefix: "/reports/cash-flow" });
+  await server.register(threeWayMatchRoutes, { prefix: "/reports/three-way-match" });
   await server.register(notificationsRoutes, { prefix: "/notifications" });
 
   server.setErrorHandler((err, req, reply) => {
