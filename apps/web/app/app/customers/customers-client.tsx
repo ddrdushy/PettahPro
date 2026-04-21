@@ -75,13 +75,20 @@ export function CustomersClient({ initial }: { initial: Customer[] }) {
       header: "Status",
       align: "center",
       accessor: (c) => (
-        <span
-          className={`rounded-full px-2.5 py-0.5 text-caption ${
-            c.isActive ? "bg-mint-surface text-mint-dark" : "bg-surface-recessed text-text-tertiary"
-          }`}
-        >
-          {c.isActive ? "Active" : "Inactive"}
-        </span>
+        <div className="flex flex-col items-center gap-1">
+          <span
+            className={`rounded-full px-2.5 py-0.5 text-caption ${
+              c.isActive ? "bg-mint-surface text-mint-dark" : "bg-surface-recessed text-text-tertiary"
+            }`}
+          >
+            {c.isActive ? "Active" : "Inactive"}
+          </span>
+          {c.creditHold && (
+            <span className="rounded-full bg-danger-bg/60 px-2 py-0.5 text-micro font-medium text-danger">
+              Credit hold
+            </span>
+          )}
+        </div>
       ),
     },
   ];

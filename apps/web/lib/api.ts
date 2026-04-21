@@ -70,6 +70,12 @@ export const api = {
   listCustomers: (q?: string) =>
     request<{ customers: Customer[] }>(`/customers${q ? `?q=${encodeURIComponent(q)}` : ""}`),
   getCustomer: (id: string) => request<CustomerDetail>(`/customers/${id}`),
+  getCustomerCredit: (id: string) => request<CustomerCredit>(`/customers/${id}/credit`),
+  holdCustomer: (id: string, reason: string) =>
+    request<{ ok: true }>(`/customers/${id}/hold`, { method: "POST", json: { reason } }),
+  unholdCustomer: (id: string) =>
+    request<{ ok: true }>(`/customers/${id}/unhold`, { method: "POST" }),
+
   customerStatement: (id: string, from?: string, to?: string) => {
     const params = new URLSearchParams();
     if (from) params.set("from", from);
@@ -674,9 +680,23 @@ export interface Customer {
   vatNo: string | null;
   paymentTermsDays: number;
   creditLimitCents: number;
+  creditHold: boolean;
+  creditHoldReason: string | null;
+  creditHoldAt: string | null;
   currency: string;
   isActive: boolean;
   createdAt: string;
+}
+
+export interface CustomerCredit {
+  creditLimitCents: number;
+  openArCents: number;
+  availableCents: number | null;
+  utilizationPct: number | null;
+  creditHold: boolean;
+  creditHoldReason: string | null;
+  creditHoldAt: string | null;
+  bounceCount: number;
 }
 
 export interface PartyKpis {

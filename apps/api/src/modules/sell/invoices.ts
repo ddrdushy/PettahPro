@@ -462,6 +462,40 @@ export const invoicesRoutes: FastifyPluginAsync = async (fastify) => {
       if (!invoice) return { error: "NOT_FOUND" as const };
       if (invoice.status !== "draft") return { error: "NOT_DRAFT" as const };
 
+      // Credit checks: hard block on credit_hold, soft block on exposure
+      // exceeding credit_limit. Skipped when credit_limit is 0 (treated as
+      // "no limit enforced" to avoid breaking tenants that haven't set one).
+      const [creditInfo] = await tx
+        .select({
+          creditLimitCents: schema.customers.creditLimitCents,
+          creditHold: schema.customers.creditHold,
+          creditHoldReason: schema.customers.creditHoldReason,
+        })
+        .from(schema.customers)
+        .where(eq(schema.customers.id, invoice.customerId))
+        .limit(1);
+      if (creditInfo?.creditHold) {
+        return {
+          error: "CREDIT_HOLD" as const,
+          reason: creditInfo.creditHoldReason ?? null,
+        };
+      }
+      if (creditInfo && creditInfo.creditLimitCents > 0) {
+        const openArRows = (await tx.execute(sql`
+          SELECT customer_open_ar_cents(${invoice.customerId}::uuid)::bigint AS open_cents
+        `)) as unknown as Array<{ open_cents: number | string }>;
+        const openCents = Number(openArRows[0]?.open_cents ?? 0);
+        const newExposure = openCents + invoice.totalCents;
+        if (newExposure > creditInfo.creditLimitCents) {
+          return {
+            error: "CREDIT_LIMIT_EXCEEDED" as const,
+            openCents,
+            limitCents: creditInfo.creditLimitCents,
+            newInvoiceCents: invoice.totalCents,
+          };
+        }
+      }
+
       const lines = await tx
         .select()
         .from(schema.invoiceLines)
@@ -703,13 +737,28 @@ export const invoicesRoutes: FastifyPluginAsync = async (fastify) => {
         NO_DEFAULT_WAREHOUSE: 500,
         NO_STOCK_ACCOUNTS: 500,
         NEGATIVE_STOCK: 409,
+        CREDIT_HOLD: 409,
+        CREDIT_LIMIT_EXCEEDED: 409,
       };
-      const body: { error: { code: string; message?: string; itemName?: string } } = {
+      const body: { error: { code: string; message?: string; itemName?: string; reason?: string; openCents?: number; limitCents?: number; newInvoiceCents?: number } } = {
         error: { code: result.error },
       };
       if (result.error === "NEGATIVE_STOCK" && "item" in result && result.item) {
         body.error.message = `Not enough stock on hand for ${result.item.name}. Receive stock via a bill before invoicing.`;
         body.error.itemName = result.item.name;
+      }
+      if (result.error === "CREDIT_HOLD" && "reason" in result) {
+        body.error.message = result.reason
+          ? `Customer is on credit hold — ${result.reason}. Clear the hold before posting.`
+          : "Customer is on credit hold. Clear the hold before posting.";
+        body.error.reason = result.reason ?? undefined;
+      }
+      if (result.error === "CREDIT_LIMIT_EXCEEDED" && "limitCents" in result) {
+        const { openCents, limitCents, newInvoiceCents } = result;
+        body.error.message = `Posting would push this customer past their credit limit. Open ${(openCents / 100).toFixed(2)} + this invoice ${(newInvoiceCents / 100).toFixed(2)} = ${((openCents + newInvoiceCents) / 100).toFixed(2)}, limit ${(limitCents / 100).toFixed(2)}. Collect from them or raise the limit first.`;
+        body.error.openCents = openCents;
+        body.error.limitCents = limitCents;
+        body.error.newInvoiceCents = newInvoiceCents;
       }
       return reply.status(map[result.error] ?? 500).send(body);
     }

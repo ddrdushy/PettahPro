@@ -3,7 +3,8 @@ import Link from "next/link";
 import { cookies } from "next/headers";
 import { notFound } from "next/navigation";
 import { ArrowLeft, FileText, Mail, MapPin, Phone, Plus } from "lucide-react";
-import type { CustomerDetail } from "@/lib/api";
+import type { CustomerCredit, CustomerDetail } from "@/lib/api";
+import { CreditPanel } from "./credit-panel";
 import { PageHeader } from "@/components/app/page-header";
 import { StatusBadge } from "@/components/app/status-badge";
 import { PartyKpiStrip, AgingBars } from "@/components/app/party-kpis";
@@ -24,20 +25,27 @@ const methodLabel: Record<string, string> = {
   other: "Other",
 };
 
-async function fetchCustomer(id: string): Promise<CustomerDetail | null> {
-  const res = await fetch(`${process.env.INTERNAL_API_URL ?? "http://api:4000"}/customers/${id}`, {
-    headers: { cookie: cookies().toString() },
-    cache: "no-store",
-  });
-  if (res.status === 404) return null;
-  if (!res.ok) return null;
-  return (await res.json()) as CustomerDetail;
+async function fetchCustomer(id: string): Promise<{
+  detail: CustomerDetail;
+  credit: CustomerCredit | null;
+} | null> {
+  const base = process.env.INTERNAL_API_URL ?? "http://api:4000";
+  const headers = { cookie: cookies().toString() };
+  const [dRes, cRes] = await Promise.all([
+    fetch(`${base}/customers/${id}`, { headers, cache: "no-store" }),
+    fetch(`${base}/customers/${id}/credit`, { headers, cache: "no-store" }),
+  ]);
+  if (dRes.status === 404) return null;
+  if (!dRes.ok) return null;
+  const detail = (await dRes.json()) as CustomerDetail;
+  const credit = cRes.ok ? ((await cRes.json()) as CustomerCredit) : null;
+  return { detail, credit };
 }
 
 export default async function CustomerDetailPage({ params }: { params: { id: string } }) {
   const data = await fetchCustomer(params.id);
   if (!data) notFound();
-  const { customer, kpis, aging, invoices, payments } = data;
+  const { customer, kpis, aging, invoices, payments } = data.detail;
   const agingTotal = aging.reduce((s, b) => s + b.balanceCents, 0);
 
   return (
@@ -208,6 +216,8 @@ export default async function CustomerDetailPage({ params }: { params: { id: str
               {customer.vatNo && <Meta label="VAT" value={customer.vatNo} />}
             </div>
           </section>
+
+          {data.credit && <CreditPanel customerId={customer.id} credit={data.credit} />}
         </aside>
       </div>
     </main>

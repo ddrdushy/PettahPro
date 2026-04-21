@@ -194,6 +194,114 @@ export const customersRoutes: FastifyPluginAsync = async (fastify) => {
     return reply.send(data);
   });
 
+  // GET /customers/:id/credit — credit limit, open AR exposure, hold flag,
+  // and recent bounce count. Powers the credit panel on the detail page.
+  fastify.get<{ Params: { id: string } }>("/:id/credit", async (req, reply) => {
+    const ctx = requireAuth(req, reply);
+    if (!ctx) return;
+
+    const data = await withTenant(ctx.tenantId, async (tx) => {
+      const [cust] = await tx
+        .select({
+          id: schema.customers.id,
+          creditLimitCents: schema.customers.creditLimitCents,
+          creditHold: schema.customers.creditHold,
+          creditHoldReason: schema.customers.creditHoldReason,
+          creditHoldAt: schema.customers.creditHoldAt,
+        })
+        .from(schema.customers)
+        .where(
+          and(
+            eq(schema.customers.tenantId, ctx.tenantId),
+            eq(schema.customers.id, req.params.id),
+            isNull(schema.customers.deletedAt),
+          ),
+        )
+        .limit(1);
+      if (!cust) return null;
+
+      const [row] = (await tx.execute(sql`
+        SELECT customer_open_ar_cents(${req.params.id}::uuid)::bigint AS open_cents,
+               customer_bounce_count(${req.params.id}::uuid)::int AS bounce_count
+      `)) as unknown as Array<{ open_cents: number | string; bounce_count: number }>;
+
+      const openCents = Number(row?.open_cents ?? 0);
+      const limitCents = cust.creditLimitCents;
+      const availableCents = limitCents > 0 ? Math.max(0, limitCents - openCents) : null;
+      const utilizationPct = limitCents > 0 ? Math.min(999, Math.round((openCents / limitCents) * 100)) : null;
+
+      return {
+        creditLimitCents: limitCents,
+        openArCents: openCents,
+        availableCents,
+        utilizationPct,
+        creditHold: cust.creditHold,
+        creditHoldReason: cust.creditHoldReason,
+        creditHoldAt: cust.creditHoldAt,
+        bounceCount: row?.bounce_count ?? 0,
+      };
+    });
+    if (!data) return reply.status(404).send({ error: { code: "NOT_FOUND" } });
+    return reply.send(data);
+  });
+
+  // POST /customers/:id/hold — manually place a customer on credit hold.
+  fastify.post<{ Params: { id: string }; Body: { reason?: string } }>(
+    "/:id/hold",
+    async (req, reply) => {
+      const ctx = requireAuth(req, reply);
+      if (!ctx) return;
+      const reason = (req.body?.reason ?? "").trim();
+      if (!reason) {
+        return reply.status(400).send({
+          error: { code: "REASON_REQUIRED", message: "Reason is required when placing a hold." },
+        });
+      }
+
+      await withTenant(ctx.tenantId, async (tx) => {
+        await tx
+          .update(schema.customers)
+          .set({
+            creditHold: true,
+            creditHoldReason: reason,
+            creditHoldAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(schema.customers.tenantId, ctx.tenantId),
+              eq(schema.customers.id, req.params.id),
+            ),
+          );
+      });
+      return reply.send({ ok: true });
+    },
+  );
+
+  // POST /customers/:id/unhold — clear a credit hold.
+  fastify.post<{ Params: { id: string } }>("/:id/unhold", async (req, reply) => {
+    const ctx = requireAuth(req, reply);
+    if (!ctx) return;
+
+    await withTenant(ctx.tenantId, async (tx) => {
+      await tx
+        .update(schema.customers)
+        .set({
+          creditHold: false,
+          creditHoldReason: null,
+          creditHoldAt: null,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(schema.customers.tenantId, ctx.tenantId),
+            eq(schema.customers.id, req.params.id),
+          ),
+        );
+    });
+    return reply.send({ ok: true });
+  });
+
   fastify.post("/", async (req, reply) => {
     const ctx = requireAuth(req, reply);
     if (!ctx) return;
