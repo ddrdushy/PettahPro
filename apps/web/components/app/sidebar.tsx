@@ -73,6 +73,7 @@ const nav: Group[] = [
       { label: "Chart of accounts", href: "/app/coa", icon: BookOpen },
       { label: "Journal entries", href: "/app/journals", icon: NotebookPen },
       { label: "Fiscal periods", href: "/app/accounting/periods", icon: Lock },
+      { label: "WHT", href: "/app/accounting/wht", icon: FileBarChart },
       { label: "Fixed assets", href: "/app/fixed-assets", icon: Box },
       { label: "Bank reconciliation", href: "/app/bank-reconciliation", icon: ScrollText },
       { label: "Cheques", href: "/app/cheques", icon: FileSignature },

@@ -10,7 +10,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { tenants } from "./tenants.js";
 import { suppliers } from "./suppliers.js";
-import { chartOfAccounts } from "./accounts.js";
+import { chartOfAccounts, taxCodes } from "./accounts.js";
 import { journalEntries } from "./journals.js";
 import { bills } from "./bills.js";
 
@@ -29,6 +29,9 @@ export const supplierPayments = pgTable("supplier_payments", {
   reference: varchar("reference", { length: 64 }),
   chequeNumber: varchar("cheque_number", { length: 32 }),
   chequeDate: date("cheque_date"),
+  whtCents: bigint("wht_cents", { mode: "number" }).notNull().default(0),
+  whtTaxCodeId: uuid("wht_tax_code_id").references(() => taxCodes.id, { onDelete: "set null" }),
+  whtAccountId: uuid("wht_account_id").references(() => chartOfAccounts.id, { onDelete: "set null" }),
   memo: text("memo"),
   status: varchar("status", { length: 16 }).notNull().default("posted"),
   journalEntryId: uuid("journal_entry_id").references(() => journalEntries.id, { onDelete: "set null" }),

@@ -5,7 +5,7 @@ import { useState, type FormEvent } from "react";
 import { Banknote, Loader2 } from "lucide-react";
 import { Drawer } from "@/components/app/drawer";
 import { Field } from "@/components/auth/field";
-import { api, ApiError, type Account, type SupplierPaymentMethod } from "@/lib/api";
+import { api, ApiError, type Account, type SupplierPaymentMethod, type TaxCode } from "@/lib/api";
 import { formatLKR } from "@/lib/format";
 
 const METHOD_OPTIONS: { value: SupplierPaymentMethod; label: string }[] = [
@@ -23,12 +23,25 @@ export function RecordPaymentOutButton(props: {
   billReference: string;
   balanceDueCents: number;
   bankAccounts: Account[];
+  whtTaxCodes: TaxCode[];
+  defaultWhtTaxCodeId: string | null;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [method, setMethod] = useState<SupplierPaymentMethod>("bank_transfer");
+  const [whtTaxCodeId, setWhtTaxCodeId] = useState<string>(props.defaultWhtTaxCodeId ?? "");
+  const [paymentAmountInput, setPaymentAmountInput] = useState<string>(
+    (props.balanceDueCents / 100).toFixed(2),
+  );
+
+  const paymentCents = Math.round(Number(paymentAmountInput) * 100) || 0;
+  const selectedWht = props.whtTaxCodes.find((t) => t.id === whtTaxCodeId);
+  const whtCents = selectedWht
+    ? Math.round((paymentCents * selectedWht.rateBps) / 10_000)
+    : 0;
+  const netPayableCents = paymentCents - whtCents;
 
   const defaultBank =
     props.bankAccounts.find((a) => a.accountSubtype === "bank") ?? props.bankAccounts[0];
@@ -52,6 +65,16 @@ export function RecordPaymentOutButton(props: {
       return;
     }
 
+    const whtRateBps = selectedWht?.rateBps ?? 0;
+    const whtCentsToSend = whtTaxCodeId
+      ? Math.round((amountCents * whtRateBps) / 10_000)
+      : 0;
+    if (whtCentsToSend >= amountCents) {
+      setError("Withholding rate can't match or exceed the whole payment.");
+      setBusy(false);
+      return;
+    }
+
     try {
       await api.createSupplierPayment({
         supplierId: props.supplierId,
@@ -66,6 +89,8 @@ export function RecordPaymentOutButton(props: {
           method === "cheque" ? String(f.get("chequeDate") ?? "") || undefined : undefined,
         memo: String(f.get("memo") ?? "").trim() || undefined,
         allocations: [{ billId: props.billId, allocatedCents: amountCents }],
+        whtCents: whtCentsToSend > 0 ? whtCentsToSend : undefined,
+        whtTaxCodeId: whtCentsToSend > 0 ? whtTaxCodeId : undefined,
       });
       setOpen(false);
       router.refresh();
@@ -120,7 +145,8 @@ export function RecordPaymentOutButton(props: {
                 min={0.01}
                 step="0.01"
                 max={(props.balanceDueCents / 100).toFixed(2)}
-                defaultValue={(props.balanceDueCents / 100).toFixed(2)}
+                value={paymentAmountInput}
+                onChange={(e) => setPaymentAmountInput(e.target.value)}
                 required
               />
               <Field
@@ -183,6 +209,45 @@ export function RecordPaymentOutButton(props: {
             </div>
           </section>
 
+          {props.whtTaxCodes.length > 0 && (
+            <section className="space-y-3">
+              <SectionTitle>Withholding tax</SectionTitle>
+              <div>
+                <label htmlFor="wht-code" className="block text-small font-medium text-charcoal">
+                  Rate
+                </label>
+                <select
+                  id="wht-code"
+                  value={whtTaxCodeId}
+                  onChange={(e) => setWhtTaxCodeId(e.target.value)}
+                  className="mt-1.5 w-full rounded-md border-hairline border-border-emphasis bg-surface-elevated px-3 py-2.5 text-body text-charcoal focus:border-charcoal focus:outline-none focus:ring-1 focus:ring-charcoal"
+                >
+                  <option value="">No withholding</option>
+                  {props.whtTaxCodes.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.code} — {t.name} ({(t.rateBps / 100).toFixed(1)}%)
+                    </option>
+                  ))}
+                </select>
+                {props.defaultWhtTaxCodeId && whtTaxCodeId === props.defaultWhtTaxCodeId && (
+                  <p className="mt-1 text-caption text-text-tertiary">Supplier default applied.</p>
+                )}
+              </div>
+              {whtCents > 0 && (
+                <div className="grid grid-cols-2 gap-4 rounded-md bg-surface-recessed/60 p-3 text-caption text-text-secondary">
+                  <div>
+                    <p className="text-text-tertiary">Withheld</p>
+                    <p className="mt-0.5 text-small tabular-nums text-amber-800">−{formatLKR(whtCents)}</p>
+                  </div>
+                  <div>
+                    <p className="text-text-tertiary">Net to supplier</p>
+                    <p className="mt-0.5 text-small tabular-nums font-medium text-charcoal">{formatLKR(netPayableCents)}</p>
+                  </div>
+                </div>
+              )}
+            </section>
+          )}
+
           {error && (
             <div
               role="alert"
@@ -193,7 +258,11 @@ export function RecordPaymentOutButton(props: {
           )}
 
           <p className="rounded-md bg-mint-surface/60 p-3 text-caption text-mint-dark">
-            Posting creates: <span className="tabular-nums font-medium">DR 2000 Accounts payable · CR {defaultBank?.code ?? "Bank"}</span>
+            {whtCents > 0 ? (
+              <>Posting creates: <span className="tabular-nums font-medium">DR 2000 Accounts payable · CR {defaultBank?.code ?? "Bank"} (net) · CR 2110 WHT payable</span></>
+            ) : (
+              <>Posting creates: <span className="tabular-nums font-medium">DR 2000 Accounts payable · CR {defaultBank?.code ?? "Bank"}</span></>
+            )}
           </p>
 
           <div className="flex items-center justify-end gap-3">
