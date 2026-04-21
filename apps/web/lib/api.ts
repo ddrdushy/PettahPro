@@ -161,6 +161,22 @@ export const api = {
       json: reason ? { reason } : {},
     }),
 
+  listDebitNotes: () => request<{ debitNotes: DebitNoteListRow[] }>("/debit-notes"),
+  getDebitNote: (id: string) =>
+    request<{
+      debitNote: DebitNoteDetail;
+      lines: DebitNoteLine[];
+      supplier: Supplier | null;
+      bill: DebitNoteLinkedBill | null;
+    }>(`/debit-notes/${id}`),
+  createDebitNote: (body: CreateDebitNote) =>
+    request<{ debitNote: DebitNoteDetail }>("/debit-notes", { method: "POST", json: body }),
+  postDebitNote: (id: string) =>
+    request<{ ok: true; internalReference: string; entryNumber: string; appliedCents: number }>(
+      `/debit-notes/${id}/post`,
+      { method: "POST" },
+    ),
+
   dashboard: () => request<Dashboard>("/dashboard"),
 
   trialBalance: (from?: string, to?: string) => {
@@ -882,6 +898,100 @@ export interface CreateCreditNote {
   reason?: CreditNoteReason;
   notes?: string;
   lines: CreateCreditNoteLine[];
+}
+
+export type DebitNoteStatus = "draft" | "posted" | "void";
+
+export type DebitNoteReason =
+  | "return"
+  | "price_adjustment"
+  | "discount"
+  | "goodwill"
+  | "shortage"
+  | "other";
+
+export interface DebitNoteListRow {
+  id: string;
+  internalReference: string | null;
+  supplierDebitNumber: string | null;
+  status: DebitNoteStatus;
+  issueDate: string;
+  supplierId: string;
+  supplierName: string;
+  billId: string | null;
+  currency: string;
+  totalCents: number;
+  appliedCents: number;
+  reason: DebitNoteReason;
+  createdAt: string;
+}
+
+export interface DebitNoteDetail {
+  id: string;
+  internalReference: string | null;
+  supplierDebitNumber: string | null;
+  supplierId: string;
+  branchId: string | null;
+  billId: string | null;
+  status: DebitNoteStatus;
+  issueDate: string;
+  currency: string;
+  subtotalCents: number;
+  discountCents: number;
+  taxCents: number;
+  totalCents: number;
+  appliedCents: number;
+  reason: DebitNoteReason;
+  notes: string | null;
+  journalEntryId: string | null;
+  postedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DebitNoteLine {
+  id: string;
+  lineNo: number;
+  itemId: string | null;
+  description: string;
+  quantity: string;
+  unitPriceCents: number;
+  lineSubtotalCents: number;
+  discountPctBps: number;
+  discountCents: number;
+  taxCodeId: string | null;
+  taxRateBps: number;
+  taxCents: number;
+  lineTotalCents: number;
+  expenseAccountId: string | null;
+}
+
+export interface DebitNoteLinkedBill {
+  id: string;
+  internalReference: string | null;
+  supplierBillNumber: string | null;
+  totalCents: number;
+  balanceDueCents: number;
+}
+
+export interface CreateDebitNoteLine {
+  itemId?: string;
+  description: string;
+  quantity: number;
+  unitPriceCents: number;
+  discountPctBps?: number;
+  taxCodeId?: string;
+  expenseAccountId?: string;
+}
+
+export interface CreateDebitNote {
+  supplierId: string;
+  billId?: string;
+  supplierDebitNumber?: string;
+  issueDate?: string;
+  reason?: DebitNoteReason;
+  notes?: string;
+  lines: CreateDebitNoteLine[];
 }
 
 export type ChequeStatus =
