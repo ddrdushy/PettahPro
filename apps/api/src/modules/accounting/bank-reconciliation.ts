@@ -352,12 +352,20 @@ export const bankReconciliationRoutes: FastifyPluginAsync = async (fastify) => {
       if (!imp) return { error: "NOT_FOUND" as const };
       if (imp.status === "reconciled") return { error: "ALREADY_RECONCILED" as const };
 
-      // Pull every posted customer payment and supplier payment for this
-      // bank account in the same date window. For cheques, they post to
-      // Bank-in-clearing / Bank-in-transit, not the real bank account —
-      // users reconcile them only when the cheque clears (bank statement
-      // shows the final movement against the real bank). For v1 we only
-      // match against customer_payments and supplier_payments.
+      // Candidate sources:
+      //  1. Posted customer_payments with method != cheque — bank credits
+      //     (money in) for this account, matched by payment_date.
+      //  2. Posted supplier_payments with method != cheque — bank debits
+      //     (money out) for this account, matched by payment_date.
+      //  3. CLEARED cheques on this account — matched by cleared_at
+      //     (the date the bank actually moved money), not by payment_date.
+      //     This is the fix for the "cheque in transit/clearing" gap: a
+      //     cheque posts to a clearing account at issue/receipt and only
+      //     hits the real bank account when it clears.
+      //
+      // Non-cheque payments are filtered at the payments side so cheques
+      // aren't double-counted (once via their payment row, once via the
+      // cheques table).
       const custPayments = await tx.execute(sql`
         SELECT id, payment_date::text AS d, amount_cents, reference, method,
                (SELECT name FROM customers WHERE id = customer_payments.customer_id) AS party
@@ -365,6 +373,7 @@ export const bankReconciliationRoutes: FastifyPluginAsync = async (fastify) => {
         WHERE tenant_id = current_tenant_id()
           AND bank_account_id = ${imp.bankAccountId}::uuid
           AND status = 'posted'
+          AND method <> 'cheque'
           AND deleted_at IS NULL
           AND payment_date BETWEEN
               (${imp.statementFromDate}::date - INTERVAL '${sql.raw(String(DATE_WINDOW_DAYS))} days') AND
@@ -377,17 +386,38 @@ export const bankReconciliationRoutes: FastifyPluginAsync = async (fastify) => {
         WHERE tenant_id = current_tenant_id()
           AND bank_account_id = ${imp.bankAccountId}::uuid
           AND status = 'posted'
+          AND method <> 'cheque'
           AND deleted_at IS NULL
           AND payment_date BETWEEN
               (${imp.statementFromDate}::date - INTERVAL '${sql.raw(String(DATE_WINDOW_DAYS))} days') AND
               (${imp.statementToDate}::date + INTERVAL '${sql.raw(String(DATE_WINDOW_DAYS))} days')
       `);
+      const clearedCheques = await tx.execute(sql`
+        SELECT c.id,
+               c.cleared_at::date::text AS d,
+               c.amount_cents,
+               c.cheque_number,
+               c.direction,
+               COALESCE(
+                 (SELECT name FROM customers WHERE id = c.customer_id),
+                 (SELECT name FROM suppliers WHERE id = c.supplier_id),
+                 c.other_party_name
+               ) AS party
+        FROM cheques c
+        WHERE c.tenant_id = current_tenant_id()
+          AND c.bank_account_id = ${imp.bankAccountId}::uuid
+          AND c.status = 'cleared'
+          AND c.cleared_at IS NOT NULL
+          AND c.cleared_at::date BETWEEN
+              (${imp.statementFromDate}::date - INTERVAL '${sql.raw(String(DATE_WINDOW_DAYS))} days') AND
+              (${imp.statementToDate}::date + INTERVAL '${sql.raw(String(DATE_WINDOW_DAYS))} days')
+      `);
 
       interface Candidate {
-        refType: "customer_payment" | "supplier_payment";
+        refType: "customer_payment" | "supplier_payment" | "cheque";
         refId: string;
         date: string;
-        amountCents: number; // signed: customer payments are inflows, supplier outflows
+        amountCents: number; // signed: customer payments + received cheques are inflows, supplier payments + issued cheques outflows
         reference: string | null;
         party: string | null;
       }
@@ -435,6 +465,28 @@ export const bankReconciliationRoutes: FastifyPluginAsync = async (fastify) => {
           amountCents: -Number(p.amount_cents), // outflow
           reference: p.reference,
           party: p.party,
+        });
+      }
+      for (const c of clearedCheques as unknown as Array<{
+        id: string;
+        d: string;
+        amount_cents: number | string;
+        cheque_number: string;
+        direction: string;
+        party: string | null;
+      }>) {
+        const key = `cheque:${c.id}`;
+        if (alreadyUsed.has(key)) continue;
+        // Received cheques clear as bank inflows (+). Issued cheques
+        // clear as outflows (−).
+        const sign = c.direction === "received" ? 1 : -1;
+        candidates.push({
+          refType: "cheque",
+          refId: c.id,
+          date: c.d,
+          amountCents: sign * Number(c.amount_cents),
+          reference: c.cheque_number,
+          party: c.party,
         });
       }
 
