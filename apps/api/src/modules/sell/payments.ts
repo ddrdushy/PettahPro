@@ -4,6 +4,7 @@ import { z } from "zod";
 import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
 import { postJournal } from "../accounting/journal-posting.js";
+import { emitNotification } from "../notifications/emit.js";
 import { resolveChequeGLAccounts } from "../cheques/accounts.js";
 import { createChequeFromPayment } from "../cheques/create.js";
 
@@ -299,6 +300,26 @@ export const paymentsRoutes: FastifyPluginAsync = async (fastify) => {
             updatedAt: new Date(),
           })
           .where(eq(schema.invoices.id, inv.id));
+      }
+
+      const tenantUsers = await tx.execute(sql`
+        SELECT id FROM users WHERE tenant_id = current_tenant_id()
+      `);
+      const formattedAmount = (input.amountCents / 100).toLocaleString("en-LK", {
+        style: "currency",
+        currency: customer.currency || "LKR",
+        maximumFractionDigits: 2,
+      });
+      for (const u of tenantUsers as unknown as Array<{ id: string }>) {
+        await emitNotification(tx, {
+          tenantId: ctx.tenantId,
+          userId: u.id,
+          kind: "payment_received",
+          title: `Payment ${paymentNumber} received`,
+          body: `${customer.name} · ${formattedAmount}${input.method === "cheque" ? ` (cheque)` : ""}`,
+          refType: "customer_payment",
+          refId: payment.id,
+        });
       }
 
       return { ok: true as const, payment, paymentNumber, entryNumber };
