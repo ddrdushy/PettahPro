@@ -180,5 +180,23 @@ BEGIN
       (p_tenant_id, 'ADVREC',  'Salary advance recovery', 'deduction', 'fixed',           false, false, false, true, 100)
     ON CONFLICT DO NOTHING;
   END IF;
+
+  -- 7. Leave types — SL Shop & Office Employees Act minimums + customary
+  -- categories. SL law: 14 annual + 7 casual + 7 sick for full-time workers
+  -- in year 2 onwards; 84 days maternity (12 weeks) paid, Section 10A(4).
+  -- Tenant can edit amounts/add custom types later.
+  IF to_regclass('public.leave_types') IS NOT NULL THEN
+    INSERT INTO leave_types
+      (tenant_id, code, name, default_days_per_year, is_paid,
+       carry_forward_allowed, max_carry_forward_days, is_system)
+    VALUES
+      (p_tenant_id, 'AL', 'Annual leave',    14, true,  true,  7, true),
+      (p_tenant_id, 'CL', 'Casual leave',    7,  true,  false, 0, true),
+      (p_tenant_id, 'SL', 'Sick leave',      7,  true,  false, 0, true),
+      (p_tenant_id, 'ML', 'Maternity leave', 84, true,  false, 0, true),
+      (p_tenant_id, 'PL', 'Paternity leave', 5,  true,  false, 0, true),
+      (p_tenant_id, 'NP', 'No-pay leave',    0,  false, false, 0, true)
+    ON CONFLICT DO NOTHING;
+  END IF;
 END;
 $$;
