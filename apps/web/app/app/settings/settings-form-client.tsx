@@ -15,13 +15,19 @@ export function SettingsFormClient({
   const router = useRouter();
   const [salaryDaysPerMonth, setSalaryDaysPerMonth] = useState<number>(initial.salaryDaysPerMonth);
   const [stockRelieveOn, setStockRelieveOn] = useState<StockRelieveOn>(initial.stockRelieveOn);
+  const [jeThresholdInput, setJeThresholdInput] = useState<string>(
+    (initial.journalApprovalThresholdCents / 100).toFixed(2),
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<Date | null>(null);
 
+  const jeThresholdCents = Math.max(0, Math.round(Number(jeThresholdInput) * 100) || 0);
+
   const dirty =
     salaryDaysPerMonth !== initial.salaryDaysPerMonth ||
-    stockRelieveOn !== initial.stockRelieveOn;
+    stockRelieveOn !== initial.stockRelieveOn ||
+    jeThresholdCents !== initial.journalApprovalThresholdCents;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -32,7 +38,11 @@ export function SettingsFormClient({
     }
     setBusy(true);
     try {
-      await api.updateSettings({ salaryDaysPerMonth, stockRelieveOn });
+      await api.updateSettings({
+        salaryDaysPerMonth,
+        stockRelieveOn,
+        journalApprovalThresholdCents: jeThresholdCents,
+      });
       setSavedAt(new Date());
       router.refresh();
     } catch (err) {
@@ -67,6 +77,33 @@ export function SettingsFormClient({
             />
             <p className="mt-1.5 text-caption text-text-tertiary">
               Default {defaults.salaryDaysPerMonth}. Sri Lankan convention is 30. Set to the number of working days you pay per month if you use a different basis (e.g. 26).
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section className="rounded-card border-hairline border-border bg-surface-elevated p-6">
+        <h2 className="text-body font-medium text-charcoal">Journal approvals</h2>
+        <p className="mt-1 text-caption text-text-secondary">
+          Manual journal entries above this threshold need a second pair of eyes before posting. 0 means no approval required — the current default. SOD rule: approvers can't approve their own drafts.
+        </p>
+
+        <div className="mt-5 grid gap-4 sm:grid-cols-2">
+          <div>
+            <label htmlFor="jeThreshold" className="block text-caption uppercase tracking-wide text-text-tertiary">
+              Approval threshold (LKR)
+            </label>
+            <input
+              id="jeThreshold"
+              type="number"
+              min={0}
+              step="100"
+              value={jeThresholdInput}
+              onChange={(e) => setJeThresholdInput(e.target.value)}
+              className="input mt-1.5 w-40"
+            />
+            <p className="mt-1.5 text-caption text-text-tertiary">
+              Entries with total debits ≥ this amount go to the approvals queue. Set to 0 to disable.
             </p>
           </div>
         </div>

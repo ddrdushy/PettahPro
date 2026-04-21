@@ -153,7 +153,14 @@ export function NewJournalClient({
         memo: memo.trim() || undefined,
         lines: apiLines,
       });
-      router.push(`/app/journals/${res.entryId}`);
+      if (res.status === "pending_approval") {
+        alert(
+          `Entry queued for approval (total LKR ${(res.totalCents / 100).toFixed(2)} ≥ threshold LKR ${(res.thresholdCents / 100).toFixed(2)}). It won't post to the GL until someone else approves it.`,
+        );
+        router.push("/app/journals/approvals");
+      } else {
+        router.push(`/app/journals/${res.entryId}`);
+      }
     } catch (err) {
       if (err instanceof ApiError) {
         setError(err.message);

@@ -23,6 +23,7 @@ import {
   Briefcase,
   Layers,
   FileBarChart,
+  ClipboardCheck,
   Lock,
   Settings,
   type LucideIcon,
@@ -72,6 +73,7 @@ const nav: Group[] = [
     items: [
       { label: "Chart of accounts", href: "/app/coa", icon: BookOpen },
       { label: "Journal entries", href: "/app/journals", icon: NotebookPen },
+      { label: "Journal approvals", href: "/app/journals/approvals", icon: ClipboardCheck },
       { label: "Opening balance", href: "/app/accounting/opening-balance", icon: BookOpen },
       { label: "Fiscal periods", href: "/app/accounting/periods", icon: Lock },
       { label: "WHT", href: "/app/accounting/wht", icon: FileBarChart },

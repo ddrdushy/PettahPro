@@ -9,6 +9,7 @@ import {
   smallint,
   bigint,
   text,
+  jsonb,
 } from "drizzle-orm/pg-core";
 import { tenants } from "./tenants.js";
 import { fiscalPeriods, chartOfAccounts } from "./accounts.js";
@@ -54,3 +55,34 @@ export const journalLines = pgTable("journal_lines", {
 
 export type JournalLine = typeof journalLines.$inferSelect;
 export type NewJournalLine = typeof journalLines.$inferInsert;
+
+export interface JournalDraftLine {
+  accountId: string;
+  drCents: number;
+  crCents: number;
+  description?: string | null;
+  customerId?: string | null;
+  supplierId?: string | null;
+}
+
+export const journalEntryDrafts = pgTable("journal_entry_drafts", {
+  id: uuid("id").primaryKey().default(sql`uuid_generate_v7()`),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+  entryDate: date("entry_date").notNull(),
+  memo: text("memo"),
+  totalCents: bigint("total_cents", { mode: "number" }).notNull(),
+  payload: jsonb("payload").$type<{ lines: JournalDraftLine[] }>().notNull(),
+  status: varchar("status", { length: 16 }).notNull().default("pending_approval"),
+  createdByUserId: uuid("created_by_user_id"),
+  approvedByUserId: uuid("approved_by_user_id"),
+  approvedAt: timestamp("approved_at", { withTimezone: true }),
+  rejectedByUserId: uuid("rejected_by_user_id"),
+  rejectedAt: timestamp("rejected_at", { withTimezone: true }),
+  rejectionReason: text("rejection_reason"),
+  postedJournalEntryId: uuid("posted_journal_entry_id").references(() => journalEntries.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type JournalEntryDraft = typeof journalEntryDrafts.$inferSelect;
+export type NewJournalEntryDraft = typeof journalEntryDrafts.$inferInsert;

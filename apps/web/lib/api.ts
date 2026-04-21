@@ -124,9 +124,22 @@ export const api = {
   getJournalEntry: (id: string) =>
     request<{ entry: JournalEntryHeader; lines: JournalEntryLine[] }>(`/journal-entries/${id}`),
   createJournalEntry: (body: CreateJournalEntry) =>
-    request<{ ok: true; entryId: string; entryNumber: string }>("/journal-entries", {
+    request<CreateJournalEntryResponse>("/journal-entries", {
       method: "POST",
       json: body,
+    }),
+
+  listJournalDrafts: () =>
+    request<{ drafts: JournalEntryDraft[] }>("/journal-entries/drafts"),
+  approveJournalDraft: (id: string) =>
+    request<{ ok: true; entryId: string; entryNumber: string }>(
+      `/journal-entries/drafts/${id}/approve`,
+      { method: "POST" },
+    ),
+  rejectJournalDraft: (id: string, reason: string) =>
+    request<{ ok: true }>(`/journal-entries/drafts/${id}/reject`, {
+      method: "POST",
+      json: { reason },
     }),
 
   listFixedAssets: () =>
@@ -1019,6 +1032,45 @@ export interface CreateJournalEntry {
   entryDate: string;
   memo?: string;
   lines: CreateJournalEntryLine[];
+}
+
+export type CreateJournalEntryResponse =
+  | { ok: true; status: "posted"; entryId: string; entryNumber: string }
+  | {
+      ok: true;
+      status: "pending_approval";
+      draftId: string;
+      thresholdCents: number;
+      totalCents: number;
+    };
+
+export type JournalDraftStatus = "pending_approval" | "approved" | "rejected";
+
+export interface JournalDraftLinePayload {
+  accountId: string;
+  drCents: number;
+  crCents: number;
+  description?: string | null;
+  customerId?: string | null;
+  supplierId?: string | null;
+}
+
+export interface JournalEntryDraft {
+  id: string;
+  entryDate: string;
+  memo: string | null;
+  totalCents: number;
+  payload: { lines: JournalDraftLinePayload[] };
+  status: JournalDraftStatus;
+  createdByUserId: string | null;
+  approvedByUserId: string | null;
+  approvedAt: string | null;
+  rejectedByUserId: string | null;
+  rejectedAt: string | null;
+  rejectionReason: string | null;
+  postedJournalEntryId: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export type FixedAssetCategory =
@@ -2593,6 +2645,7 @@ export type StockRelieveOn = "invoice" | "delivery_note";
 export interface TenantSettings {
   salaryDaysPerMonth: number;
   stockRelieveOn: StockRelieveOn;
+  journalApprovalThresholdCents: number;
 }
 
 export interface OpeningBalanceState {

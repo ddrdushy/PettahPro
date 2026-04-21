@@ -20,6 +20,8 @@ function refHref(n: AppNotification): string | null {
     item: `/app/stock/low-stock`,
     fiscal_period: `/app/accounting/periods`,
     fiscal_year: `/app/accounting/periods`,
+    journal_entry_draft: `/app/journals/approvals`,
+    journal_entry: `/app/journals/${n.refId}`,
   };
   return map[n.refType] ?? null;
 }

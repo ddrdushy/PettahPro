@@ -19,16 +19,22 @@ export interface TenantSettings {
   // no COGS recorded — this is intentional (businesses that choose this mode
   // use DNs as the stock-flow source of truth).
   stockRelieveOn: StockRelieveOn;
+  // Threshold (cents) above which a manual journal entry goes to a drafts
+  // queue requiring second-pair-of-eyes approval before posting. 0 = no
+  // approval required (current default — backward compatible).
+  journalApprovalThresholdCents: number;
 }
 
 export const SETTINGS_DEFAULTS: TenantSettings = {
   salaryDaysPerMonth: 30,
   stockRelieveOn: "invoice",
+  journalApprovalThresholdCents: 0,
 };
 
 const PatchSchema = z.object({
   salaryDaysPerMonth: z.number().int().min(20).max(31).optional(),
   stockRelieveOn: z.enum(["invoice", "delivery_note"]).optional(),
+  journalApprovalThresholdCents: z.number().int().min(0).optional(),
 });
 
 // Used server-side by modules that need a single setting (e.g. payroll).
