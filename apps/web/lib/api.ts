@@ -78,6 +78,13 @@ export const api = {
   listSuppliers: (q?: string) =>
     request<{ suppliers: Supplier[] }>(`/suppliers${q ? `?q=${encodeURIComponent(q)}` : ""}`),
   getSupplier: (id: string) => request<SupplierDetail>(`/suppliers/${id}`),
+  supplierStatement: (id: string, from?: string, to?: string) => {
+    const params = new URLSearchParams();
+    if (from) params.set("from", from);
+    if (to) params.set("to", to);
+    const q = params.toString();
+    return request<SupplierStatement>(`/suppliers/${id}/statement${q ? `?${q}` : ""}`);
+  },
   createSupplier: (body: CreateSupplier) =>
     request<{ supplier: Supplier }>("/suppliers", { method: "POST", json: body }),
 
@@ -381,6 +388,30 @@ export interface CustomerStatement {
   totalBilledCents: number;
   totalReceivedCents: number;
   transactions: CustomerStatementTransaction[];
+  aging: PartyAgingBucket[];
+}
+
+export interface SupplierStatementTransaction {
+  kind: "bill" | "payment";
+  id: string;
+  number: string | null;
+  date: string;
+  dueDate: string | null;
+  description: string;
+  debitCents: number;
+  creditCents: number;
+  runningBalanceCents: number;
+}
+
+export interface SupplierStatement {
+  supplier: Supplier;
+  asOfFrom: string;
+  asOfTo: string;
+  openingBalanceCents: number;
+  closingBalanceCents: number;
+  totalBilledCents: number;
+  totalPaidCents: number;
+  transactions: SupplierStatementTransaction[];
   aging: PartyAgingBucket[];
 }
 

@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { cookies } from "next/headers";
 import { notFound } from "next/navigation";
-import { ArrowLeft, Mail, MapPin, Phone, Plus, Building2 } from "lucide-react";
+import { ArrowLeft, FileText, Mail, MapPin, Phone, Plus, Building2 } from "lucide-react";
 import type { SupplierDetail } from "@/lib/api";
 import { PageHeader } from "@/components/app/page-header";
 import { StatusBadge } from "@/components/app/status-badge";
@@ -49,10 +49,16 @@ export default async function SupplierDetailPage({ params }: { params: { id: str
         title={supplier.name}
         description={supplier.legalName && supplier.legalName !== supplier.name ? `Legal: ${supplier.legalName}` : undefined}
         action={
-          <Link href="/app/bills/new" className="btn-primary">
-            <Plus className="h-4 w-4" aria-hidden />
-            New bill
-          </Link>
+          <div className="flex flex-wrap gap-2">
+            <Link href={`/app/suppliers/${supplier.id}/statement`} className="btn-secondary">
+              <FileText className="h-4 w-4" aria-hidden />
+              Statement
+            </Link>
+            <Link href="/app/bills/new" className="btn-primary">
+              <Plus className="h-4 w-4" aria-hidden />
+              New bill
+            </Link>
+          </div>
         }
       />
 
