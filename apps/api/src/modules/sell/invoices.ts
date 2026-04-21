@@ -326,6 +326,119 @@ export const invoicesRoutes: FastifyPluginAsync = async (fastify) => {
     return reply.status(201).send({ invoice });
   });
 
+  // POST /invoices/:id/duplicate — recurring-invoice helper. Copies
+  // header fields + lines into a fresh draft dated today (due date
+  // recomputed from customer payment terms). No GL impact until the
+  // caller posts the new draft. Works against any source status except
+  // void (can't meaningfully duplicate a voided invoice).
+  fastify.post<{ Params: { id: string } }>("/:id/duplicate", async (req, reply) => {
+    const ctx = requireAuth(req, reply);
+    if (!ctx) return;
+
+    const result = await withTenant(ctx.tenantId, async (tx) => {
+      const [src] = await tx
+        .select()
+        .from(schema.invoices)
+        .where(
+          and(
+            eq(schema.invoices.tenantId, ctx.tenantId),
+            eq(schema.invoices.id, req.params.id),
+            isNull(schema.invoices.deletedAt),
+          ),
+        )
+        .limit(1);
+      if (!src) return { error: "NOT_FOUND" as const };
+      if (src.status === "void") return { error: "SOURCE_VOID" as const };
+
+      const srcLines = await tx
+        .select()
+        .from(schema.invoiceLines)
+        .where(eq(schema.invoiceLines.invoiceId, src.id))
+        .orderBy(asc(schema.invoiceLines.lineNo));
+      if (srcLines.length === 0) return { error: "SOURCE_EMPTY" as const };
+
+      // Pull customer to recompute due date from payment terms.
+      const [customer] = await tx
+        .select()
+        .from(schema.customers)
+        .where(
+          and(
+            eq(schema.customers.tenantId, ctx.tenantId),
+            eq(schema.customers.id, src.customerId),
+          ),
+        )
+        .limit(1);
+      if (!customer) return { error: "CUSTOMER_NOT_FOUND" as const };
+
+      const today = new Date().toISOString().slice(0, 10);
+      const dueDate = new Date(
+        new Date(today).getTime() + customer.paymentTermsDays * 86_400_000,
+      )
+        .toISOString()
+        .slice(0, 10);
+
+      const [inv] = await tx
+        .insert(schema.invoices)
+        .values({
+          tenantId: ctx.tenantId,
+          customerId: src.customerId,
+          branchId: src.branchId,
+          status: "draft",
+          issueDate: today,
+          dueDate,
+          currency: src.currency,
+          subtotalCents: src.subtotalCents,
+          discountCents: src.discountCents,
+          taxCents: src.taxCents,
+          totalCents: src.totalCents,
+          balanceDueCents: src.totalCents,
+          reference: src.reference,
+          poNumber: null, // PO numbers are specific to the source engagement
+          notes: src.notes,
+          terms: src.terms,
+          createdByUserId: ctx.userId,
+        })
+        .returning();
+      if (!inv) return { error: "INSERT_FAILED" as const };
+
+      await tx.insert(schema.invoiceLines).values(
+        srcLines.map((l) => ({
+          tenantId: ctx.tenantId,
+          invoiceId: inv.id,
+          lineNo: l.lineNo,
+          itemId: l.itemId,
+          description: l.description,
+          quantity: l.quantity,
+          unitPriceCents: l.unitPriceCents,
+          lineSubtotalCents: l.lineSubtotalCents,
+          discountPctBps: l.discountPctBps,
+          discountCents: l.discountCents,
+          taxCodeId: l.taxCodeId,
+          taxRateBps: l.taxRateBps,
+          taxCents: l.taxCents,
+          lineTotalCents: l.lineTotalCents,
+          incomeAccountId: l.incomeAccountId,
+        })),
+      );
+
+      return { invoice: inv };
+    });
+
+    if ("error" in result) {
+      const msgs: Record<string, string> = {
+        NOT_FOUND: "Source invoice not found.",
+        SOURCE_VOID: "Can't duplicate a voided invoice.",
+        SOURCE_EMPTY: "Source invoice has no lines.",
+        CUSTOMER_NOT_FOUND: "Source customer was deleted.",
+        INSERT_FAILED: "Couldn't create the duplicate.",
+      };
+      const code = result.error as string;
+      const status = code === "NOT_FOUND" || code === "CUSTOMER_NOT_FOUND" ? 404 : 400;
+      return reply.status(status).send({ error: { code, message: msgs[code] ?? code } });
+    }
+    return reply.status(201).send({ invoice: result.invoice });
+  });
+
   // POST /invoices/:id/post — finalize and post to GL
   fastify.post<{ Params: { id: string } }>("/:id/post", async (req, reply) => {
     const ctx = requireAuth(req, reply);
