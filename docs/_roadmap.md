@@ -2,11 +2,11 @@
 
 Live tracker of what's shipped, what's next, and what's backlog — cross-checked against the 23 spec files in `/docs/` (see [`_summary.md`](./_summary.md) for a per-file digest).
 
-Last updated: 2026-04-21 after PR #30.
+Last updated: 2026-04-22 after PR #33.
 
 ---
 
-## ✅ Shipped (PRs #1 – #30)
+## ✅ Shipped (PRs #1 – #33)
 
 ### Platform foundation
 - Multi-tenant Postgres with RLS (`current_tenant_id()` + `SET LOCAL app.tenant_id`)
@@ -47,6 +47,8 @@ Last updated: 2026-04-21 after PR #30.
 - Fixed assets (CRUD, monthly depreciation run)
 - Bank reconciliation (CSV import, auto-match to customer/supplier payments + cleared cheques, reconcile)
 - Cheques (9-state lifecycle: issued → handed-over → deposited → presented → cleared | bounced | stopped | cancelled | stale, with legal-action flag)
+- **Period lock** (soft_closed / closed) enforced at `postJournal` choke point; month-end and year-end close with P&L→retained-earnings transfer; reopen audit trail
+- **WHT** withheld at supplier-payment time; `/app/accounting/wht` dashboard with per-month balance, by-supplier totals, remittance history, and remit-to-IRD action
 
 ### HR / Payroll
 - Employees (CRUD + salary structure assignments)
@@ -73,12 +75,12 @@ Each item has a spec reference, one-sentence description, and rough sizing (**S*
 
 | # | Feature | Spec | What it does | Size |
 |---|---|---|---|---|
-| 1 | **Period lock + year-end close** | accounting §6 | 2-tier period lock (soft/hard), close wizard, reopen with approval. Blocks retroactive edits to posted transactions. | L |
-| 2 | **WHT auto-derivation & remittance** | buy §6.6, accounting §2.3 | Auto-rate by supplier × payment type, monthly remittance file, annual certificates. | L |
-| 3 | **Opening balance upload** | accounting §7 | Trial-balance CSV + per-module detail screens (debtors / creditors / stock / fixed assets / bank) for tenant migration. | L |
-| 4 | **Customer credit limit enforcement** | business-tenant-layer2 §8 | Block/warn at invoice post when exposure > limit; 2-bounce auto-flag. | M |
-| 5 | **Bad debt write-off with VAT relief** | accounting §11 | Write-off entry + auto VAT bad-debt relief claim + recovery reversal. | M |
-| 6 | **Journal entry approval workflow** | accounting §16 | Above-threshold manual JEs need a second approver before posting. | M |
+| 1 | **Opening balance upload** | accounting §7 | Trial-balance CSV + per-module detail screens (debtors / creditors / stock / fixed assets / bank) for tenant migration. | L |
+| 2 | **Customer credit limit enforcement** | business-tenant-layer2 §8 | Block/warn at invoice post when exposure > limit; 2-bounce auto-flag. | M |
+| 3 | **Bad debt write-off with VAT relief** | accounting §11 | Write-off entry + auto VAT bad-debt relief claim + recovery reversal. | M |
+| 4 | **Journal entry approval workflow** | accounting §16 | Above-threshold manual JEs need a second approver before posting. | M |
+
+*Previously on this list: **Period lock + year-end close** (PR #32) and **WHT auto-derivation & remittance** (PR #33) — both shipped.*
 
 ### Should-have (convenience/polish)
 
@@ -143,6 +145,6 @@ These are their own workstreams — track separately from this roadmap.
 
 One PR = one feature. Ship, merge, move on. Batched PRs allowed when features are clearly related (e.g. DN + PO PDFs were batched because they follow the same pattern).
 
-Current recommendation: **start with #1 Period lock + year-end close** — it's the single biggest compliance gap. Without it anyone can silently rewrite posted history.
+Current recommendation: **next up is #1 Opening balance upload** — unlocks onboarding for tenants migrating from BUSY/Tally. Without it, every new customer starts with empty books on Day 1, which is a non-starter for established businesses.
 
-After that, tackle must-haves #2 → #6 in order, then dip into should-haves based on user pull.
+After that, work through the remaining must-haves (customer credit limit, bad-debt write-off, JE approvals), then dip into should-haves based on user pull.
