@@ -95,6 +95,8 @@ const nav: Group[] = [
       { label: "General ledger", href: "/app/reports/general-ledger", icon: FileBarChart },
       { label: "VAT return", href: "/app/reports/vat-return", icon: FileBarChart },
       { label: "Cash flow", href: "/app/reports/cash-flow", icon: FileBarChart },
+      { label: "Receivables aging", href: "/app/reports/ar-aging", icon: FileBarChart },
+      { label: "Payables aging", href: "/app/reports/ap-aging", icon: FileBarChart },
       { label: "3-way match", href: "/app/reports/three-way-match", icon: FileBarChart },
     ],
   },
