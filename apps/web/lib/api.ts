@@ -162,6 +162,31 @@ export const api = {
   duplicateInvoice: (id: string) =>
     request<{ invoice: InvoiceDetail }>(`/invoices/${id}/duplicate`, { method: "POST" }),
 
+  listRecurringInvoices: () =>
+    request<{ recurringInvoices: RecurringInvoiceListRow[] }>("/recurring-invoices"),
+  getRecurringInvoice: (id: string) =>
+    request<{
+      recurringInvoice: RecurringInvoiceDetail;
+      lines: RecurringInvoiceLine[];
+      customer: Customer | null;
+    }>(`/recurring-invoices/${id}`),
+  createRecurringInvoice: (body: CreateRecurringInvoice) =>
+    request<{ recurringInvoice: RecurringInvoiceDetail }>(`/recurring-invoices`, {
+      method: "POST",
+      json: body,
+    }),
+  pauseRecurringInvoice: (id: string) =>
+    request<{ ok: true }>(`/recurring-invoices/${id}/pause`, { method: "POST" }),
+  resumeRecurringInvoice: (id: string) =>
+    request<{ ok: true }>(`/recurring-invoices/${id}/resume`, { method: "POST" }),
+  generateRecurringInvoiceNow: (id: string) =>
+    request<{ ok: true; invoiceId: string }>(
+      `/recurring-invoices/${id}/generate-now`,
+      { method: "POST" },
+    ),
+  deleteRecurringInvoice: (id: string) =>
+    request<{ ok: true }>(`/recurring-invoices/${id}`, { method: "DELETE" }),
+
   listSalesOrders: () => request<{ salesOrders: SalesOrderListRow[] }>("/sales-orders"),
   getSalesOrder: (id: string) =>
     request<{ salesOrder: SalesOrderDetail; lines: SalesOrderLine[]; customer: Customer | null }>(
@@ -2334,6 +2359,72 @@ export interface CashFlow {
   closingCashCents: number;
   netChangeCents: number;
   sections: CashFlowSection[];
+}
+
+export interface RecurringInvoiceListRow {
+  id: string;
+  scheduleName: string;
+  customerId: string;
+  customerName: string;
+  frequency: string;
+  dayOfMonth: number;
+  startDate: string;
+  endDate: string | null;
+  nextRunDate: string;
+  lastRunDate: string | null;
+  isActive: boolean;
+  pausedAt: string | null;
+  generatedCount: number;
+  lastGeneratedInvoiceId: string | null;
+  currency: string;
+  createdAt: string;
+}
+
+export interface RecurringInvoiceDetail extends RecurringInvoiceListRow {
+  branchId: string | null;
+  dueDays: number;
+  reference: string | null;
+  notes: string | null;
+  terms: string | null;
+  deletedAt: string | null;
+  updatedAt: string;
+  createdByUserId: string | null;
+}
+
+export interface RecurringInvoiceLine {
+  id: string;
+  recurringInvoiceId: string;
+  lineNo: number;
+  itemId: string | null;
+  description: string;
+  quantity: string;
+  unitPriceCents: number;
+  discountPctBps: number;
+  taxCodeId: string | null;
+  incomeAccountId: string | null;
+  createdAt: string;
+}
+
+export interface CreateRecurringInvoice {
+  customerId: string;
+  scheduleName: string;
+  frequency?: "monthly";
+  dayOfMonth?: number;
+  startDate: string;
+  endDate?: string;
+  dueDays?: number;
+  currency?: string;
+  reference?: string;
+  notes?: string;
+  terms?: string;
+  lines: Array<{
+    itemId?: string;
+    description: string;
+    quantity: number;
+    unitPriceCents: number;
+    discountPctBps?: number;
+    taxCodeId?: string;
+  }>;
 }
 
 export type StockRelieveOn = "invoice" | "delivery_note";

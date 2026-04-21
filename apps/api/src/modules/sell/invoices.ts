@@ -68,7 +68,7 @@ interface LineInput {
  * code rate and resolving the income account for each line (item default
  * → tenant default sales account).
  */
-async function computeInvoice(
+export async function computeInvoice(
   tx: Parameters<Parameters<typeof withTenant>[1]>[0],
   tenantId: string,
   lineInputs: LineInput[],
