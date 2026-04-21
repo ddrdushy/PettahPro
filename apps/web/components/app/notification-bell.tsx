@@ -18,6 +18,8 @@ function refHref(n: AppNotification): string | null {
     cheque: `/app/cheques/${n.refId}`,
     leave_request: `/app/leave-requests/${n.refId}`,
     item: `/app/stock/low-stock`,
+    fiscal_period: `/app/accounting/periods`,
+    fiscal_year: `/app/accounting/periods`,
   };
   return map[n.refType] ?? null;
 }

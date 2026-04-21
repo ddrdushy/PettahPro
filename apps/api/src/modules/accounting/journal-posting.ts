@@ -48,19 +48,11 @@ export async function postJournal(
     sql`SELECT next_document_number('journal') AS entry_number`,
   )) as unknown as Array<{ entry_number: string }>;
 
-  // Resolve fiscal period
-  const periods = await tx
-    .select({ id: schema.fiscalPeriods.id })
-    .from(schema.fiscalPeriods)
-    .where(
-      and(
-        eq(schema.fiscalPeriods.tenantId, input.tenantId),
-        sql`${schema.fiscalPeriods.startsOn} <= ${input.entryDate}::date`,
-        sql`${schema.fiscalPeriods.endsOn} >= ${input.entryDate}::date`,
-      ),
-    )
-    .limit(1);
-  const fiscalPeriodId = periods[0]?.id ?? null;
+  // Resolve fiscal period and enforce lock. Lazily creates a fresh 'open'
+  // period if none exists for this date (tenants don't pre-seed beyond a
+  // ±12 month window). Both 'soft_closed' and 'closed' block new postings —
+  // caller must unlock the period first.
+  const fiscalPeriodId = await resolveAndCheckPeriod(tx, input.tenantId, input.entryDate);
 
   const [entry] = await tx
     .insert(schema.journalEntries)
@@ -93,4 +85,56 @@ export async function postJournal(
   );
 
   return { entryId: entry.id, entryNumber };
+}
+
+/**
+ * Looks up the fiscal period for a posting date; auto-creates it as 'open'
+ * if none exists. Throws PERIOD_LOCKED (with details) if the period is
+ * soft_closed or closed — callers should unlock the period before posting.
+ *
+ * Exposed for the rare case a module needs to pre-flight a date (e.g. to
+ * show a friendlier error before the user fills out a whole invoice).
+ */
+export async function resolveAndCheckPeriod(
+  tx: PostgresJsDatabase<typeof schema>,
+  tenantId: string,
+  entryDate: string,
+): Promise<string> {
+  const rows = (await tx.execute(sql`
+    SELECT id, status FROM fiscal_periods
+     WHERE tenant_id = ${tenantId}::uuid
+       AND starts_on <= ${entryDate}::date
+       AND ends_on   >= ${entryDate}::date
+     LIMIT 1
+  `)) as unknown as Array<{ id: string; status: string }>;
+
+  let row = rows[0];
+  if (!row) {
+    // Lazy create: open period covering this calendar month.
+    const created = (await tx.execute(sql`
+      INSERT INTO fiscal_periods (tenant_id, fiscal_year, period_no, starts_on, ends_on, status)
+      VALUES (
+        ${tenantId}::uuid,
+        EXTRACT(year FROM ${entryDate}::date)::smallint,
+        EXTRACT(month FROM ${entryDate}::date)::smallint,
+        date_trunc('month', ${entryDate}::date)::date,
+        (date_trunc('month', ${entryDate}::date) + interval '1 month' - interval '1 day')::date,
+        'open'
+      )
+      ON CONFLICT (tenant_id, fiscal_year, period_no) DO UPDATE
+        SET updated_at = now()
+      RETURNING id, status
+    `)) as unknown as Array<{ id: string; status: string }>;
+    row = created[0]!;
+  }
+
+  if (row.status !== "open") {
+    const err = new Error(
+      `PERIOD_LOCKED: the fiscal period containing ${entryDate} is ${row.status}. Unlock the period to post here.`,
+    ) as Error & { code?: string; periodStatus?: string };
+    err.code = "PERIOD_LOCKED";
+    err.periodStatus = row.status;
+    throw err;
+  }
+  return row.id;
 }

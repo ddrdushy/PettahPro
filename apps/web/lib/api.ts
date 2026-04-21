@@ -402,6 +402,21 @@ export const api = {
   reconcileBankImport: (id: string) =>
     request<{ ok: true }>(`/bank-reconciliation/imports/${id}/reconcile`, { method: "POST" }),
 
+  listPeriods: () => request<{ periods: FiscalPeriod[] }>("/periods"),
+  softClosePeriod: (id: string, reason: string) =>
+    request<{ ok: true }>(`/periods/${id}/soft-close`, { method: "POST", json: { reason } }),
+  reopenPeriod: (id: string, reason: string) =>
+    request<{ ok: true }>(`/periods/${id}/reopen`, { method: "POST", json: { reason } }),
+  closeFiscalYear: (body: { fiscalYear: number; reason: string; retainedEarningsAccountId: string }) =>
+    request<{
+      ok: true;
+      closingEntryId: string | null;
+      closingEntryNumber: string | null;
+      incomeClosedCents: number;
+      expenseClosedCents: number;
+      netProfitCents: number;
+    }>(`/periods/close-year`, { method: "POST", json: body }),
+
   getSettings: () => request<TenantSettingsResponse>("/settings"),
   updateSettings: (body: Partial<TenantSettings>) =>
     request<TenantSettingsResponse>("/settings", { method: "PATCH", json: body }),
@@ -2486,6 +2501,23 @@ export type StockRelieveOn = "invoice" | "delivery_note";
 export interface TenantSettings {
   salaryDaysPerMonth: number;
   stockRelieveOn: StockRelieveOn;
+}
+
+export type PeriodStatus = "open" | "soft_closed" | "closed";
+
+export interface FiscalPeriod {
+  id: string;
+  fiscalYear: number;
+  periodNo: number;
+  startsOn: string;
+  endsOn: string;
+  status: PeriodStatus;
+  closedAt: string | null;
+  closedByUserId: string | null;
+  lastReason: string | null;
+  reopenedCount: number;
+  closingJournalEntryId: string | null;
+  entryCount: number;
 }
 
 export interface TenantSettingsResponse {

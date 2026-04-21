@@ -66,6 +66,9 @@ export const fiscalPeriods = pgTable("fiscal_periods", {
   status: varchar("status", { length: 16 }).notNull().default("open"),
   closedAt: timestamp("closed_at", { withTimezone: true }),
   closedByUserId: uuid("closed_by_user_id"),
+  lastReason: text("last_reason"),
+  reopenedCount: integer("reopened_count").notNull().default(0),
+  closingJournalEntryId: uuid("closing_journal_entry_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
