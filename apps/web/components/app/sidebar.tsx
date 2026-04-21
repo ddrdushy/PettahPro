@@ -8,6 +8,7 @@ import {
   Package,
   Boxes,
   Receipt,
+  FileText,
   ShoppingCart,
   BookOpen,
   NotebookPen,
@@ -36,6 +37,7 @@ const nav: Group[] = [
     title: "Sell",
     items: [
       { label: "Customers", href: "/app/customers", icon: Users },
+      { label: "Quotations", href: "/app/quotations", icon: FileText },
       { label: "Invoices", href: "/app/invoices", icon: Receipt },
       { label: "Credit notes", href: "/app/credit-notes", icon: Receipt },
       { label: "Payments", href: "/app/payments", icon: Wallet },
@@ -82,6 +84,7 @@ const nav: Group[] = [
       { label: "Balance sheet", href: "/app/reports/balance-sheet", icon: FileBarChart },
       { label: "General ledger", href: "/app/reports/general-ledger", icon: FileBarChart },
       { label: "VAT return", href: "/app/reports/vat-return", icon: FileBarChart },
+      { label: "Cash flow", href: "/app/reports/cash-flow", icon: FileBarChart },
     ],
   },
   {

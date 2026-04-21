@@ -154,6 +154,27 @@ export const api = {
       method: "POST",
       json: reason ? { reason } : {},
     }),
+  duplicateInvoice: (id: string) =>
+    request<{ invoice: InvoiceDetail }>(`/invoices/${id}/duplicate`, { method: "POST" }),
+
+  listQuotations: () => request<{ quotations: QuotationListRow[] }>("/quotations"),
+  getQuotation: (id: string) =>
+    request<{ quotation: QuotationDetail; lines: QuotationLine[]; customer: Customer | null }>(
+      `/quotations/${id}`,
+    ),
+  createQuotation: (body: CreateQuotation) =>
+    request<{ quotation: QuotationDetail }>("/quotations", { method: "POST", json: body }),
+  sendQuotation: (id: string) =>
+    request<{ ok: true; quotationNumber: string }>(`/quotations/${id}/send`, { method: "POST" }),
+  acceptQuotation: (id: string) =>
+    request<{ ok: true }>(`/quotations/${id}/accept`, { method: "POST" }),
+  rejectQuotation: (id: string, reason?: string) =>
+    request<{ ok: true }>(`/quotations/${id}/reject`, {
+      method: "POST",
+      json: reason ? { reason } : {},
+    }),
+  convertQuotation: (id: string) =>
+    request<{ ok: true; invoiceId: string }>(`/quotations/${id}/convert`, { method: "POST" }),
 
   listCreditNotes: () => request<{ creditNotes: CreditNoteListRow[] }>("/credit-notes"),
   getCreditNote: (id: string) =>
@@ -237,6 +258,11 @@ export const api = {
   vatReturn: (from: string, to: string) => {
     const params = new URLSearchParams({ from, to });
     return request<VatReturn>(`/reports/vat-return?${params.toString()}`);
+  },
+
+  cashFlow: (from: string, to: string) => {
+    const params = new URLSearchParams({ from, to });
+    return request<CashFlow>(`/reports/cash-flow?${params.toString()}`);
   },
 
   listStock: () =>
@@ -933,6 +959,90 @@ export interface CreateInvoice {
   lines: CreateInvoiceLine[];
 }
 
+export type QuotationStatus =
+  | "draft"
+  | "sent"
+  | "accepted"
+  | "rejected"
+  | "expired"
+  | "converted";
+
+export interface QuotationListRow {
+  id: string;
+  quotationNumber: string | null;
+  status: QuotationStatus;
+  issueDate: string;
+  validUntil: string;
+  customerId: string;
+  customerName: string;
+  currency: string;
+  totalCents: number;
+  convertedInvoiceId: string | null;
+  createdAt: string;
+}
+
+export interface QuotationDetail {
+  id: string;
+  quotationNumber: string | null;
+  customerId: string;
+  branchId: string | null;
+  status: QuotationStatus;
+  issueDate: string;
+  validUntil: string;
+  currency: string;
+  subtotalCents: number;
+  discountCents: number;
+  taxCents: number;
+  totalCents: number;
+  reference: string | null;
+  notes: string | null;
+  terms: string | null;
+  sentAt: string | null;
+  acceptedAt: string | null;
+  rejectedAt: string | null;
+  rejectedReason: string | null;
+  convertedInvoiceId: string | null;
+  convertedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface QuotationLine {
+  id: string;
+  lineNo: number;
+  itemId: string | null;
+  description: string;
+  quantity: string;
+  unitPriceCents: number;
+  lineSubtotalCents: number;
+  discountPctBps: number;
+  discountCents: number;
+  taxCodeId: string | null;
+  taxRateBps: number;
+  taxCents: number;
+  lineTotalCents: number;
+  incomeAccountId: string | null;
+}
+
+export interface CreateQuotationLine {
+  itemId?: string;
+  description: string;
+  quantity: number;
+  unitPriceCents: number;
+  discountPctBps?: number;
+  taxCodeId?: string;
+}
+
+export interface CreateQuotation {
+  customerId: string;
+  issueDate?: string;
+  validUntil?: string;
+  reference?: string;
+  notes?: string;
+  terms?: string;
+  lines: CreateQuotationLine[];
+}
+
 export type CreditNoteStatus = "draft" | "posted" | "void";
 
 export type CreditNoteReason =
@@ -1601,6 +1711,30 @@ export interface VatReturn {
   netVatPayableCents: number;
   outputRegister: VatOutputRow[];
   inputRegister: VatInputRow[];
+}
+
+export interface CashFlowRow {
+  accountId: string;
+  code: string;
+  name: string;
+  accountSubtype: string | null;
+  flowCents: number;
+}
+
+export interface CashFlowSection {
+  label: string;
+  kind: "operating" | "investing" | "financing";
+  accounts: CashFlowRow[];
+  totalCents: number;
+}
+
+export interface CashFlow {
+  asOfFrom: string;
+  asOfTo: string;
+  openingCashCents: number;
+  closingCashCents: number;
+  netChangeCents: number;
+  sections: CashFlowSection[];
 }
 
 export interface AgingBucket {

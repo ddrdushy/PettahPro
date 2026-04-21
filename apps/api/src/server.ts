@@ -14,6 +14,7 @@ import { journalEntriesRoutes } from "./modules/accounting/journal-entries.js";
 import { fixedAssetsRoutes } from "./modules/accounting/fixed-assets.js";
 import { invoicesRoutes } from "./modules/sell/invoices.js";
 import { creditNotesRoutes } from "./modules/sell/credit-notes.js";
+import { quotationsRoutes } from "./modules/sell/quotations.js";
 import { paymentsRoutes } from "./modules/sell/payments.js";
 import { billsRoutes } from "./modules/buy/bills.js";
 import { debitNotesRoutes } from "./modules/buy/debit-notes.js";
@@ -33,6 +34,7 @@ import { profitLossRoutes } from "./modules/reports/profit-loss.js";
 import { balanceSheetRoutes } from "./modules/reports/balance-sheet.js";
 import { generalLedgerRoutes } from "./modules/reports/general-ledger.js";
 import { vatReturnRoutes } from "./modules/reports/vat-return.js";
+import { cashFlowRoutes } from "./modules/reports/cash-flow.js";
 
 export async function buildServer(): Promise<FastifyInstance> {
   const server = Fastify({
@@ -73,6 +75,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await server.register(fixedAssetsRoutes, { prefix: "/fixed-assets" });
   await server.register(invoicesRoutes, { prefix: "/invoices" });
   await server.register(creditNotesRoutes, { prefix: "/credit-notes" });
+  await server.register(quotationsRoutes, { prefix: "/quotations" });
   await server.register(paymentsRoutes, { prefix: "/payments" });
   await server.register(billsRoutes, { prefix: "/bills" });
   await server.register(debitNotesRoutes, { prefix: "/debit-notes" });
@@ -90,6 +93,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await server.register(balanceSheetRoutes, { prefix: "/reports/balance-sheet" });
   await server.register(generalLedgerRoutes, { prefix: "/reports/general-ledger" });
   await server.register(vatReturnRoutes, { prefix: "/reports/vat-return" });
+  await server.register(cashFlowRoutes, { prefix: "/reports/cash-flow" });
 
   server.setErrorHandler((err, req, reply) => {
     req.log.error({ err }, "request failed");

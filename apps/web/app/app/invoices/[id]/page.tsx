@@ -9,6 +9,7 @@ import { StatusBadge } from "@/components/app/status-badge";
 import { formatLKR, formatDate } from "@/lib/format";
 import { PostInvoiceButton } from "./post-button";
 import { RecordPaymentButton } from "./record-payment-button";
+import { DuplicateInvoiceButton } from "./duplicate-button";
 import { InvoiceVoidButton } from "@/components/app/void-button";
 
 export const metadata: Metadata = { title: "Invoice" };
@@ -84,6 +85,7 @@ export default async function InvoiceDetailPage({ params }: { params: { id: stri
               <Download className="h-4 w-4" aria-hidden />
               PDF
             </a>
+            {invoice.status !== "void" && <DuplicateInvoiceButton id={invoice.id} />}
             {invoice.status === "draft" && <PostInvoiceButton id={invoice.id} />}
             {isPayable && customer && (
               <RecordPaymentButton
