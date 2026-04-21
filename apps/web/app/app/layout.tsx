@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import type { ReactNode } from "react";
 import { LogoutButton } from "@/components/auth/logout-button";
 import { Sidebar } from "@/components/app/sidebar";
+import { NotificationBell } from "@/components/app/notification-bell";
 
 async function fetchMe() {
   const cookieHeader = cookies().toString();
@@ -51,6 +52,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
                 )}
               </p>
             </div>
+            <NotificationBell />
             <LogoutButton />
           </div>
         </div>

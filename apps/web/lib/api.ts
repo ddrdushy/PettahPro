@@ -340,6 +340,17 @@ export const api = {
     return request<CashFlow>(`/reports/cash-flow?${params.toString()}`);
   },
 
+  listNotifications: (limit?: number) => {
+    const qs = limit ? `?limit=${limit}` : "";
+    return request<{ notifications: AppNotification[] }>(`/notifications${qs}`);
+  },
+  notificationUnreadCount: () =>
+    request<{ count: number }>("/notifications/unread-count"),
+  readNotification: (id: string) =>
+    request<{ ok: true }>(`/notifications/${id}/read`, { method: "POST" }),
+  readAllNotifications: () =>
+    request<{ ok: true; markedRead: number }>("/notifications/read-all", { method: "POST" }),
+
   listStock: () =>
     request<{ balances: StockBalanceRow[]; totalValueCents: number }>("/stock"),
   stockLedger: (itemId: string) =>
@@ -2237,6 +2248,18 @@ export interface CashFlow {
   closingCashCents: number;
   netChangeCents: number;
   sections: CashFlowSection[];
+}
+
+export interface AppNotification {
+  id: string;
+  kind: string;
+  title: string;
+  body: string | null;
+  refType: string | null;
+  refId: string | null;
+  readAt: string | null;
+  createdAt: string;
+  isBroadcast: boolean;
 }
 
 export interface AgingBucket {
