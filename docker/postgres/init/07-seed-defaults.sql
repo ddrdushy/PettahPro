@@ -145,6 +145,7 @@ BEGIN
       (p_tenant_id, 'quotation',     'QUO', 'year', 4),
       (p_tenant_id, 'sales_order',   'SO',  'year', 4),
       (p_tenant_id, 'purchase_order','PO',  'year', 4),
+      (p_tenant_id, 'delivery_note', 'DN',  'year', 4),
       (p_tenant_id, 'grn',           'GRN', 'year', 4),
       (p_tenant_id, 'payroll',       'PR',  'year', 4)
     ON CONFLICT (tenant_id, sequence_name) DO NOTHING;

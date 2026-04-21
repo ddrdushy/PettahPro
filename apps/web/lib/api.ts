@@ -179,6 +179,37 @@ export const api = {
   convertSalesOrder: (id: string) =>
     request<{ ok: true; invoiceId: string }>(`/sales-orders/${id}/convert`, { method: "POST" }),
 
+  listDeliveryNotes: () => request<{ deliveryNotes: DeliveryNoteListRow[] }>("/delivery-notes"),
+  getDeliveryNote: (id: string) =>
+    request<{ deliveryNote: DeliveryNoteDetail; lines: DeliveryNoteLine[]; customer: Customer | null }>(
+      `/delivery-notes/${id}`,
+    ),
+  createDeliveryNote: (body: CreateDeliveryNote) =>
+    request<{ deliveryNote: DeliveryNoteDetail }>("/delivery-notes", { method: "POST", json: body }),
+  deliverDeliveryNote: (id: string, receivedByName?: string) =>
+    request<{ ok: true; dnNumber: string }>(`/delivery-notes/${id}/deliver`, {
+      method: "POST",
+      json: receivedByName ? { receivedByName } : {},
+    }),
+  cancelDeliveryNote: (id: string, reason?: string) =>
+    request<{ ok: true }>(`/delivery-notes/${id}/cancel`, {
+      method: "POST",
+      json: reason ? { reason } : {},
+    }),
+
+  listGrns: () => request<{ grns: GrnListRow[] }>("/grns"),
+  getGrn: (id: string) =>
+    request<{ grn: GrnDetail; lines: GrnLine[]; supplier: Supplier | null }>(`/grns/${id}`),
+  createGrn: (body: CreateGrn) =>
+    request<{ grn: GrnDetail }>("/grns", { method: "POST", json: body }),
+  receiveGrn: (id: string) =>
+    request<{ ok: true; grnNumber: string }>(`/grns/${id}/receive`, { method: "POST" }),
+  cancelGrn: (id: string, reason?: string) =>
+    request<{ ok: true }>(`/grns/${id}/cancel`, {
+      method: "POST",
+      json: reason ? { reason } : {},
+    }),
+
   listQuotations: () => request<{ quotations: QuotationListRow[] }>("/quotations"),
   getQuotation: (id: string) =>
     request<{ quotation: QuotationDetail; lines: QuotationLine[]; customer: Customer | null }>(
@@ -1165,6 +1196,138 @@ export interface CreateSalesOrder {
   notes?: string;
   terms?: string;
   lines: CreateSalesOrderLine[];
+}
+
+export type DeliveryNoteStatus = "draft" | "delivered" | "cancelled";
+
+export interface DeliveryNoteListRow {
+  id: string;
+  dnNumber: string | null;
+  status: DeliveryNoteStatus;
+  deliveryDate: string;
+  customerId: string;
+  customerName: string;
+  salesOrderId: string | null;
+  invoiceId: string | null;
+  carrier: string | null;
+  trackingNumber: string | null;
+  createdAt: string;
+}
+
+export interface DeliveryNoteDetail {
+  id: string;
+  dnNumber: string | null;
+  customerId: string;
+  branchId: string | null;
+  salesOrderId: string | null;
+  invoiceId: string | null;
+  status: DeliveryNoteStatus;
+  deliveryDate: string;
+  shippingAddressLine1: string | null;
+  shippingAddressLine2: string | null;
+  shippingCity: string | null;
+  shippingPostalCode: string | null;
+  carrier: string | null;
+  trackingNumber: string | null;
+  receivedByName: string | null;
+  notes: string | null;
+  deliveredAt: string | null;
+  cancelledAt: string | null;
+  cancelledReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DeliveryNoteLine {
+  id: string;
+  lineNo: number;
+  itemId: string | null;
+  description: string;
+  quantity: string;
+}
+
+export interface CreateDeliveryNoteLine {
+  itemId?: string;
+  description: string;
+  quantity: number;
+}
+
+export interface CreateDeliveryNote {
+  customerId: string;
+  salesOrderId?: string;
+  invoiceId?: string;
+  deliveryDate?: string;
+  shippingAddressLine1?: string;
+  shippingAddressLine2?: string;
+  shippingCity?: string;
+  shippingPostalCode?: string;
+  carrier?: string;
+  trackingNumber?: string;
+  notes?: string;
+  lines: CreateDeliveryNoteLine[];
+}
+
+export type GrnStatus = "draft" | "received" | "cancelled";
+
+export interface GrnListRow {
+  id: string;
+  grnNumber: string | null;
+  status: GrnStatus;
+  receiptDate: string;
+  supplierId: string;
+  supplierName: string;
+  purchaseOrderId: string | null;
+  billId: string | null;
+  supplierDeliveryNote: string | null;
+  createdAt: string;
+}
+
+export interface GrnDetail {
+  id: string;
+  grnNumber: string | null;
+  supplierId: string;
+  branchId: string | null;
+  purchaseOrderId: string | null;
+  billId: string | null;
+  status: GrnStatus;
+  receiptDate: string;
+  supplierDeliveryNote: string | null;
+  conditionNotes: string | null;
+  notes: string | null;
+  receivedAt: string | null;
+  cancelledAt: string | null;
+  cancelledReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GrnLine {
+  id: string;
+  lineNo: number;
+  itemId: string | null;
+  description: string;
+  quantityOrdered: string | null;
+  quantityReceived: string;
+  lineNotes: string | null;
+}
+
+export interface CreateGrnLine {
+  itemId?: string;
+  description: string;
+  quantityOrdered?: number;
+  quantityReceived: number;
+  lineNotes?: string;
+}
+
+export interface CreateGrn {
+  supplierId: string;
+  purchaseOrderId?: string;
+  billId?: string;
+  receiptDate?: string;
+  supplierDeliveryNote?: string;
+  conditionNotes?: string;
+  notes?: string;
+  lines: CreateGrnLine[];
 }
 
 export type QuotationStatus =
