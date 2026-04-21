@@ -27,3 +27,4 @@ export * from "./salary-components.js";
 export * from "./leave.js";
 export * from "./notifications.js";
 export * from "./bank-reconciliation.js";
+export * from "./tenant-settings.js";

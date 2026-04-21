@@ -374,6 +374,10 @@ export const api = {
   reconcileBankImport: (id: string) =>
     request<{ ok: true }>(`/bank-reconciliation/imports/${id}/reconcile`, { method: "POST" }),
 
+  getSettings: () => request<TenantSettingsResponse>("/settings"),
+  updateSettings: (body: Partial<TenantSettings>) =>
+    request<TenantSettingsResponse>("/settings", { method: "PATCH", json: body }),
+
   listNotifications: (limit?: number) => {
     const qs = limit ? `?limit=${limit}` : "";
     return request<{ notifications: AppNotification[] }>(`/notifications${qs}`);
@@ -2330,6 +2334,15 @@ export interface CashFlow {
   closingCashCents: number;
   netChangeCents: number;
   sections: CashFlowSection[];
+}
+
+export interface TenantSettings {
+  salaryDaysPerMonth: number;
+}
+
+export interface TenantSettingsResponse {
+  settings: TenantSettings;
+  defaults: TenantSettings;
 }
 
 export interface AppNotification {

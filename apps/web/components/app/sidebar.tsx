@@ -100,7 +100,7 @@ const nav: Group[] = [
     title: "Admin",
     items: [
       { label: "Branches", href: "/app/branches", icon: Building2 },
-      { label: "Settings", href: "/app/settings", icon: Settings, badge: "Soon" },
+      { label: "Settings", href: "/app/settings", icon: Settings },
     ],
   },
 ];

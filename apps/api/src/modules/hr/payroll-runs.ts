@@ -8,6 +8,7 @@ import {
   computePayrollFromComponents,
   type ResolvedComponent,
 } from "./sl-tax.js";
+import { loadTenantSettings } from "../settings/routes.js";
 
 const CreateSchema = z.object({
   periodYear: z.number().int().min(2020).max(2099),
@@ -223,9 +224,11 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
       }
 
       // Approved no-pay leave days per employee within the period. SL salary
-      // convention uses a 30-day month for prorating; configurable later via
-      // tenant setting. We only look at unpaid (is_paid=false) leave types —
-      // paid leave doesn't reduce salary by construction.
+      // convention defaults to a 30-day month for prorating; can be overridden
+      // per-tenant via settings.salaryDaysPerMonth. We only look at unpaid
+      // (is_paid=false) leave types — paid leave doesn't reduce salary by
+      // construction.
+      const tenantSettings = await loadTenantSettings(tx);
       const npDaysByEmployee = new Map<string, number>();
       const npLeaveRows = (await tx.execute(sql`
         SELECT lr.employee_id,
@@ -249,7 +252,7 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
         days_count: string | number;
       }>;
 
-      const SALARY_DAYS_PER_MONTH = 30;
+      const SALARY_DAYS_PER_MONTH = tenantSettings.salaryDaysPerMonth;
       const msPerDay = 86_400_000;
       for (const r of npLeaveRows) {
         const reqStart = new Date(r.from_date).getTime();

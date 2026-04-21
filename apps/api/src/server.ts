@@ -47,6 +47,7 @@ import { vatReturnRoutes } from "./modules/reports/vat-return.js";
 import { cashFlowRoutes } from "./modules/reports/cash-flow.js";
 import { threeWayMatchRoutes } from "./modules/reports/three-way-match.js";
 import { notificationsRoutes } from "./modules/notifications/routes.js";
+import { settingsRoutes } from "./modules/settings/routes.js";
 
 export async function buildServer(): Promise<FastifyInstance> {
   const server = Fastify({
@@ -116,6 +117,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await server.register(cashFlowRoutes, { prefix: "/reports/cash-flow" });
   await server.register(threeWayMatchRoutes, { prefix: "/reports/three-way-match" });
   await server.register(notificationsRoutes, { prefix: "/notifications" });
+  await server.register(settingsRoutes, { prefix: "/settings" });
 
   server.setErrorHandler((err, req, reply) => {
     req.log.error({ err }, "request failed");
