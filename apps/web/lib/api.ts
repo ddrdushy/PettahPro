@@ -365,6 +365,9 @@ export const api = {
     return request<CashFlow>(`/reports/cash-flow?${params.toString()}`);
   },
 
+  arAging: () => request<AgingDetailReport>("/reports/ar-aging"),
+  apAging: () => request<AgingDetailReport>("/reports/ap-aging"),
+
   threeWayMatch: (filter?: { status?: ThreeWayMatchFilter; from?: string; to?: string }) => {
     const params = new URLSearchParams();
     if (filter?.status) params.set("status", filter.status);
@@ -2319,6 +2322,38 @@ export interface CashFlowSection {
   kind: "operating" | "investing" | "financing";
   accounts: CashFlowRow[];
   totalCents: number;
+}
+
+export type AgingBucketLabel = "current" | "0-30" | "30-60" | "60-90" | "90+";
+
+export interface AgingDetailRow {
+  id: string;
+  docNumber: string | null;
+  partyId: string;
+  partyName: string;
+  issueDate: string;
+  dueDate: string;
+  daysOverdue: number;
+  bucket: AgingBucketLabel;
+  totalCents: number;
+  amountPaidCents: number;
+  balanceDueCents: number;
+  reference: string | null;
+}
+
+export interface AgingDetailGroup {
+  partyId: string;
+  partyName: string;
+  totalBalanceCents: number;
+  rows: AgingDetailRow[];
+  bucketTotals: Record<AgingBucketLabel, number>;
+}
+
+export interface AgingDetailReport {
+  groups: AgingDetailGroup[];
+  grandTotalCents: number;
+  bucketTotals: Record<AgingBucketLabel, number>;
+  asOf: string;
 }
 
 export type ThreeWayMatchStatus =
