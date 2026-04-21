@@ -340,6 +340,31 @@ export const api = {
     return request<CashFlow>(`/reports/cash-flow?${params.toString()}`);
   },
 
+  listBankImports: () => request<{ imports: BankImportRow[] }>("/bank-reconciliation/imports"),
+  getBankImport: (id: string) =>
+    request<{
+      import: BankImportDetail;
+      bank: Account | null;
+      lines: BankStatementLineRow[];
+    }>(`/bank-reconciliation/imports/${id}`),
+  createBankImport: (body: CreateBankImport) =>
+    request<{ import: BankImportDetail; issues: string[] }>(
+      "/bank-reconciliation/imports",
+      { method: "POST", json: body },
+    ),
+  autoMatchBankImport: (id: string) =>
+    request<{
+      ok: true;
+      autoMatched: number;
+      multipleCandidates: number;
+      totalLines: number;
+      matchedLines: number;
+    }>(`/bank-reconciliation/imports/${id}/auto-match`, { method: "POST" }),
+  unmatchBankLine: (id: string) =>
+    request<{ ok: true }>(`/bank-reconciliation/lines/${id}/unmatch`, { method: "POST" }),
+  reconcileBankImport: (id: string) =>
+    request<{ ok: true }>(`/bank-reconciliation/imports/${id}/reconcile`, { method: "POST" }),
+
   listNotifications: (limit?: number) => {
     const qs = limit ? `?limit=${limit}` : "";
     return request<{ notifications: AppNotification[] }>(`/notifications${qs}`);
@@ -2260,6 +2285,68 @@ export interface AppNotification {
   readAt: string | null;
   createdAt: string;
   isBroadcast: boolean;
+}
+
+export type BankImportStatus = "pending" | "reconciled";
+export type BankLineMatchStatus = "unmatched" | "matched" | "ignored" | "multiple_candidates";
+
+export interface BankImportRow {
+  id: string;
+  bankAccountId: string;
+  bankAccountCode: string;
+  bankAccountName: string;
+  statementFromDate: string;
+  statementToDate: string;
+  openingBalanceCents: number | null;
+  closingBalanceCents: number | null;
+  totalLines: number;
+  matchedLines: number;
+  status: BankImportStatus;
+  reconciledAt: string | null;
+  createdAt: string;
+}
+
+export interface BankImportDetail {
+  id: string;
+  bankAccountId: string;
+  statementFromDate: string;
+  statementToDate: string;
+  openingBalanceCents: number | null;
+  closingBalanceCents: number | null;
+  totalLines: number;
+  matchedLines: number;
+  status: BankImportStatus;
+  notes: string | null;
+  reconciledAt: string | null;
+  reconciledByUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BankStatementLineRow {
+  id: string;
+  importId: string;
+  lineNo: number;
+  transactionDate: string;
+  description: string;
+  amountCents: number;
+  reference: string | null;
+  matchStatus: BankLineMatchStatus;
+  matchedRefType: string | null;
+  matchedRefId: string | null;
+  matchNotes: string | null;
+  matchedAt: string | null;
+  createdAt: string;
+}
+
+export interface CreateBankImport {
+  bankAccountId: string;
+  statementFromDate: string;
+  statementToDate: string;
+  openingBalanceCents?: number;
+  closingBalanceCents?: number;
+  notes?: string;
+  csv: string;
 }
 
 export interface AgingBucket {
