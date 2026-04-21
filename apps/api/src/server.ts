@@ -28,6 +28,7 @@ import { trialBalanceRoutes } from "./modules/reports/trial-balance.js";
 import { profitLossRoutes } from "./modules/reports/profit-loss.js";
 import { balanceSheetRoutes } from "./modules/reports/balance-sheet.js";
 import { generalLedgerRoutes } from "./modules/reports/general-ledger.js";
+import { vatReturnRoutes } from "./modules/reports/vat-return.js";
 
 export async function buildServer(): Promise<FastifyInstance> {
   const server = Fastify({
@@ -80,6 +81,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await server.register(profitLossRoutes, { prefix: "/reports/profit-loss" });
   await server.register(balanceSheetRoutes, { prefix: "/reports/balance-sheet" });
   await server.register(generalLedgerRoutes, { prefix: "/reports/general-ledger" });
+  await server.register(vatReturnRoutes, { prefix: "/reports/vat-return" });
 
   server.setErrorHandler((err, req, reply) => {
     req.log.error({ err }, "request failed");
