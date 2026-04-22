@@ -112,6 +112,24 @@ export const stockTransfersRoutes: FastifyPluginAsync = async (fastify) => {
         .limit(1);
       if (!header) return null;
 
+      // Fetch both warehouses in one query for the detail header + PDF.
+      const whRows = await tx
+        .select({
+          id: schema.warehouses.id,
+          code: schema.warehouses.code,
+          name: schema.warehouses.name,
+        })
+        .from(schema.warehouses)
+        .where(
+          and(
+            eq(schema.warehouses.tenantId, ctx.tenantId),
+            isNull(schema.warehouses.deletedAt),
+          ),
+        );
+      const whById = new Map(whRows.map((w) => [w.id, w]));
+      const source = whById.get(header.sourceWarehouseId) ?? null;
+      const destination = whById.get(header.destinationWarehouseId) ?? null;
+
       const lineRows = (await tx.execute(sql`
         SELECT stl.*, i.name AS item_name, i.sku, i.unit
           FROM stock_transfer_lines stl
@@ -132,7 +150,7 @@ export const stockTransfersRoutes: FastifyPluginAsync = async (fastify) => {
         notes: string | null;
       }>;
 
-      return { transfer: header, lines: lineRows };
+      return { transfer: header, lines: lineRows, source, destination };
     });
 
     if (!data) return reply.status(404).send({ error: { code: "NOT_FOUND" } });
@@ -308,9 +326,11 @@ export const stockTransfersRoutes: FastifyPluginAsync = async (fastify) => {
       }
 
       // Allocate transfer number via existing sequence helper.
-      const [{ number: transferNumber }] = (await tx.execute(
+      const seqRows = (await tx.execute(
         sql`SELECT next_document_number('stock_transfer') AS number`,
       )) as unknown as Array<{ number: string }>;
+      const transferNumber = seqRows[0]?.number;
+      if (!transferNumber) throw new Error("SEQUENCE_FAILED");
 
       await tx
         .update(schema.stockTransfers)
@@ -355,7 +375,7 @@ export const stockTransfersRoutes: FastifyPluginAsync = async (fastify) => {
       if (!parsed.success) {
         return reply.status(400).send({ error: { code: "INVALID_INPUT", issues: parsed.error.issues } });
       }
-      const { lines: receiveLines } = parsed.data;
+      const { lines: receiveLines, notes: receiveNotes } = parsed.data;
 
       const result = await withTenant(ctx.tenantId, async (tx) => {
         const [header] = await tx
@@ -469,6 +489,16 @@ export const stockTransfersRoutes: FastifyPluginAsync = async (fastify) => {
             .where(eq(schema.stockTransferLines.id, line.id));
         }
 
+        // If the receiver left notes, append them onto the existing notes
+        // with a "Received:" prefix — there's no dedicated receive_notes
+        // column yet, and this keeps the context discoverable on the PDF.
+        const appendedNotes =
+          receiveNotes && receiveNotes.trim().length > 0
+            ? header.notes
+              ? `${header.notes}\n\nReceived: ${receiveNotes.trim()}`
+              : `Received: ${receiveNotes.trim()}`
+            : header.notes;
+
         await tx
           .update(schema.stockTransfers)
           .set({
@@ -476,6 +506,7 @@ export const stockTransfersRoutes: FastifyPluginAsync = async (fastify) => {
             receivedAt: new Date(),
             receivedByUserId: ctx.userId,
             hasDiscrepancy: anyDiscrepancy,
+            notes: appendedNotes,
             updatedAt: new Date(),
           })
           .where(eq(schema.stockTransfers.id, header.id));

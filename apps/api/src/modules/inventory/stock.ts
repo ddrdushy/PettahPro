@@ -4,13 +4,18 @@ import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
 
 export const stockRoutes: FastifyPluginAsync = async (fastify) => {
-  // GET /stock — current on-hand + WAVG value per tracked item
+  // GET /stock — current on-hand + WAVG value per tracked item.
+  //
+  // Also reports in-transit inbound (stock that has been dispatched to this
+  // warehouse from another but not yet received), so warehouse managers see
+  // "30 on-hand, 10 inbound" at a glance instead of having to open the
+  // transfer list to find out what's coming.
   fastify.get("/", async (req, reply) => {
     const ctx = requireAuth(req, reply);
     if (!ctx) return;
 
-    const balances = await withTenant(ctx.tenantId, async (tx) =>
-      tx
+    const { balances, inTransit } = await withTenant(ctx.tenantId, async (tx) => {
+      const balances = await tx
         .select({
           itemId: schema.items.id,
           itemName: schema.items.name,
@@ -35,12 +40,43 @@ export const stockRoutes: FastifyPluginAsync = async (fastify) => {
             isNull(schema.items.deletedAt),
           ),
         )
-        .orderBy(asc(schema.items.name)),
-    );
+        .orderBy(asc(schema.items.name));
+
+      // Inbound in-transit: per (item, destination warehouse), the sum of
+      // quantity_dispatched across dispatched transfers where the receive
+      // step hasn't closed them yet.
+      const inTransitRows = (await tx.execute(sql`
+        SELECT stl.item_id::text AS item_id,
+               st.destination_warehouse_id::text AS warehouse_id,
+               SUM(COALESCE(stl.quantity_dispatched, stl.quantity_requested))::text AS qty
+          FROM stock_transfer_lines stl
+          INNER JOIN stock_transfers st ON st.id = stl.transfer_id
+         WHERE st.tenant_id = current_tenant_id()
+           AND st.status = 'dispatched'
+           AND st.deleted_at IS NULL
+         GROUP BY stl.item_id, st.destination_warehouse_id
+      `)) as unknown as Array<{
+        item_id: string;
+        warehouse_id: string;
+        qty: string;
+      }>;
+
+      return { balances, inTransit: inTransitRows };
+    });
+
+    const inTransitByKey = new Map<string, number>();
+    for (const row of inTransit) {
+      inTransitByKey.set(`${row.item_id}|${row.warehouse_id}`, Number(row.qty));
+    }
+
+    const enriched = balances.map((b) => ({
+      ...b,
+      inTransitInboundQty: inTransitByKey.get(`${b.itemId}|${b.warehouseId}`) ?? 0,
+    }));
 
     const totalValueCents = balances.reduce((s, b) => s + b.totalValueCents, 0);
 
-    return reply.send({ balances, totalValueCents });
+    return reply.send({ balances: enriched, totalValueCents });
   });
 
   // GET /stock/ledger?itemId=… — movement history for an item

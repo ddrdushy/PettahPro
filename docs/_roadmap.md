@@ -2,11 +2,11 @@
 
 Live tracker of what's shipped, what's next, and what's backlog — cross-checked against the 23 spec files in `/docs/` (see [`_summary.md`](./_summary.md) for a per-file digest).
 
-Last updated: 2026-04-22 after PR #42. **All must-haves shipped.**
+Last updated: 2026-04-22 after PR #43. **All must-haves shipped.**
 
 ---
 
-## ✅ Shipped (PRs #1 – #42)
+## ✅ Shipped (PRs #1 – #43)
 
 ### Platform foundation
 - Multi-tenant Postgres with RLS (`current_tenant_id()` + `SET LOCAL app.tenant_id`)
@@ -38,8 +38,9 @@ Last updated: 2026-04-22 after PR #42. **All must-haves shipped.**
 
 ### Inventory
 - Items (CRUD, WAVG valuation, reorder_point)
-- Stock on-hand + stock ledger per item
+- Stock on-hand + stock ledger per item (inbound in-transit qty surfaced on the on-hand page)
 - Low-stock report + crossing notifications
+- **Stock transfer between warehouses** — two-step draft → dispatched → received state machine; dispatch deducts source + writes `transfer_out` ledger + allocates transfer number; receive adds to destination at dispatch-time unit cost (preserving WAVG across warehouses) + writes `transfer_in` ledger; short receipts flag `has_discrepancy` on the header for later reconciliation; draft cancel supported (post-dispatch cancellation = reverse transfer); printable driver's note **PDF** with source/destination route and dispatched/received signatures
 
 ### Accounting
 - Chart of accounts, tax codes (VAT, SSCL, WHT)
@@ -94,7 +95,6 @@ Each item has a spec reference, one-sentence description, and rough sizing (**S*
 
 | # | Feature | Spec | What it does | Size |
 |---|---|---|---|---|
-| 7 | Stock transfer between warehouses | inventory §4.2 | Two-step dispatch → in-transit → receive with discrepancy flag. | M |
 | 8 | Stock count / cycle count | inventory §4.4 | Blind count with tiered auto-post vs approval (1% auto, >1% approve). | M |
 | 9 | Landed cost allocation | buy §5.4, inventory §5.4 | Freight/insurance/customs captured at GRN, allocated to item cost. | L |
 | 11b | Final settlement worksheet | payroll §14.2 | Leave encashment, loan recovery on exit, gratuity, notice pay-in-lieu, "exit run" document. Mid-period pro-rata shipped in PR #41; this is the richer settlement layer on top. | M |
@@ -150,4 +150,4 @@ These are their own workstreams — track separately from this roadmap.
 
 One PR = one feature. Ship, merge, move on. Batched PRs allowed when features are clearly related (e.g. DN + PO PDFs were batched because they follow the same pattern).
 
-Current recommendation: compliance foundation is complete. The remaining backlog is convenience / polish — no hard compliance gaps left. Pick from should-haves based on what real users start asking for. Top-of-mind candidates: **stock transfer** and **stock count** (operational workflows), **proforma invoices** (pre-sale flow), **multi-currency FX on sales** (exporters), or **audit log viewer** (governance).
+Current recommendation: compliance foundation is complete. The remaining backlog is convenience / polish — no hard compliance gaps left. Pick from should-haves based on what real users start asking for. Top-of-mind candidates: **stock count** (blind count workflow, complements stock transfer shipped in PR #43), **proforma invoices** (pre-sale flow), **multi-currency FX on sales** (exporters), or **audit log viewer** (governance).
