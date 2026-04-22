@@ -86,6 +86,9 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
 
       // Seed default branch, warehouse, SL chart of accounts, tax codes, fiscal period.
       await tx.execute(sql`SELECT seed_tenant_defaults(${t.id}::uuid)`);
+      // Layer on staff-loan defaults: loans-receivable + interest-income CoA,
+      // LOAN sequence, and the SL loan-type library.
+      await tx.execute(sql`SELECT seed_tenant_staff_loans(${t.id}::uuid)`);
 
       return { tenant: t, user: u };
     });

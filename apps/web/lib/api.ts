@@ -574,6 +574,56 @@ export const api = {
       { method: "POST", json: body },
     ),
 
+  listLoanTypes: () => request<{ loanTypes: LoanType[] }>("/loan-types"),
+  createLoanType: (body: CreateLoanType) =>
+    request<{ loanType: LoanType }>("/loan-types", { method: "POST", json: body }),
+  updateLoanType: (id: string, body: Partial<CreateLoanType> & { isActive?: boolean }) =>
+    request<{ loanType: LoanType }>(`/loan-types/${id}`, { method: "PATCH", json: body }),
+
+  listEmployeeLoans: () =>
+    request<{ loans: EmployeeLoanRow[] }>("/employee-loans"),
+  getEmployeeLoan: (id: string) =>
+    request<{ loan: EmployeeLoanRow; schedule: LoanScheduleRow[] }>(`/employee-loans/${id}`),
+  listEmployeeLoansForEmployee: (employeeId: string) =>
+    request<{ loans: EmployeeLoan[] }>(`/employee-loans/by-employee/${employeeId}`),
+  applyEmployeeLoan: (body: {
+    employeeId: string;
+    loanTypeId?: string | null;
+    principalCents: number;
+    interestRateBps: number;
+    tenureMonths: number;
+    firstInstallmentDate?: string;
+    applicationReason?: string;
+    notes?: string;
+  }) => request<{ loan: EmployeeLoan }>("/employee-loans/apply", { method: "POST", json: body }),
+  approveEmployeeLoan: (id: string, body?: { approvalNotes?: string }) =>
+    request<{ loan: EmployeeLoan }>(`/employee-loans/${id}/approve`, {
+      method: "POST",
+      json: body ?? {},
+    }),
+  disburseEmployeeLoan: (
+    id: string,
+    body: {
+      disbursementDate: string;
+      disbursementAccountId: string;
+      firstInstallmentDate?: string;
+    },
+  ) =>
+    request<{ loan: EmployeeLoan; loanNumber: string }>(
+      `/employee-loans/${id}/disburse`,
+      { method: "POST", json: body },
+    ),
+  cancelEmployeeLoan: (id: string, body?: { reason?: string }) =>
+    request<{ loan: EmployeeLoan }>(`/employee-loans/${id}/cancel`, {
+      method: "POST",
+      json: body ?? {},
+    }),
+  writeOffEmployeeLoan: (id: string, body: { reason: string }) =>
+    request<{ loan: EmployeeLoan }>(`/employee-loans/${id}/write-off`, {
+      method: "POST",
+      json: body,
+    }),
+
   listLeaveTypes: () => request<{ leaveTypes: LeaveType[] }>("/leave-types"),
   createLeaveType: (body: CreateLeaveType) =>
     request<{ leaveType: LeaveType }>("/leave-types", { method: "POST", json: body }),
@@ -3086,4 +3136,103 @@ export interface TaxCode {
   rateBps: number;
   appliesTo: "sale" | "purchase" | "both";
   isActive: boolean;
+}
+
+export type LoanStatus =
+  | "draft"
+  | "approved"
+  | "disbursed"
+  | "closed"
+  | "written_off"
+  | "cancelled";
+
+export interface LoanType {
+  id: string;
+  tenantId: string;
+  code: string;
+  name: string;
+  description: string | null;
+  maxAmountCents: number | null;
+  defaultInterestRateBps: number;
+  defaultTenureMonths: number;
+  maxTenureMonths: number;
+  isInterestBearing: boolean;
+  isActive: boolean;
+  isSystem: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateLoanType {
+  code: string;
+  name: string;
+  description?: string;
+  maxAmountCents?: number | null;
+  defaultInterestRateBps?: number;
+  defaultTenureMonths?: number;
+  maxTenureMonths?: number;
+  isInterestBearing?: boolean;
+  isActive?: boolean;
+}
+
+export interface EmployeeLoan {
+  id: string;
+  tenantId: string;
+  loanNumber: string | null;
+  employeeId: string;
+  loanTypeId: string | null;
+  loanTypeName: string | null;
+  principalCents: number;
+  interestRateBps: number;
+  tenureMonths: number;
+  totalInterestCents: number;
+  emiCents: number;
+  firstInstallmentDate: string | null;
+  status: LoanStatus;
+  appliedAt: string;
+  approvedAt: string | null;
+  approvedByUserId: string | null;
+  disbursedAt: string | null;
+  disbursedByUserId: string | null;
+  disbursementDate: string | null;
+  disbursementAccountId: string | null;
+  disbursementJournalId: string | null;
+  closedAt: string | null;
+  closedReason: string | null;
+  cancelledAt: string | null;
+  cancelledReason: string | null;
+  principalOutstandingCents: number;
+  interestOutstandingCents: number;
+  principalRepaidCents: number;
+  interestRepaidCents: number;
+  writtenOffCents: number;
+  applicationReason: string | null;
+  approvalNotes: string | null;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+  createdByUserId: string | null;
+}
+
+export interface EmployeeLoanRow extends EmployeeLoan {
+  employeeName: string;
+  employeeCode: string | null;
+}
+
+export interface LoanScheduleRow {
+  id: string;
+  loanId: string;
+  installmentNo: number;
+  dueDate: string;
+  principalCents: number;
+  interestCents: number;
+  totalCents: number;
+  openingBalanceCents: number;
+  closingBalanceCents: number;
+  status: "pending" | "paid" | "waived";
+  appliedInRunId: string | null;
+  appliedRunLineId: string | null;
+  appliedAt: string | null;
+  waivedReason: string | null;
+  createdAt: string;
 }

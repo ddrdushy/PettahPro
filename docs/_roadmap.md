@@ -63,6 +63,7 @@ Last updated: 2026-04-22 after PR #37. **All must-haves shipped.**
 - Leave types (AL/CL/SL/ML/PL/NP seeded), requests (submit/approve/reject/cancel), allocations per year
 - Statutory filings summary + remit (EPF, ETF, PAYE)
 - **Salary revisions with auto-arrears** — HR records a back-dated rate change, the live basic updates immediately, the next payroll run auto-computes (new − previous) × intervening months as an ARREARS earning line (counts for EPF/ETF/PAYE); period-lock enforced on revision effective dates so you can't quietly rewrite closed months
+- **Staff loan module** — apply → approve (SOD-enforced) → disburse (DR 1150 Employee loans receivable / CR bank); flat-rate amortization with installment schedule; EMIs auto-deduct as LOAN-REC on the next payroll run, atomically claimed at draft, principal and interest split on post (CR loans receivable / CR interest income); write-off moves outstanding to bad debt and waives remaining installments. Five SL-typical types (festival, salary advance, emergency, housing, vehicle) seeded per tenant with caps + defaults
 
 ### Reports
 - Trial balance, P&L (with compare), balance sheet, general ledger, VAT return, cash flow
@@ -96,7 +97,6 @@ Each item has a spec reference, one-sentence description, and rough sizing (**S*
 | 9 | Landed cost allocation | buy §5.4, inventory §5.4 | Freight/insurance/customs captured at GRN, allocated to item cost. | L |
 | 11 | Mid-period payroll events | payroll §14 | Joiner pro-rata, leaver final settlement, probation confirmation. | M |
 | 12 | Bonus schemes library | payroll §7 | Avurudu / Christmas / 13th-month / performance, eligibility rules, off-cycle. | M |
-| 13 | Staff loan module | payroll §6 | Festival / salary / housing / vehicle / emergency with EMI schedule + payroll deduction. | M |
 | 14 | Expense claims | payroll §8 | Employee submit with receipt → manager approve → bundle with payroll or pay direct. | M |
 | 15 | Proforma invoices | sell §2.5 | Advance/customs preview, convert to live invoice. | M |
 | 16 | Batch / consolidated invoicing | sell §2.5 | Multi-customer batch run; roll up multiple DNs into one invoice per customer. | M |
