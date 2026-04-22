@@ -4,11 +4,11 @@ Live tracker of what's shipped, what's next, and what's backlog — cross-checke
 
 **Roadmap says what's shipped. [`_status.md`](./_status.md) says what's broken, fragile, or at-risk right now.** Read both before picking up work.
 
-Last updated: 2026-04-22 after PR #46. **All must-haves shipped.**
+Last updated: 2026-04-22 after PR #47. **All must-haves shipped.**
 
 ---
 
-## ✅ Shipped (PRs #1 – #46)
+## ✅ Shipped (PRs #1 – #47)
 
 ### Platform foundation
 - Multi-tenant Postgres with RLS (`current_tenant_id()` + `SET LOCAL app.tenant_id`)
@@ -19,7 +19,8 @@ Last updated: 2026-04-22 after PR #46. **All must-haves shipped.**
 - BullMQ worker + Redis, hourly cron scaffold
 - Notifications (header bell + red-dot badge, in-app only, routed per `refType`)
 - Audit columns (created_at/updated_at, deleted_at, created_by_user_id)
-- **Build status tracker** (`docs/_status.md` + PR template) — known bugs, typecheck debt baseline (43 errors frozen), fragile areas, regression log, module health; PR template forces every PR to declare modules touched + regression surface + test plan
+- **Build status tracker** (`docs/_status.md` + PR template) — known bugs, typecheck debt baseline (47 → 32 errors after PR #47), fragile areas, regression log, module health; PR template forces every PR to declare modules touched + regression surface + test plan
+- **Shared helpers for repeated patterns** — `pdfResponse(buffer, filename)` (apps/web) funnels every PDF route through one BodyInit-safe Response builder; `nextDocumentNumber(tx, kind)` (packages/db) wraps `SELECT next_document_number(...)` with typed kinds and undefined-guard so call sites can't silently destructure `undefined` (PR #47)
 
 ### Sell
 - Customers (CRUD, statements, aging)

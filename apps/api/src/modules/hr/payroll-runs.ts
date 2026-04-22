@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import { and, eq, isNull, desc, asc, lte, gte, or, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
-import { withTenant, schema } from "@pettahpro/db";
+import { withTenant, schema, nextDocumentNumber } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
 import { postJournal } from "../accounting/journal-posting.js";
 import {
@@ -957,9 +957,7 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
         return { error: "MISSING_ACCOUNT" as const, account: "asset:loans_receivable" };
       }
 
-      const [{ number: runNumber }] = (await tx.execute(
-        sql`SELECT next_document_number('payroll') AS number`,
-      )) as unknown as Array<{ number: string }>;
+      const runNumber = await nextDocumentNumber(tx, "payroll");
 
       // Aggregate line-level figures needed to split gross into wages expense
       // (what we truly owe for work done) vs. amounts withheld from pay for

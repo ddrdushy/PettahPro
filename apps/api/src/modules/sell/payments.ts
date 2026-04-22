@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import { and, eq, isNull, desc, inArray, asc, sql } from "drizzle-orm";
 import { z } from "zod";
-import { withTenant, schema } from "@pettahpro/db";
+import { withTenant, schema, nextDocumentNumber } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
 import { postJournal } from "../accounting/journal-posting.js";
 import { emitNotification } from "../notifications/emit.js";
@@ -193,9 +193,7 @@ export const paymentsRoutes: FastifyPluginAsync = async (fastify) => {
       }
 
       // Allocate payment number
-      const [{ number: paymentNumber }] = (await tx.execute(
-        sql`SELECT next_document_number('payment') AS number`,
-      )) as unknown as Array<{ number: string }>;
+      const paymentNumber = await nextDocumentNumber(tx, "payment");
 
       // Post journal: DR Bank (or Clearing for cheque), CR AR
       const { entryId, entryNumber } = await postJournal(tx, {

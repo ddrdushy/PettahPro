@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import { and, eq, isNull, desc, sql, asc } from "drizzle-orm";
 import { z } from "zod";
-import { withTenant, schema } from "@pettahpro/db";
+import { withTenant, schema, nextDocumentNumber } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
 import { postJournal } from "../accounting/journal-posting.js";
 import { emitNotification } from "../notifications/emit.js";
@@ -505,9 +505,7 @@ export const invoicesRoutes: FastifyPluginAsync = async (fastify) => {
       if (lines.length === 0) return { error: "NO_LINES" as const };
 
       // Assign invoice number via sequence
-      const [{ number: invoiceNumber }] = (await tx.execute(
-        sql`SELECT next_document_number('invoice') AS number`,
-      )) as unknown as Array<{ number: string }>;
+      const invoiceNumber = await nextDocumentNumber(tx, "invoice");
 
       // Build journal: DR AR · CR income-by-account · CR VAT/SSCL payable
       const arRows = await tx

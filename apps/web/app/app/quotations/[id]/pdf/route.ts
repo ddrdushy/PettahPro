@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { renderToBuffer } from "@react-pdf/renderer";
 import { QuotationPDF } from "@/lib/quotation-pdf";
+import { pdfResponse } from "@/lib/pdf-response";
 import type { Customer, QuotationDetail, QuotationLine, Tenant } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
@@ -47,12 +48,5 @@ export async function GET(
 
   const filename = `${data.quotation.quotationNumber ?? "quotation-" + data.quotation.id.slice(0, 8)}.pdf`;
 
-  return new Response(pdf, {
-    status: 200,
-    headers: {
-      "Content-Type": "application/pdf",
-      "Content-Disposition": `inline; filename="${filename}"`,
-      "Cache-Control": "private, no-store",
-    },
-  });
+  return pdfResponse(pdf, filename);
 }
