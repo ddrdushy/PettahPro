@@ -91,6 +91,8 @@ const nav: Group[] = [
       { label: "Payroll runs", href: "/app/payroll", icon: Briefcase },
       { label: "Leave types", href: "/app/leave-types", icon: Layers },
       { label: "Leave requests", href: "/app/leave-requests", icon: Briefcase },
+      { label: "Staff loans", href: "/app/staff-loans", icon: Wallet },
+      { label: "Loan types", href: "/app/loan-types", icon: Layers },
     ],
   },
   {

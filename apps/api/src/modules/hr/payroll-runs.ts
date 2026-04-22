@@ -311,6 +311,60 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
       // Revisions we touch during compute, applied en-masse after the loop.
       const consumedRevisions: Array<{ id: string; arrearsCents: number }> = [];
 
+      // Load unclaimed staff-loan EMI rows that fall due by periodEnd.
+      // Outer join against employee_loans to filter only disbursed loans and
+      // get the loan_number for the deduction label. Same atomic-claim idiom
+      // as arrears: we stamp applied_in_run_id at draft-creation time so a
+      // later run can't re-deduct the same EMI.
+      const loanDueRows = eligible.length
+        ? ((await tx.execute(sql`
+            SELECT s.id              AS schedule_id,
+                   s.loan_id         AS loan_id,
+                   s.installment_no  AS installment_no,
+                   s.principal_cents AS principal_cents,
+                   s.interest_cents  AS interest_cents,
+                   s.total_cents     AS total_cents,
+                   s.due_date::text  AS due_date,
+                   l.employee_id     AS employee_id,
+                   l.loan_number     AS loan_number
+            FROM employee_loan_schedule s
+            INNER JOIN employee_loans l
+              ON l.id = s.loan_id
+             AND l.tenant_id = s.tenant_id
+            WHERE s.tenant_id = ${ctx.tenantId}::uuid
+              AND s.status = 'pending'
+              AND s.applied_in_run_id IS NULL
+              AND s.due_date <= ${periodEnd}::date
+              AND l.status = 'disbursed'
+              AND l.deleted_at IS NULL
+          `)) as unknown as Array<{
+            schedule_id: string;
+            loan_id: string;
+            installment_no: number;
+            principal_cents: number;
+            interest_cents: number;
+            total_cents: number;
+            due_date: string;
+            employee_id: string;
+            loan_number: string | null;
+          }>)
+        : [];
+      const loansByEmployee = new Map<string, typeof loanDueRows>();
+      for (const r of loanDueRows) {
+        const list = loansByEmployee.get(r.employee_id) ?? [];
+        list.push(r);
+        loansByEmployee.set(r.employee_id, list);
+      }
+      // Schedule rows we'll claim after the loop. Each row's applied_in_run_id
+      // gets stamped to run.id and linked to the payroll line it rode on.
+      const consumedScheduleRows: Array<{
+        scheduleId: string;
+        runLineId: string;
+        loanId: string;
+        principalCents: number;
+        interestCents: number;
+      }> = [];
+
       // Compute each line and persist
       let gross = 0,
         epfEmp = 0,
@@ -513,6 +567,70 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
           });
         }
 
+        // Staff loan EMI recovery — one deduction line per loan so each
+        // loan's recovery is visible on the payslip. countsForEpf/Etf/Paye
+        // are all FALSE: loan repayment shouldn't shrink the statutory
+        // bases (wages earned haven't changed). The schedule rows get
+        // claimed after the line is inserted below so applied_run_line_id
+        // can point at the canonical line.
+        const dueRows = loansByEmployee.get(e.id) ?? [];
+        // Group by loan so one LOAN-REC line covers N missed installments
+        // if they've stacked up (shouldn't happen in steady state but
+        // possible after a gap in payroll).
+        const perLoan = new Map<
+          string,
+          {
+            loanNumber: string | null;
+            totalCents: number;
+            principalCents: number;
+            interestCents: number;
+            scheduleIds: string[];
+          }
+        >();
+        for (const r of dueRows) {
+          const bucket = perLoan.get(r.loan_id) ?? {
+            loanNumber: r.loan_number,
+            totalCents: 0,
+            principalCents: 0,
+            interestCents: 0,
+            scheduleIds: [] as string[],
+          };
+          bucket.totalCents += r.total_cents;
+          bucket.principalCents += r.principal_cents;
+          bucket.interestCents += r.interest_cents;
+          bucket.scheduleIds.push(r.schedule_id);
+          perLoan.set(r.loan_id, bucket);
+        }
+        for (const [loanId, b] of perLoan) {
+          if (b.totalCents <= 0) continue;
+          const installments = b.scheduleIds.length;
+          const label =
+            installments === 1
+              ? `Loan recovery (${b.loanNumber ?? "loan"})`
+              : `Loan recovery (${b.loanNumber ?? "loan"} · ${installments} EMIs)`;
+          resolved.push({
+            code: `LOAN-REC-${loanId.slice(0, 8)}`,
+            name: label,
+            kind: "deduction",
+            amountCents: b.totalCents,
+            countsForEpf: false,
+            countsForEtf: false,
+            countsForPaye: false,
+            sortOrder: 100,
+          });
+          snapshotInputs.push({
+            componentId: null,
+            code: `LOAN-REC-${loanId.slice(0, 8)}`,
+            name: label,
+            kind: "deduction",
+            amountCents: b.totalCents,
+            countsForEpf: false,
+            countsForEtf: false,
+            countsForPaye: false,
+            sortOrder: 100,
+          });
+        }
+
         const c = computePayrollFromComponents({
           components: resolved,
           epfEligible: e.epfEligible,
@@ -573,6 +691,20 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
           });
         }
 
+        // Queue schedule rows to be claimed after the loop completes. We
+        // defer the UPDATE so that if anything throws between here and the
+        // run-aggregates update, the atomic-claim idiom stays consistent
+        // (the tx rolls back as a unit either way).
+        for (const r of dueRows) {
+          consumedScheduleRows.push({
+            scheduleId: r.schedule_id,
+            runLineId: line.id,
+            loanId: r.loan_id,
+            principalCents: r.principal_cents,
+            interestCents: r.interest_cents,
+          });
+        }
+
         gross += c.grossCents;
         epfEmp += c.epfEmployeeCents;
         epfEr += c.epfEmployerCents;
@@ -595,6 +727,32 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
           })
           .where(eq(schema.employeeSalaryRevisions.id, cr.id));
       }
+
+      // Claim staff-loan EMI rows. Same rule: any future void/delete handler
+      // for runs MUST unset these back out, or the schedule will stay stuck.
+      // Aggregate per-loan effects and update the loan header's running
+      // outstanding totals in one pass.
+      const loanEffects = new Map<
+        string,
+        { principal: number; interest: number }
+      >();
+      for (const cs of consumedScheduleRows) {
+        await tx
+          .update(schema.employeeLoanSchedule)
+          .set({
+            appliedInRunId: run.id,
+            appliedRunLineId: cs.runLineId,
+            appliedAt: new Date(),
+          })
+          .where(eq(schema.employeeLoanSchedule.id, cs.scheduleId));
+        const prev = loanEffects.get(cs.loanId) ?? { principal: 0, interest: 0 };
+        prev.principal += cs.principalCents;
+        prev.interest += cs.interestCents;
+        loanEffects.set(cs.loanId, prev);
+      }
+      // Note: we stamp `status = 'paid'` and decrement outstanding only at
+      // post time (see below) so that voiding a draft doesn't leave the
+      // loan header in a half-paid state.
 
       // Update run aggregates
       await tx
@@ -679,6 +837,12 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
       const payePayable = bySub.get("liability:paye");
       const salariesPayable = bySub.get("liability:salaries");
       const employeeDeductions = bySub.get("liability:employee_deductions");
+      // Loan recovery books against the receivable / interest income. These
+      // are optional at post — only required if there are loan EMIs on this
+      // run. If missing in the CoA we surface a clear error instead of
+      // silently dropping the posting.
+      const loansReceivable = bySub.get("asset:loans_receivable");
+      const interestIncome = bySub.get("income:interest_income");
 
       for (const [key, acc] of [
         ["expense:payroll", salaryExpense],
@@ -691,6 +855,29 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
         ["liability:employee_deductions", employeeDeductions],
       ] as const) {
         if (!acc) return { error: "MISSING_ACCOUNT" as const, account: key };
+      }
+
+      // Sum loan EMIs claimed on this run's lines. They were picked up at
+      // draft-creation time (applied_in_run_id stamped); at post we split
+      // them into principal (goes to CR Loans receivable — reduces the
+      // asset) and interest (goes to CR Interest income).
+      const loanRecoveryRows = (await tx.execute(sql`
+        SELECT COALESCE(SUM(principal_cents), 0) AS principal_total,
+               COALESCE(SUM(interest_cents), 0)  AS interest_total,
+               COALESCE(SUM(total_cents), 0)     AS grand_total
+          FROM employee_loan_schedule
+         WHERE tenant_id = ${ctx.tenantId}::uuid
+           AND applied_in_run_id = ${run.id}::uuid
+      `)) as unknown as Array<{
+        principal_total: string | number;
+        interest_total: string | number;
+        grand_total: string | number;
+      }>;
+      const loanPrincipalTotal = Number(loanRecoveryRows[0]?.principal_total ?? 0);
+      const loanInterestTotal = Number(loanRecoveryRows[0]?.interest_total ?? 0);
+      const loanGrandTotal = loanPrincipalTotal + loanInterestTotal;
+      if (loanGrandTotal > 0 && (!loansReceivable || !interestIncome)) {
+        return { error: "MISSING_ACCOUNT" as const, account: "asset:loans_receivable" };
       }
 
       const [{ number: runNumber }] = (await tx.execute(
@@ -787,10 +974,28 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
         crCents: run.netPayCents,
         description: `Net salaries · ${runNumber}`,
       });
-      if (sumNonStat > 0) {
+      // Split non-statutory deductions: loan recovery credits the
+      // receivable (asset reduction) + interest income; remainder lands
+      // in the employee deductions clearing liability.
+      const otherDeductions = Math.max(0, sumNonStat - loanGrandTotal);
+      if (loanPrincipalTotal > 0) {
+        journalLines.push({
+          accountId: loansReceivable!.id,
+          crCents: loanPrincipalTotal,
+          description: `Loan recoveries · ${runNumber}`,
+        });
+      }
+      if (loanInterestTotal > 0) {
+        journalLines.push({
+          accountId: interestIncome!.id,
+          crCents: loanInterestTotal,
+          description: `Loan interest · ${runNumber}`,
+        });
+      }
+      if (otherDeductions > 0) {
         journalLines.push({
           accountId: employeeDeductions!.id,
-          crCents: sumNonStat,
+          crCents: otherDeductions,
           description: `Employee deductions withheld · ${runNumber}`,
         });
       }
@@ -816,6 +1021,62 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
           updatedAt: new Date(),
         })
         .where(eq(schema.payrollRuns.id, run.id));
+
+      // Flip claimed EMI schedule rows to 'paid' and decrement the loan
+      // header's outstanding totals. Close any loan whose outstanding has
+      // hit zero. We do this at POST (not at draft creation) so that
+      // rolling back a draft doesn't leave half-paid loans behind.
+      if (loanGrandTotal > 0) {
+        const claimedRows = await tx
+          .select()
+          .from(schema.employeeLoanSchedule)
+          .where(
+            and(
+              eq(schema.employeeLoanSchedule.tenantId, ctx.tenantId),
+              eq(schema.employeeLoanSchedule.appliedInRunId, run.id),
+            ),
+          );
+        const effects = new Map<
+          string,
+          { principal: number; interest: number }
+        >();
+        for (const r of claimedRows) {
+          await tx
+            .update(schema.employeeLoanSchedule)
+            .set({ status: "paid" })
+            .where(eq(schema.employeeLoanSchedule.id, r.id));
+          const p = effects.get(r.loanId) ?? { principal: 0, interest: 0 };
+          p.principal += r.principalCents;
+          p.interest += r.interestCents;
+          effects.set(r.loanId, p);
+        }
+        for (const [loanId, eff] of effects) {
+          const [lr] = await tx
+            .select()
+            .from(schema.employeeLoans)
+            .where(eq(schema.employeeLoans.id, loanId))
+            .limit(1);
+          if (!lr) continue;
+          const newPrincipalOut = Math.max(0, lr.principalOutstandingCents - eff.principal);
+          const newInterestOut = Math.max(0, lr.interestOutstandingCents - eff.interest);
+          const fullyPaid = newPrincipalOut === 0 && newInterestOut === 0;
+          await tx
+            .update(schema.employeeLoans)
+            .set({
+              principalOutstandingCents: newPrincipalOut,
+              interestOutstandingCents: newInterestOut,
+              principalRepaidCents: lr.principalRepaidCents + eff.principal,
+              interestRepaidCents: lr.interestRepaidCents + eff.interest,
+              ...(fullyPaid && {
+                status: "closed",
+                closedAt: new Date(),
+                closedReason: "fully_paid",
+              }),
+              updatedAt: new Date(),
+            })
+            .where(eq(schema.employeeLoans.id, loanId));
+        }
+      }
 
       return { ok: true as const, runNumber, entryNumber };
     });

@@ -186,6 +186,25 @@ export default async function PayrollRunDetailPage({ params }: { params: { id: s
                           </span>
                         );
                       })()}
+                      {(() => {
+                        const loanRecs = l.components?.filter((c) =>
+                          c.code.startsWith("LOAN-REC"),
+                        ) ?? [];
+                        if (loanRecs.length === 0) return null;
+                        const total = loanRecs.reduce(
+                          (sum, c) => sum + c.amountCents,
+                          0,
+                        );
+                        const title = loanRecs.map((c) => c.name).join(" · ");
+                        return (
+                          <span
+                            className="rounded-full bg-warning-bg/60 px-1.5 py-0.5 text-micro text-warning"
+                            title={`${title} · deducted from gross above`}
+                          >
+                            −{formatLKR(total)} loan
+                          </span>
+                        );
+                      })()}
                     </div>
                   </td>
                   <td className="px-4 py-3">

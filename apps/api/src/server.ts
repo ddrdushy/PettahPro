@@ -33,6 +33,10 @@ import { stockTransfersRoutes } from "./modules/inventory/stock-transfers.js";
 import { chequesRoutes } from "./modules/cheques/routes.js";
 import { employeesRoutes } from "./modules/hr/employees.js";
 import { salaryRevisionsRoutes } from "./modules/hr/salary-revisions.js";
+import {
+  loanTypesRoutes,
+  employeeLoansRoutes,
+} from "./modules/hr/staff-loans.js";
 import { payrollRunsRoutes } from "./modules/hr/payroll-runs.js";
 import { statutoryRoutes } from "./modules/hr/statutory.js";
 import {
@@ -122,6 +126,8 @@ export async function buildServer(): Promise<FastifyInstance> {
   await server.register(leaveRequestsRoutes, { prefix: "/leave-requests" });
   await server.register(payrollRunsRoutes, { prefix: "/payroll-runs" });
   await server.register(statutoryRoutes, { prefix: "/payroll" });
+  await server.register(loanTypesRoutes, { prefix: "/loan-types" });
+  await server.register(employeeLoansRoutes, { prefix: "/employee-loans" });
   await server.register(dashboardRoutes, { prefix: "/dashboard" });
   await server.register(trialBalanceRoutes, { prefix: "/reports/trial-balance" });
   await server.register(profitLossRoutes, { prefix: "/reports/profit-loss" });
