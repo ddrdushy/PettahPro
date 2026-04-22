@@ -500,6 +500,38 @@ export const api = {
     request<{ movements: StockLedgerMovement[] }>(`/stock/ledger?itemId=${itemId}`),
   lowStock: () =>
     request<{ items: LowStockItem[]; count: number }>("/stock/low-stock"),
+  listWarehouses: () =>
+    request<{ warehouses: WarehouseRow[] }>("/stock/warehouses"),
+
+  listStockTransfers: () =>
+    request<{ transfers: StockTransferListRow[] }>("/stock-transfers"),
+  getStockTransfer: (id: string) =>
+    request<{ transfer: StockTransferDetail; lines: StockTransferLineRow[] }>(
+      `/stock-transfers/${id}`,
+    ),
+  createStockTransfer: (body: CreateStockTransfer) =>
+    request<{ transfer: StockTransferDetail }>("/stock-transfers", {
+      method: "POST",
+      json: body,
+    }),
+  dispatchStockTransfer: (id: string) =>
+    request<{ ok: true; transferNumber: string }>(
+      `/stock-transfers/${id}/dispatch`,
+      { method: "POST" },
+    ),
+  receiveStockTransfer: (
+    id: string,
+    body: { lines: Array<{ lineId: string; quantityReceived: number }>; notes?: string },
+  ) =>
+    request<{ ok: true; hasDiscrepancy: boolean }>(
+      `/stock-transfers/${id}/receive`,
+      { method: "POST", json: body },
+    ),
+  cancelStockTransfer: (id: string, reason?: string) =>
+    request<{ ok: true }>(`/stock-transfers/${id}/cancel`, {
+      method: "POST",
+      json: reason ? { reason } : {},
+    }),
 
   listEmployees: (q?: string) =>
     request<{ employees: EmployeeListRow[] }>(
@@ -2271,6 +2303,71 @@ export interface StockLedgerMovement {
   occurredAt: string;
   warehouseCode: string;
   warehouseName: string;
+}
+
+export interface WarehouseRow {
+  id: string;
+  code: string;
+  name: string;
+  isDefault: boolean;
+  isActive: boolean;
+}
+
+export type StockTransferStatus = "draft" | "dispatched" | "received" | "cancelled";
+
+export interface StockTransferListRow {
+  id: string;
+  transferNumber: string | null;
+  status: StockTransferStatus;
+  requestedDate: string;
+  dispatchedAt: string | null;
+  receivedAt: string | null;
+  hasDiscrepancy: boolean;
+  createdAt: string;
+  sourceCode: string;
+  sourceName: string;
+  destCode: string;
+  destName: string;
+  lineCount: number;
+}
+
+export interface StockTransferDetail {
+  id: string;
+  transferNumber: string | null;
+  sourceWarehouseId: string;
+  destinationWarehouseId: string;
+  status: StockTransferStatus;
+  requestedDate: string;
+  dispatchedAt: string | null;
+  receivedAt: string | null;
+  cancelledAt: string | null;
+  cancelledReason: string | null;
+  hasDiscrepancy: boolean;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface StockTransferLineRow {
+  id: string;
+  line_no: number;
+  item_id: string;
+  item_name: string;
+  sku: string | null;
+  unit: string;
+  quantity_requested: string;
+  quantity_dispatched: string | null;
+  quantity_received: string | null;
+  unit_cost_cents_at_dispatch: number | string | null;
+  notes: string | null;
+}
+
+export interface CreateStockTransfer {
+  sourceWarehouseId: string;
+  destinationWarehouseId: string;
+  requestedDate?: string;
+  notes?: string;
+  lines: Array<{ itemId: string; quantityRequested: number; notes?: string }>;
 }
 
 export interface LowStockItem {
