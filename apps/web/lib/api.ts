@@ -565,6 +565,14 @@ export const api = {
   updateSettings: (body: Partial<TenantSettings>) =>
     request<TenantSettingsResponse>("/settings", { method: "PATCH", json: body }),
 
+  listNumberSeries: () => request<{ series: NumberSeries[] }>("/number-series"),
+  getNumberSeries: (name: string) =>
+    request<{ series: NumberSeries }>(`/number-series/${name}`),
+  updateNumberSeries: (name: string, body: UpdateNumberSeries) =>
+    request<{ ok: true }>(`/number-series/${name}`, { method: "PATCH", json: body }),
+  previewNumberSeries: (body: PreviewNumberSeries) =>
+    request<{ preview: string }>("/number-series/preview", { method: "POST", json: body }),
+
   listNotifications: (limit?: number) => {
     const qs = limit ? `?limit=${limit}` : "";
     return request<{ notifications: AppNotification[] }>(`/notifications${qs}`);
@@ -3398,6 +3406,38 @@ export interface FiscalPeriod {
 export interface TenantSettingsResponse {
   settings: TenantSettings;
   defaults: TenantSettings;
+}
+
+export type NumberSeriesScope = "year" | "month" | "global";
+
+export interface NumberSeries {
+  sequenceName: string;
+  displayName: string | null;
+  prefix: string;
+  template: string;
+  scope: NumberSeriesScope;
+  padWidth: number;
+  counter: number;
+  currentYear: number | null;
+  currentMonth: number | null;
+  nextPreview: string;
+  updatedAt: string;
+}
+
+export interface UpdateNumberSeries {
+  prefix?: string;
+  template?: string;
+  scope?: NumberSeriesScope;
+  padWidth?: number;
+  // Forward-only — server refuses a decrease.
+  counter?: number;
+}
+
+export interface PreviewNumberSeries {
+  prefix: string;
+  template: string;
+  padWidth: number;
+  nextCounter: number;
 }
 
 export interface AppNotification {
