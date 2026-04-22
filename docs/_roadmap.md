@@ -2,11 +2,13 @@
 
 Live tracker of what's shipped, what's next, and what's backlog — cross-checked against the 23 spec files in `/docs/` (see [`_summary.md`](./_summary.md) for a per-file digest).
 
-Last updated: 2026-04-22 after PR #43. **All must-haves shipped.**
+**Roadmap says what's shipped. [`_status.md`](./_status.md) says what's broken, fragile, or at-risk right now.** Read both before picking up work.
+
+Last updated: 2026-04-22 after PR #44. **All must-haves shipped.**
 
 ---
 
-## ✅ Shipped (PRs #1 – #43)
+## ✅ Shipped (PRs #1 – #44)
 
 ### Platform foundation
 - Multi-tenant Postgres with RLS (`current_tenant_id()` + `SET LOCAL app.tenant_id`)
@@ -17,6 +19,7 @@ Last updated: 2026-04-22 after PR #43. **All must-haves shipped.**
 - BullMQ worker + Redis, hourly cron scaffold
 - Notifications (header bell + red-dot badge, in-app only, routed per `refType`)
 - Audit columns (created_at/updated_at, deleted_at, created_by_user_id)
+- **Build status tracker** (`docs/_status.md` + PR template) — known bugs, typecheck debt baseline (43 errors frozen), fragile areas, regression log, module health; PR template forces every PR to declare modules touched + regression surface + test plan
 
 ### Sell
 - Customers (CRUD, statements, aging)
