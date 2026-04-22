@@ -16,6 +16,7 @@ import {
   resolveStockGLAccounts,
 } from "../inventory/stock-posting.js";
 import { loadTenantSettings } from "../settings/routes.js";
+import { recordAuditEvent } from "../../lib/audit.js";
 
 const LineSchema = z.object({
   itemId: z.string().uuid().optional(),
@@ -985,6 +986,27 @@ export const invoicesRoutes: FastifyPluginAsync = async (fastify) => {
         })
         .where(eq(schema.invoices.id, inv.id));
 
+      await recordAuditEvent(tx, {
+        kind: "bad_debt.writeoff",
+        summary: `Wrote off ${inv.invoiceNumber ?? inv.id.slice(0, 8)} · ${(inv.balanceDueCents / 100).toFixed(2)} · ${reason}`,
+        refType: "invoice",
+        refId: inv.id,
+        diff: {
+          invoiceNumber: inv.invoiceNumber,
+          customerId: inv.customerId,
+          principalCents,
+          vatReliefCents: vatRelief,
+          balanceDueCents: inv.balanceDueCents,
+          reason,
+          claimVatRelief,
+          writeoffJournalEntryId: entryId,
+          writeoffJournalNumber: entryNumber,
+        },
+        actorUserId: ctx.userId,
+        ipAddress: req.ip ?? null,
+        userAgent: req.headers["user-agent"] ?? null,
+      });
+
       return {
         ok: true as const,
         entryId,
@@ -1072,6 +1094,25 @@ export const invoicesRoutes: FastifyPluginAsync = async (fastify) => {
             updatedAt: new Date(),
           })
           .where(eq(schema.invoices.id, inv.id));
+
+        await recordAuditEvent(tx, {
+          kind: "bad_debt.reverse",
+          summary: `Reversed write-off · ${inv.invoiceNumber ?? inv.id.slice(0, 8)} · ${(restoredBalance / 100).toFixed(2)}`,
+          refType: "invoice",
+          refId: inv.id,
+          diff: {
+            invoiceNumber: inv.invoiceNumber,
+            customerId: inv.customerId,
+            restoredBalanceCents: restoredBalance,
+            newStatus,
+            reason: reason || null,
+            reversalJournalEntryId: entryId,
+            reversalJournalNumber: entryNumber,
+          },
+          actorUserId: ctx.userId,
+          ipAddress: req.ip ?? null,
+          userAgent: req.headers["user-agent"] ?? null,
+        });
 
         return { ok: true as const, entryId, entryNumber };
       });

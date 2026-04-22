@@ -69,7 +69,11 @@ import { arAgingRoutes, apAgingRoutes } from "./modules/reports/aging.js";
 import { badDebtsRoutes } from "./modules/reports/bad-debts.js";
 import { notificationsRoutes } from "./modules/notifications/routes.js";
 import { settingsRoutes } from "./modules/settings/routes.js";
+<<<<<<< claude/audit-log
+import { auditLogRoutes } from "./modules/audit/routes.js";
+=======
 import { numberSeriesRoutes } from "./modules/settings/number-series.js";
+>>>>>>> main
 
 export async function buildServer(): Promise<FastifyInstance> {
   const server = Fastify({
@@ -158,7 +162,11 @@ export async function buildServer(): Promise<FastifyInstance> {
   await server.register(badDebtsRoutes, { prefix: "/reports/bad-debts" });
   await server.register(notificationsRoutes, { prefix: "/notifications" });
   await server.register(settingsRoutes, { prefix: "/settings" });
+<<<<<<< claude/audit-log
+  await server.register(auditLogRoutes, { prefix: "/audit-log" });
+=======
   await server.register(numberSeriesRoutes, { prefix: "/number-series" });
+>>>>>>> main
 
   server.setErrorHandler((err, req, reply) => {
     req.log.error({ err }, "request failed");

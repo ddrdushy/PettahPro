@@ -35,3 +35,4 @@ export * from "./proforma-invoices.js";
 export * from "./staff-loans.js";
 export * from "./bonuses.js";
 export * from "./customer-statement-emails.js";
+export * from "./audit-events.js";

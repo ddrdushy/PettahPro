@@ -27,6 +27,7 @@ import {
   Lock,
   Settings,
   Gift,
+  ShieldCheck,
   type LucideIcon,
 } from "lucide-react";
 
@@ -121,6 +122,7 @@ const nav: Group[] = [
     title: "Admin",
     items: [
       { label: "Branches", href: "/app/branches", icon: Building2 },
+      { label: "Audit log", href: "/app/audit-log", icon: ShieldCheck },
       { label: "Settings", href: "/app/settings", icon: Settings },
     ],
   },
