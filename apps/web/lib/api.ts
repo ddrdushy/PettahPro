@@ -288,6 +288,35 @@ export const api = {
   convertQuotation: (id: string) =>
     request<{ ok: true; invoiceId: string }>(`/quotations/${id}/convert`, { method: "POST" }),
 
+  listProformaInvoices: () =>
+    request<{ proformaInvoices: ProformaInvoiceListRow[] }>("/proforma-invoices"),
+  getProformaInvoice: (id: string) =>
+    request<{
+      proformaInvoice: ProformaInvoiceDetail;
+      lines: ProformaInvoiceLine[];
+      customer: Customer | null;
+    }>(`/proforma-invoices/${id}`),
+  createProformaInvoice: (body: CreateProformaInvoice) =>
+    request<{ proformaInvoice: ProformaInvoiceDetail }>("/proforma-invoices", {
+      method: "POST",
+      json: body,
+    }),
+  sendProformaInvoice: (id: string) =>
+    request<{ ok: true; proformaNumber: string }>(`/proforma-invoices/${id}/send`, {
+      method: "POST",
+    }),
+  cancelProformaInvoice: (id: string, reason?: string) =>
+    request<{ ok: true }>(`/proforma-invoices/${id}/cancel`, {
+      method: "POST",
+      json: reason ? { reason } : {},
+    }),
+  convertProformaInvoice: (id: string) =>
+    request<{ ok: true; invoiceId: string }>(`/proforma-invoices/${id}/convert`, {
+      method: "POST",
+    }),
+  deleteProformaInvoice: (id: string) =>
+    request<{ ok: true }>(`/proforma-invoices/${id}`, { method: "DELETE" }),
+
   listCreditNotes: () => request<{ creditNotes: CreditNoteListRow[] }>("/credit-notes"),
   getCreditNote: (id: string) =>
     request<{
@@ -319,6 +348,31 @@ export const api = {
       method: "POST",
       json: reason ? { reason } : {},
     }),
+
+  listRecurringBills: () =>
+    request<{ recurringBills: RecurringBillListRow[] }>("/recurring-bills"),
+  getRecurringBill: (id: string) =>
+    request<{
+      recurringBill: RecurringBillDetail;
+      lines: RecurringBillLine[];
+      supplier: Supplier | null;
+    }>(`/recurring-bills/${id}`),
+  createRecurringBill: (body: CreateRecurringBill) =>
+    request<{ recurringBill: RecurringBillDetail }>(`/recurring-bills`, {
+      method: "POST",
+      json: body,
+    }),
+  pauseRecurringBill: (id: string) =>
+    request<{ ok: true }>(`/recurring-bills/${id}/pause`, { method: "POST" }),
+  resumeRecurringBill: (id: string) =>
+    request<{ ok: true }>(`/recurring-bills/${id}/resume`, { method: "POST" }),
+  generateRecurringBillNow: (id: string) =>
+    request<{ ok: true; billId: string }>(
+      `/recurring-bills/${id}/generate-now`,
+      { method: "POST" },
+    ),
+  deleteRecurringBill: (id: string) =>
+    request<{ ok: true }>(`/recurring-bills/${id}`, { method: "DELETE" }),
 
   listPurchaseOrders: () => request<{ purchaseOrders: PurchaseOrderListRow[] }>("/purchase-orders"),
   getPurchaseOrder: (id: string) =>
@@ -1882,6 +1936,83 @@ export interface CreateQuotation {
   lines: CreateQuotationLine[];
 }
 
+export type ProformaInvoiceStatus = "draft" | "sent" | "converted" | "cancelled";
+
+export interface ProformaInvoiceListRow {
+  id: string;
+  proformaNumber: string | null;
+  status: ProformaInvoiceStatus;
+  issueDate: string;
+  validUntil: string;
+  customerId: string;
+  customerName: string;
+  currency: string;
+  totalCents: number;
+  convertedInvoiceId: string | null;
+  createdAt: string;
+}
+
+export interface ProformaInvoiceDetail {
+  id: string;
+  proformaNumber: string | null;
+  customerId: string;
+  branchId: string | null;
+  status: ProformaInvoiceStatus;
+  issueDate: string;
+  validUntil: string;
+  currency: string;
+  subtotalCents: number;
+  discountCents: number;
+  taxCents: number;
+  totalCents: number;
+  reference: string | null;
+  notes: string | null;
+  terms: string | null;
+  sentAt: string | null;
+  convertedInvoiceId: string | null;
+  convertedAt: string | null;
+  cancelledAt: string | null;
+  cancelledReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProformaInvoiceLine {
+  id: string;
+  lineNo: number;
+  itemId: string | null;
+  description: string;
+  quantity: string;
+  unitPriceCents: number;
+  lineSubtotalCents: number;
+  discountPctBps: number;
+  discountCents: number;
+  taxCodeId: string | null;
+  taxRateBps: number;
+  taxCents: number;
+  lineTotalCents: number;
+  incomeAccountId: string | null;
+}
+
+export interface CreateProformaInvoiceLine {
+  itemId?: string;
+  description: string;
+  quantity: number;
+  unitPriceCents: number;
+  discountPctBps?: number;
+  taxCodeId?: string;
+}
+
+export interface CreateProformaInvoice {
+  customerId: string;
+  issueDate?: string;
+  validUntil?: string;
+  reference?: string;
+  notes?: string;
+  terms?: string;
+  lines: CreateProformaInvoiceLine[];
+}
+
 export type CreditNoteStatus = "draft" | "posted" | "void";
 
 export type CreditNoteReason =
@@ -3023,6 +3154,71 @@ export interface CreateRecurringInvoice {
     unitPriceCents: number;
     discountPctBps?: number;
     taxCodeId?: string;
+  }>;
+}
+
+export interface RecurringBillListRow {
+  id: string;
+  scheduleName: string;
+  supplierId: string;
+  supplierName: string;
+  frequency: string;
+  dayOfMonth: number;
+  startDate: string;
+  endDate: string | null;
+  nextRunDate: string;
+  lastRunDate: string | null;
+  isActive: boolean;
+  pausedAt: string | null;
+  generatedCount: number;
+  lastGeneratedBillId: string | null;
+  currency: string;
+  createdAt: string;
+}
+
+export interface RecurringBillDetail extends RecurringBillListRow {
+  branchId: string | null;
+  dueDays: number;
+  supplierBillNumberTemplate: string | null;
+  notes: string | null;
+  deletedAt: string | null;
+  updatedAt: string;
+  createdByUserId: string | null;
+}
+
+export interface RecurringBillLine {
+  id: string;
+  recurringBillId: string;
+  lineNo: number;
+  itemId: string | null;
+  description: string;
+  quantity: string;
+  unitPriceCents: number;
+  discountPctBps: number;
+  taxCodeId: string | null;
+  expenseAccountId: string | null;
+  createdAt: string;
+}
+
+export interface CreateRecurringBill {
+  supplierId: string;
+  scheduleName: string;
+  frequency?: "monthly";
+  dayOfMonth?: number;
+  startDate: string;
+  endDate?: string;
+  dueDays?: number;
+  currency?: string;
+  supplierBillNumberTemplate?: string;
+  notes?: string;
+  lines: Array<{
+    itemId?: string;
+    description: string;
+    quantity: number;
+    unitPriceCents: number;
+    discountPctBps?: number;
+    taxCodeId?: string;
+    expenseAccountId?: string;
   }>;
 }
 

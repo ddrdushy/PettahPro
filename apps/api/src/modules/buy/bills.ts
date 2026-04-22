@@ -44,7 +44,7 @@ interface LineInput {
   expenseAccountId?: string;
 }
 
-async function computeBill(
+export async function computeBill(
   tx: Parameters<Parameters<typeof withTenant>[1]>[0],
   tenantId: string,
   lineInputs: LineInput[],
