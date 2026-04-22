@@ -1,10 +1,11 @@
 import type { FastifyPluginAsync } from "fastify";
 import { eq, sql } from "drizzle-orm";
 import { z } from "zod";
-import { db, schema } from "@pettahpro/db";
+import { db, schema, withTenant } from "@pettahpro/db";
 import { hashPassword, verifyPassword } from "./password.js";
 import { createSession, destroySession, readSession } from "./sessions.js";
 import { SESSION_COOKIE, clearSessionCookie, setSessionCookie } from "./cookies.js";
+import { recordAuditEvent } from "../../lib/audit.js";
 
 // Signup/login/me run BEFORE we know which tenant the user belongs to, so we
 // can't set app.tenant_id and let RLS do the filtering. Instead we call a set
@@ -153,6 +154,20 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
     });
     setSessionCookie(reply, session.id, SESSION_TTL);
 
+    // Audit-write runs AFTER session create (the session is the source of
+    // truth for "logged in"). Wrapped in withTenant so RLS accepts the
+    // insert. Failures here are swallowed inside recordAuditEvent — the
+    // user is still logged in either way.
+    await withTenant(user.tenant_id, async (tx) => {
+      await recordAuditEvent(tx, {
+        kind: "user.login",
+        summary: `Logged in as ${user.email}`,
+        actorUserId: user.id,
+        ipAddress: req.ip ?? null,
+        userAgent: req.headers["user-agent"] ?? null,
+      });
+    });
+
     return reply.send({
       user: {
         id: user.id,
@@ -166,7 +181,21 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post("/logout", async (req, reply) => {
     const unsigned = req.unsignCookie(req.cookies[SESSION_COOKIE] ?? "");
     if (unsigned.valid && unsigned.value) {
+      // Snapshot session details BEFORE destroy so we can write the audit
+      // event under the correct tenant context.
+      const session = await readSession(unsigned.value);
       await destroySession(unsigned.value);
+      if (session) {
+        await withTenant(session.tenantId, async (tx) => {
+          await recordAuditEvent(tx, {
+            kind: "user.logout",
+            summary: `Logged out (${session.email})`,
+            actorUserId: session.userId,
+            ipAddress: req.ip ?? null,
+            userAgent: req.headers["user-agent"] ?? null,
+          });
+        });
+      }
     }
     clearSessionCookie(reply);
     return reply.send({ ok: true });

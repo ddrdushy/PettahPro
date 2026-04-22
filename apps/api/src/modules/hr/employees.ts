@@ -3,6 +3,7 @@ import { and, eq, isNull, desc, ilike, sql } from "drizzle-orm";
 import { z } from "zod";
 import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
+import { recordAuditEvent } from "../../lib/audit.js";
 
 // SL NIC: old 10-char (9 digits + V|X) or new 12-digit
 const NIC_REGEX = /^(?:\d{9}[VvXx]|\d{12})$/;
@@ -272,6 +273,27 @@ export const employeesRoutes: FastifyPluginAsync = async (fastify) => {
         })
         .where(eq(schema.employees.id, emp.id))
         .returning();
+
+      await recordAuditEvent(tx, {
+        kind: "employee.exit",
+        summary: `${emp.fullName} exited (${d.statusAfter}) · LWD ${lwd}`,
+        refType: "employee",
+        refId: emp.id,
+        diff: {
+          employeeCode: emp.employeeCode,
+          fullName: emp.fullName,
+          priorStatus: emp.status,
+          newStatus: d.statusAfter,
+          exitDate: d.exitDate,
+          lastWorkingDay: lwd,
+          noticePeriodDays: d.noticePeriodDays ?? emp.noticePeriodDays,
+          reason: d.reason || null,
+        },
+        actorUserId: ctx.userId,
+        ipAddress: req.ip ?? null,
+        userAgent: req.headers["user-agent"] ?? null,
+      });
+
       return { ok: true as const, employee: updated };
     });
 
@@ -347,6 +369,23 @@ export const employeesRoutes: FastifyPluginAsync = async (fastify) => {
           })
           .where(eq(schema.employees.id, emp.id))
           .returning();
+
+        await recordAuditEvent(tx, {
+          kind: "employee.confirm_probation",
+          summary: `Confirmed probation · ${emp.fullName} · ${d.confirmationDate}`,
+          refType: "employee",
+          refId: emp.id,
+          diff: {
+            employeeCode: emp.employeeCode,
+            fullName: emp.fullName,
+            confirmationDate: d.confirmationDate,
+            notes: d.notes || null,
+          },
+          actorUserId: ctx.userId,
+          ipAddress: req.ip ?? null,
+          userAgent: req.headers["user-agent"] ?? null,
+        });
+
         return { ok: true as const, employee: updated };
       });
 
