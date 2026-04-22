@@ -3,6 +3,7 @@ import { and, eq, isNull, desc, sql } from "drizzle-orm";
 import { z } from "zod";
 import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
+import { requirePermission } from "../../lib/permissions.js";
 import { postJournal } from "./journal-posting.js";
 import { loadTenantSettings } from "../settings/routes.js";
 import { emitNotification } from "../notifications/emit.js";
@@ -193,7 +194,7 @@ export const journalEntriesRoutes: FastifyPluginAsync = async (fastify) => {
   // tenant's journalApprovalThresholdCents, this instead parks the entry
   // as a draft in journal_entry_drafts pending approval.
   fastify.post("/", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "accounting.manage");
     if (!ctx) return;
 
     const parsed = CreateSchema.safeParse(req.body);
@@ -335,7 +336,7 @@ export const journalEntriesRoutes: FastifyPluginAsync = async (fastify) => {
   // the posted entry back, flip status. Approver can't be the creator
   // (segregation of duties).
   fastify.post<{ Params: { id: string } }>("/drafts/:id/approve", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "accounting.manage");
     if (!ctx) return;
 
     const result = await withTenant(ctx.tenantId, async (tx) => {
@@ -434,7 +435,7 @@ export const journalEntriesRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Params: { id: string }; Body: { reason: string } }>(
     "/drafts/:id/reject",
     async (req, reply) => {
-      const ctx = requireAuth(req, reply);
+      const ctx = await requirePermission(req, reply, "accounting.manage");
       if (!ctx) return;
       const reason = (req.body?.reason ?? "").trim();
       if (!reason) {

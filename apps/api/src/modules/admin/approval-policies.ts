@@ -3,6 +3,7 @@ import { and, eq, isNull, desc } from "drizzle-orm";
 import { z } from "zod";
 import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
+import { requirePermission } from "../../lib/permissions.js";
 
 // Approval workflow designer — roadmap #26 (tenant-admin §7).
 //
@@ -89,7 +90,7 @@ export const approvalPoliciesRoutes: FastifyPluginAsync = async (fastify) => {
 
   // POST /approval-policies
   fastify.post("/", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "settings.manage");
     if (!ctx) return;
 
     const parsed = CreateSchema.safeParse(req.body);
@@ -120,7 +121,7 @@ export const approvalPoliciesRoutes: FastifyPluginAsync = async (fastify) => {
 
   // PATCH /approval-policies/:id
   fastify.patch<{ Params: { id: string } }>("/:id", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "settings.manage");
     if (!ctx) return;
 
     const parsed = UpdateSchema.safeParse(req.body);
@@ -164,7 +165,7 @@ export const approvalPoliciesRoutes: FastifyPluginAsync = async (fastify) => {
 
   // DELETE /approval-policies/:id — soft delete
   fastify.delete<{ Params: { id: string } }>("/:id", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "settings.manage");
     if (!ctx) return;
 
     const row = await withTenant(ctx.tenantId, async (tx) => {

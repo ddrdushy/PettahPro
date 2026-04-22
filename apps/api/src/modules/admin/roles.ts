@@ -3,6 +3,7 @@ import { and, eq, isNull, desc, sql } from "drizzle-orm";
 import { z } from "zod";
 import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
+import { requirePermission } from "../../lib/permissions.js";
 
 // Custom roles + user-role assignment — roadmap #27 (tenant-admin §3.4).
 //
@@ -54,7 +55,7 @@ export const rolesRoutes: FastifyPluginAsync = async (fastify) => {
 
   // POST /roles — create custom role
   fastify.post("/", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "users.manage");
     if (!ctx) return;
 
     const parsed = CreateSchema.safeParse(req.body);
@@ -91,7 +92,7 @@ export const rolesRoutes: FastifyPluginAsync = async (fastify) => {
   // PATCH /roles/:id — allowed on both custom and system roles (perms only
   // mutable on system; name/description locked).
   fastify.patch<{ Params: { id: string } }>("/:id", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "users.manage");
     if (!ctx) return;
 
     const parsed = UpdateSchema.safeParse(req.body);
@@ -148,7 +149,7 @@ export const rolesRoutes: FastifyPluginAsync = async (fastify) => {
 
   // DELETE /roles/:id — soft delete. System roles are locked.
   fastify.delete<{ Params: { id: string } }>("/:id", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "users.manage");
     if (!ctx) return;
 
     const outcome = await withTenant(ctx.tenantId, async (tx) => {
@@ -230,7 +231,7 @@ export const rolesRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Params: { userId: string }; Body: { roleId: string } }>(
     "/users/:userId/roles",
     async (req, reply) => {
-      const ctx = requireAuth(req, reply);
+      const ctx = await requirePermission(req, reply, "users.manage");
       if (!ctx) return;
 
       const parsed = z.object({ roleId: z.string().uuid() }).safeParse(req.body);
@@ -294,7 +295,7 @@ export const rolesRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.delete<{ Params: { userId: string; roleId: string } }>(
     "/users/:userId/roles/:roleId",
     async (req, reply) => {
-      const ctx = requireAuth(req, reply);
+      const ctx = await requirePermission(req, reply, "users.manage");
       if (!ctx) return;
 
       await withTenant(ctx.tenantId, async (tx) => {

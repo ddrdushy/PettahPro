@@ -65,7 +65,10 @@ export const api = {
 
   logout: () => request<{ ok: true }>("/auth/logout", { method: "POST" }),
 
-  me: () => request<{ user: User; tenant: Tenant }>("/auth/me", { method: "GET" }),
+  me: () =>
+    request<{ user: User; tenant: Tenant; permissions: CallerPermissions }>("/auth/me", {
+      method: "GET",
+    }),
 
   listCustomers: (q?: string) =>
     request<{ customers: Customer[] }>(`/customers${q ? `?q=${encodeURIComponent(q)}` : ""}`),
@@ -1213,6 +1216,30 @@ export interface Tenant {
   id: string;
   slug: string;
   businessName: string;
+}
+
+// Shape of the caller's permission envelope returned from /auth/me.
+// `enforcementActive=false` means the tenant hasn't configured any
+// role assignments yet — the UI should treat every permission as
+// granted (matches the server's dormant-mode bypass).
+export interface CallerPermissions {
+  isOwner: boolean;
+  enforcementActive: boolean;
+  granted: Record<string, boolean>;
+}
+
+// Client-side mirror of the server's requirePermission() decision.
+// Use wherever a UI element (Post button, Void button, settings tile)
+// should conditionally render based on a specific permission key
+// ("invoices.post", "bills.void", "accounting.manage", ...).
+export function hasPermission(
+  perms: CallerPermissions | null | undefined,
+  key: string,
+): boolean {
+  if (!perms) return false;
+  if (perms.isOwner) return true;
+  if (!perms.enforcementActive) return true;
+  return perms.granted[key] === true;
 }
 
 export interface Customer {
