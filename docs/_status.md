@@ -4,7 +4,7 @@ Living counterweight to [`_roadmap.md`](./_roadmap.md). The roadmap says what's 
 
 Every PR should end with a check: does anything here need to be added, cleared, or bumped?
 
-Last updated: 2026-04-22 (PR #46 — credit note + debit note PDFs)
+Last updated: 2026-04-22 (PR #47 — typecheck debt paydown: pdfResponse helper + nextDocumentNumber helper)
 
 ---
 
@@ -24,7 +24,7 @@ Open bugs, grouped by module. **Severity**: `S1` = data loss or posting correctn
 
 These errors existed *before* PR #44. Every one is known, intentional-ish, and not a blocker for shipping features. **Don't let the total grow.** New PRs should add zero new errors; fixing entries here is welcome but out-of-scope for feature PRs.
 
-**Baseline total: 47 errors** — api: 27, web: 19, db: 1. PR #46 adds two more PDF routes (credit-note + debit-note) that match the existing `Buffer → BodyInit` pattern, bringing the shared-helper sweep from 7 routes to 9 — see sweep #2 below. All new errors are the same shape as existing ones; the sweep is now ripe.
+**Baseline total: 32 errors** — api: 21, web: 10, db: 1. PR #47 executed both queued sweeps: the `pdfResponse()` helper collapses 9 PDF-route `Buffer → BodyInit` errors into one typed boundary; the `nextDocumentNumber()` helper (now in `@pettahpro/db`) removes 6 destructure-pattern errors. Net −15 errors from the baseline (47 → 32). Remaining api errors are all `noUncheckedIndexedAccess` array-index access inside bills / invoices / cheques / payroll / salary-components / statutory and the dashboard aging-label union mismatch; remaining web errors are marketing tuple drift + one `TaxCode.taxType` field rename + the reveal.tsx TS2590.
 
 ### `packages/db` (1)
 
@@ -32,7 +32,7 @@ These errors existed *before* PR #44. Every one is known, intentional-ish, and n
 |---|---|---|
 | `drizzle.config.ts` (top) | TS6059 — outside `rootDir` | `drizzle.config.ts` is at package root but tsconfig rootDir is `src/`. Fix = `exclude` it from the build tsconfig or move it. Low value; fix when adjusting tsconfig next. |
 
-### `apps/api` (27)
+### `apps/api` (21)
 
 All `TS2339: Property 'X' does not exist on type '{…} | undefined'` and `TS2538: Type 'undefined' cannot be used as an index type` errors stem from the same root cause: **destructuring `await tx.execute(sql\`…\`)` results without guarding `undefined`** (under `noUncheckedIndexedAccess`). The fix pattern (already applied in `stock-transfers.ts`):
 
@@ -44,34 +44,20 @@ if (!first) throw new Error("…");
 
 | File:Line | Error | Notes |
 |---|---|---|
-| `modules/accounting/journal-posting.ts:47` | TS2339 `entry_number` on undefined | `next_document_number('journal')` destructure |
-| `modules/buy/bills.ts:338` | TS2339 `number` on undefined | `next_document_number('bill')` destructure |
-| `modules/buy/bills.ts:508,603,604` | TS2538 × 3 | Array index access without guard |
-| `modules/buy/supplier-payments.ts:220` | TS2339 `number` on undefined | `next_document_number` destructure |
+| `modules/buy/bills.ts:506,601,602` | TS2538 × 3 | Array index access without guard |
 | `modules/cheques/routes.ts:225,453` | TS2538 × 2 | Array index access without guard |
-| `modules/hr/payroll-runs.ts:960,1168,1304,1305` | TS2339 + TS2538 × 3 | `next_document_number` + array index |
+| `modules/hr/payroll-runs.ts:1166,1302,1303` | TS2538 × 3 | Array index access without guard |
 | `modules/hr/salary-components.ts:170,213,370` | TS2538 × 3 | Array index access without guard |
 | `modules/hr/statutory.ts:162,165` | TS2538 × 2 | Array index access without guard |
 | `modules/reports/dashboard.ts:117,124,168,175` | TS2322 + TS2345 × 4 | `AgingBucket['label']` is a string literal union, dashboard uses generic `string` — fix is to narrow the computed label to the union or widen `AgingBucket` |
-| `modules/sell/invoices.ts:508` | TS2339 `number` on undefined | `next_document_number` destructure |
-| `modules/sell/invoices.ts:744` | TS2322 `string \| undefined` → `string` | Missing null coalesce before assignment |
-| `modules/sell/invoices.ts:763,861,862` | TS2538 × 3 | Array index access without guard |
-| `modules/sell/payments.ts:196` | TS2339 `number` on undefined | `next_document_number` destructure |
+| `modules/sell/invoices.ts:742` | TS2322 `string \| undefined` → `string` | Missing null coalesce before assignment |
+| `modules/sell/invoices.ts:761,859,860` | TS2538 × 3 | Array index access without guard |
 
-### `apps/web` (19)
+### `apps/web` (10)
 
 | File:Line | Error | Notes |
 |---|---|---|
 | `app/app/bills/[id]/page.tsx:36` | TS2339 `taxType` on `TaxCode` | Old field name; schema renamed. Trivial rename. |
-| `app/app/delivery-notes/[id]/pdf/route.ts:46` | TS2345 `Buffer → BodyInit` | **Copy-pasted in 6 PDF routes** — see below. Fix once in a shared helper. |
-| `app/app/invoices/[id]/pdf/route.ts:50` | TS2345 `Buffer → BodyInit` | Same root cause. |
-| `app/app/payroll/[id]/payslips/[lineId]/pdf/route.ts:52` | TS2345 `Buffer → BodyInit` | Same root cause. |
-| `app/app/purchase-orders/[id]/pdf/route.ts:46` | TS2345 `Buffer → BodyInit` | Same root cause. |
-| `app/app/quotations/[id]/pdf/route.ts:50` | TS2345 `Buffer → BodyInit` | Same root cause. |
-| `app/app/stock/transfers/[id]/pdf/route.ts:55` | TS2345 `Buffer → BodyInit` | Same root cause. Added in PR #43 matching existing pattern. |
-| `app/app/bills/[id]/pdf/route.ts:46` | TS2345 `Buffer → BodyInit` | Same root cause. Added in PR #45. |
-| `app/app/credit-notes/[id]/pdf/route.ts:54` | TS2345 `Buffer → BodyInit` | Same root cause. Added in PR #46. |
-| `app/app/debit-notes/[id]/pdf/route.ts:54` | TS2345 `Buffer → BodyInit` | Same root cause. Added in PR #46. 9 routes now share this — sweep is ripe; fix in one shared helper. |
 | `components/features.tsx:28,30` | TS2339 `badge` on tuple union | Marketing site tuple type is too narrow. |
 | `components/migration.tsx:34,39,58` | TS2339 `highlight` on tuple union | Same root cause as above (readonly tuples + optional member). |
 | `components/pricing.tsx:56,61,86` | TS2339 `highlight` on tuple union | Same root cause. |
@@ -79,10 +65,11 @@ if (!first) throw new Error("…");
 
 ### Recommended debt-paydown sweeps (when we get to them)
 
-1. **`next_document_number` helper** (apps/api, ~6 call sites) — wrap the destructure into `withTenant` or a helper so the guard lives in one place. Touches 6 files, zero behavior change.
-2. **PDF route `Buffer → BodyInit`** (apps/web, **9 call sites** as of PR #46) — wrap `renderToBuffer` result in `new Uint8Array(buf)` or a shared `pdfResponse()` helper. Touches 9 files (delivery-notes, invoices, payroll payslips, purchase-orders, quotations, stock transfers, bills, credit notes, debit notes). **Ripe for next paydown PR** — same error shape × 9 files, mechanical fix.
-3. **Reports dashboard aging bucket labels** — widen the source or narrow via `as const` at the call site.
-4. **Marketing tuple types** (`components/features.tsx`, `migration.tsx`, `pricing.tsx`) — add optional fields to the declared tuple type or use `satisfies`.
+1. ~~**`next_document_number` helper**~~ — **Done in PR #47**. Helper lives in `packages/db/src/next-document-number.ts` and is re-exported from `@pettahpro/db`. All 6 broken destructure call sites migrated.
+2. ~~**PDF route `Buffer → BodyInit`**~~ — **Done in PR #47**. Helper lives in `apps/web/lib/pdf-response.ts`. All 9 PDF routes now call `pdfResponse(pdf, filename)` instead of hand-rolling the Response.
+3. **Remaining `noUncheckedIndexedAccess` array-index leaks in `apps/api`** — bills / invoices / cheques / payroll / salary-components / statutory all still have 1–3 sites apiece. Same pattern: `const row = rows[i]; if (!row) throw …`. Mechanical sweep; ~15 minutes.
+4. **Reports dashboard aging bucket labels** — widen the source or narrow via `as const` at the call site.
+5. **Marketing tuple types** (`components/features.tsx`, `migration.tsx`, `pricing.tsx`) — add optional fields to the declared tuple type or use `satisfies`.
 
 ---
 
@@ -93,8 +80,8 @@ Modules where a past change surprised us. Touch with care and re-test the listed
 | Module | What's fragile | What to re-test when touching |
 |---|---|---|
 | `postJournal` choke point (`apps/api/src/modules/accounting/journal-posting.ts`) | Every new module that posts accounting entries routes through here. Period-lock, approval-threshold, and balance-check are all enforced at this single point. A bad refactor here breaks every post-invoice / post-bill / payroll / bonus flow. | Post: invoice, bill, customer payment, supplier payment, payroll, bonus run, manual JE under + over approval threshold, JE into a soft-closed period. |
-| `next_document_number(kind)` sequence helper | Used by invoices, bills, delivery notes, POs, GRNs, payroll runs, stock transfers, bonus runs, journals. The destructure pattern has been buggy twice — fixed in PR #43 for stock transfers only. | Any new doc-type allocation should use the guard-and-throw pattern from `stock-transfers.ts:311`. |
-| PDF routes (9 of them) | All share the same `renderToBuffer` → `new Response(pdf)` pattern and all have the same pre-existing typecheck error. Easy to copy-paste a subtle bug across nine files. | If you fix one, fix all nine. Shared-helper sweep is queued — see §2 sweep #2. |
+| `next_document_number(kind)` sequence helper | ~~Used by invoices, bills, delivery notes, POs, GRNs, payroll runs, stock transfers, bonus runs, journals.~~ **Now funnelled through `nextDocumentNumber(tx, kind)` in `@pettahpro/db`** (PR #47). 9 call sites still use the hand-rolled guard-and-return-error pattern because they're inside discriminated-union return shapes; those still need to return `{ error: "NUMBER_ALLOC_FAILED" }` rather than throw. Helper is the canonical shape for any new doc type. | Any new doc-type allocation: use `await nextDocumentNumber(tx, 'kind')`. |
+| PDF routes (9 of them) | ~~All share the same `renderToBuffer` → `new Response(pdf)` pattern~~ **Now funnelled through `pdfResponse(pdf, filename)` in `apps/web/lib/pdf-response.ts`** (PR #47). Single place to change response headers, `Cache-Control`, `Content-Disposition`, or the Buffer-to-BodyInit boundary. | Any new PDF route: use `pdfResponse()`, don't hand-roll. |
 | WAVG propagation on stock movements | `quantity_on_hand`, `total_value_cents`, `average_cost_cents`, `last_movement_at` on `item_balances` + matching `stock_ledger` row must move together. Any path that mutates one without the others silently breaks WAVG. | Bill post, invoice post, delivery-note deliver (if stockRelieveOn=deliver), credit-note post (reversal), stock-transfer dispatch + receive, future: stock count adjustments. |
 | Multi-tenant via `withTenant` + `current_tenant_id()` | Every raw SQL query (`tx.execute(sql\`\`)`) must include `WHERE tenant_id = current_tenant_id()`. Forgetting this leaks across tenants. Drizzle ORM queries inherit the RLS context automatically; raw SQL does not. | Search for new `tx.execute(sql\`` additions and verify tenant predicate. |
 | Cheque lifecycle (9 states) | Every state transition has a reverse path; transitions are gated by current state + what document linked the cheque. | When adding a cheque-using module, run through: issued → handed → deposited → presented → cleared, and separately: bounced, stopped, cancelled, stale. |

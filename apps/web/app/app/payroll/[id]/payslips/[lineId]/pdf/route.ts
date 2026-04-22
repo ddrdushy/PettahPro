@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { renderToBuffer } from "@react-pdf/renderer";
 import { PayslipPDF } from "@/lib/payslip-pdf";
+import { pdfResponse } from "@/lib/pdf-response";
 import type { PayrollRun, PayrollRunLine, Tenant } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
@@ -49,12 +50,5 @@ export async function GET(
   const safeName = line.employeeFullName.replace(/[^a-z0-9]+/gi, "_");
   const filename = `payslip_${periodTag}_${safeName}.pdf`;
 
-  return new Response(pdf, {
-    status: 200,
-    headers: {
-      "Content-Type": "application/pdf",
-      "Content-Disposition": `inline; filename="${filename}"`,
-      "Cache-Control": "private, no-store",
-    },
-  });
+  return pdfResponse(pdf, filename);
 }

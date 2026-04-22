@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import { and, eq, isNull, desc, sql, asc } from "drizzle-orm";
 import { z } from "zod";
-import { withTenant, schema } from "@pettahpro/db";
+import { withTenant, schema, nextDocumentNumber } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
 import { postJournal } from "../accounting/journal-posting.js";
 import { emitNotification } from "../notifications/emit.js";
@@ -335,9 +335,7 @@ export const billsRoutes: FastifyPluginAsync = async (fastify) => {
         .orderBy(asc(schema.billLines.lineNo));
       if (lines.length === 0) return { error: "NO_LINES" as const };
 
-      const [{ number: internalReference }] = (await tx.execute(
-        sql`SELECT next_document_number('bill') AS number`,
-      )) as unknown as Array<{ number: string }>;
+      const internalReference = await nextDocumentNumber(tx, "bill");
 
       // AP account
       const apRows = await tx

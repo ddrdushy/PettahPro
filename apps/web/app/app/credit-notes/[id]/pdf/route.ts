@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { renderToBuffer } from "@react-pdf/renderer";
 import { CreditNotePDF } from "@/lib/credit-note-pdf";
+import { pdfResponse } from "@/lib/pdf-response";
 import type {
   CreditNoteDetail,
   CreditNoteLine,
@@ -51,12 +52,5 @@ export async function GET(
 
   const filename = `${data.creditNote.creditNoteNumber ?? "credit-note-" + data.creditNote.id.slice(0, 8)}.pdf`;
 
-  return new Response(pdf, {
-    status: 200,
-    headers: {
-      "Content-Type": "application/pdf",
-      "Content-Disposition": `inline; filename="${filename}"`,
-      "Cache-Control": "private, no-store",
-    },
-  });
+  return pdfResponse(pdf, filename);
 }

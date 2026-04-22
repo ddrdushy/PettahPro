@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { renderToBuffer } from "@react-pdf/renderer";
 import { StockTransferPDF } from "@/lib/stock-transfer-pdf";
+import { pdfResponse } from "@/lib/pdf-response";
 import type {
   StockTransferDetail,
   StockTransferLineRow,
@@ -52,12 +53,5 @@ export async function GET(
 
   const filename = `${data.transfer.transferNumber ?? "stock-transfer-" + data.transfer.id.slice(0, 8)}.pdf`;
 
-  return new Response(pdf, {
-    status: 200,
-    headers: {
-      "Content-Type": "application/pdf",
-      "Content-Disposition": `inline; filename="${filename}"`,
-      "Cache-Control": "private, no-store",
-    },
-  });
+  return pdfResponse(pdf, filename);
 }

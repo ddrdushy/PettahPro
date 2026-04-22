@@ -1,6 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
-import { schema } from "@pettahpro/db";
+import { schema, nextDocumentNumber } from "@pettahpro/db";
 
 export interface PostingLine {
   accountId: string;
@@ -44,9 +44,7 @@ export async function postJournal(
   }
 
   // Allocate entry number via sequence
-  const [{ entry_number: entryNumber }] = (await tx.execute(
-    sql`SELECT next_document_number('journal') AS entry_number`,
-  )) as unknown as Array<{ entry_number: string }>;
+  const entryNumber = await nextDocumentNumber(tx, "journal");
 
   // Resolve fiscal period and enforce lock. Lazily creates a fresh 'open'
   // period if none exists for this date (tenants don't pre-seed beyond a

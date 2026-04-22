@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { renderToBuffer } from "@react-pdf/renderer";
 import { PurchaseOrderPDF } from "@/lib/purchase-order-pdf";
+import { pdfResponse } from "@/lib/pdf-response";
 import type { PurchaseOrderDetail, PurchaseOrderLine, Supplier, Tenant } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
@@ -43,12 +44,5 @@ export async function GET(
 
   const filename = `${data.purchaseOrder.poNumber ?? "po-" + data.purchaseOrder.id.slice(0, 8)}.pdf`;
 
-  return new Response(pdf, {
-    status: 200,
-    headers: {
-      "Content-Type": "application/pdf",
-      "Content-Disposition": `inline; filename="${filename}"`,
-      "Cache-Control": "private, no-store",
-    },
-  });
+  return pdfResponse(pdf, filename);
 }
