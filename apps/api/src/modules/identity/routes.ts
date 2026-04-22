@@ -1,10 +1,27 @@
 import type { FastifyPluginAsync } from "fastify";
-import { eq, and, isNull, sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db, schema } from "@pettahpro/db";
 import { hashPassword, verifyPassword } from "./password.js";
 import { createSession, destroySession, readSession } from "./sessions.js";
 import { SESSION_COOKIE, clearSessionCookie, setSessionCookie } from "./cookies.js";
+
+// Signup/login/me run BEFORE we know which tenant the user belongs to, so we
+// can't set app.tenant_id and let RLS do the filtering. Instead we call a set
+// of SECURITY DEFINER helpers (see docker/postgres/init/44-auth-helpers.sql)
+// that run as the table-owner superuser and bypass RLS. The functions return
+// only the narrow shape the handler needs — no chance of an over-wide select.
+type AuthUserRow = {
+  id: string;
+  tenant_id: string;
+  email: string;
+  full_name: string;
+  password_hash: string | null;
+  is_active: boolean;
+  is_owner: boolean;
+};
+
+type AuthUserSessionRow = Omit<AuthUserRow, "password_hash">;
 
 const SESSION_TTL = 60 * 60 * 24 * 30;
 
@@ -50,12 +67,10 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
     }
     const { businessName, ownerName, email, password } = parsed.data;
 
-    const existing = await db
-      .select({ id: schema.users.id })
-      .from(schema.users)
-      .where(and(eq(schema.users.email, email), isNull(schema.users.deletedAt)))
-      .limit(1);
-    if (existing.length > 0) {
+    const emailTaken = (await db.execute(
+      sql`SELECT auth_email_in_use(${email}) AS in_use`,
+    )) as unknown as Array<{ in_use: boolean }>;
+    if (emailTaken[0]?.in_use) {
       return reply.status(409).send({ error: { code: "EMAIL_IN_USE", message: "An account with this email already exists." } });
     }
 
@@ -114,30 +129,25 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
     }
     const { email, password } = parsed.data;
 
-    const rows = await db
-      .select()
-      .from(schema.users)
-      .where(and(eq(schema.users.email, email), isNull(schema.users.deletedAt)))
-      .limit(1);
+    const rows = (await db.execute(
+      sql`SELECT * FROM auth_find_user_by_email(${email})`,
+    )) as unknown as AuthUserRow[];
     const user = rows[0];
 
-    if (!user || !user.passwordHash || !user.isActive) {
+    if (!user || !user.password_hash || !user.is_active) {
       return reply.status(401).send({ error: { code: "INVALID_CREDENTIALS", message: "Wrong email or password." } });
     }
 
-    const ok = await verifyPassword(user.passwordHash, password);
+    const ok = await verifyPassword(user.password_hash, password);
     if (!ok) {
       return reply.status(401).send({ error: { code: "INVALID_CREDENTIALS", message: "Wrong email or password." } });
     }
 
-    await db
-      .update(schema.users)
-      .set({ lastLoginAt: new Date() })
-      .where(eq(schema.users.id, user.id));
+    await db.execute(sql`SELECT auth_touch_last_login(${user.id}::uuid)`);
 
     const session = await createSession({
       userId: user.id,
-      tenantId: user.tenantId,
+      tenantId: user.tenant_id,
       email: user.email,
       ttlSeconds: SESSION_TTL,
     });
@@ -147,8 +157,8 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       user: {
         id: user.id,
         email: user.email,
-        fullName: user.fullName,
-        isOwner: user.isOwner,
+        fullName: user.full_name,
+        isOwner: user.is_owner,
       },
     });
   });
@@ -172,20 +182,15 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
     const session = await readSession(unsigned.value);
     if (!session) return reply.status(401).send({ error: { code: "UNAUTHENTICATED" } });
 
-    const rows = await db
-      .select({
-        id: schema.users.id,
-        email: schema.users.email,
-        fullName: schema.users.fullName,
-        isOwner: schema.users.isOwner,
-        tenantId: schema.users.tenantId,
-      })
-      .from(schema.users)
-      .where(and(eq(schema.users.id, session.userId), isNull(schema.users.deletedAt)))
-      .limit(1);
+    const rows = (await db.execute(
+      sql`SELECT * FROM auth_find_user_by_id(${session.userId}::uuid)`,
+    )) as unknown as AuthUserSessionRow[];
     const user = rows[0];
-    if (!user) return reply.status(401).send({ error: { code: "UNAUTHENTICATED" } });
+    if (!user || !user.is_active) return reply.status(401).send({ error: { code: "UNAUTHENTICATED" } });
 
+    // Tenants has no RLS (intentional, for super-admin / provisioning), so a
+    // direct drizzle query works for the app role without a SECURITY DEFINER
+    // wrapper.
     const tenantRows = await db
       .select({
         id: schema.tenants.id,
@@ -193,13 +198,13 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
         businessName: schema.tenants.businessName,
       })
       .from(schema.tenants)
-      .where(eq(schema.tenants.id, user.tenantId))
+      .where(eq(schema.tenants.id, user.tenant_id))
       .limit(1);
     const tenant = tenantRows[0];
     if (!tenant) return reply.status(401).send({ error: { code: "UNAUTHENTICATED" } });
 
     return reply.send({
-      user: { id: user.id, email: user.email, fullName: user.fullName, isOwner: user.isOwner },
+      user: { id: user.id, email: user.email, fullName: user.full_name, isOwner: user.is_owner },
       tenant,
     });
   });

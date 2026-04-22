@@ -97,7 +97,12 @@ services:
         condition: service_started
     environment:
       NODE_ENV: development
-      DATABASE_URL: postgres://${POSTGRES_USER:-pettahpro}:${POSTGRES_PASSWORD:-pettahpro_dev}@pgbouncer:5432/${POSTGRES_DB:-pettahpro}
+      # App connects as the non-superuser `pettahpro_app` role (NOBYPASSRLS)
+      # so dev exercises RLS the same way prod does. Goes direct to postgres;
+      # pgbouncer is still up for experimentation but isn't wired for
+      # multi-user auth yet — wire AUTH_QUERY later if we need pooling in dev.
+      DATABASE_URL: postgres://${POSTGRES_APP_USER:-pettahpro_app}:${POSTGRES_APP_PASSWORD:-pettahpro_app_dev}@postgres:5432/${POSTGRES_DB:-pettahpro}
+      # Direct superuser connection for migrations / one-off admin tasks only.
       DATABASE_URL_DIRECT: postgres://${POSTGRES_USER:-pettahpro}:${POSTGRES_PASSWORD:-pettahpro_dev}@postgres:5432/${POSTGRES_DB:-pettahpro}
       REDIS_URL: redis://redis:6379
       MINIO_ENDPOINT: http://minio:9000
@@ -132,7 +137,9 @@ services:
         condition: service_healthy
     environment:
       NODE_ENV: development
-      DATABASE_URL: postgres://${POSTGRES_USER:-pettahpro}:${POSTGRES_PASSWORD:-pettahpro_dev}@pgbouncer:5432/${POSTGRES_DB:-pettahpro}
+      # Same non-superuser role as the API service — RLS is exercised on the
+      # worker's queue-processing queries too.
+      DATABASE_URL: postgres://${POSTGRES_APP_USER:-pettahpro_app}:${POSTGRES_APP_PASSWORD:-pettahpro_app_dev}@postgres:5432/${POSTGRES_DB:-pettahpro}
       REDIS_URL: redis://redis:6379
     volumes:
       - ./apps/api:/app/apps/api

@@ -4,14 +4,15 @@ Live tracker of what's shipped, what's next, and what's backlog — cross-checke
 
 **Roadmap says what's shipped. [`_status.md`](./_status.md) says what's broken, fragile, or at-risk right now.** Read both before picking up work.
 
-Last updated: 2026-04-22 after PR #47. **All must-haves shipped.**
+Last updated: 2026-04-22 after PR #48. **All must-haves shipped.**
 
 ---
 
-## ✅ Shipped (PRs #1 – #47)
+## ✅ Shipped (PRs #1 – #48)
 
 ### Platform foundation
-- Multi-tenant Postgres with RLS (`current_tenant_id()` + `SET LOCAL app.tenant_id`)
+- Multi-tenant Postgres with RLS (`current_tenant_id()` + `SET LOCAL app.tenant_id`), enforced at a non-superuser `pettahpro_app` role so dev and prod both actually exercise the policies (PR #48)
+- Cross-tenant auth reads go through SECURITY DEFINER helpers (`auth_find_user_by_email`, `auth_find_user_by_id`, `auth_email_in_use`, `auth_touch_last_login`) — same pattern as the recurring-invoice worker (PR #48)
 - Auth: signup / login / logout / me / session cookies
 - Branches (multi-location), warehouses (schema)
 - `tenant_settings` JSONB store with `GET/PATCH /settings` (knobs: `salaryDaysPerMonth`, `stockRelieveOn`)
