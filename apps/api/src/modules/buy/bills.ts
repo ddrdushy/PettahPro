@@ -25,6 +25,25 @@ const LineSchema = z.object({
   expenseAccountId: z.string().uuid().optional(),
 });
 
+const CHARGE_KINDS = [
+  "freight",
+  "insurance",
+  "customs",
+  "clearing",
+  "loading",
+  "other",
+] as const;
+export type ChargeKind = (typeof CHARGE_KINDS)[number];
+
+const ChargeSchema = z.object({
+  kind: z.enum(CHARGE_KINDS),
+  description: z.string().max(500).optional().or(z.literal("")),
+  amountCents: z.number().int().min(0),
+});
+
+const ALLOCATION_METHODS = ["value", "quantity"] as const;
+export type AllocationMethod = (typeof ALLOCATION_METHODS)[number];
+
 const CreateSchema = z.object({
   supplierId: z.string().uuid(),
   supplierBillNumber: z.string().max(64).optional().or(z.literal("")),
@@ -32,6 +51,8 @@ const CreateSchema = z.object({
   dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   notes: z.string().optional().or(z.literal("")),
   lines: z.array(LineSchema).min(1),
+  charges: z.array(ChargeSchema).optional().default([]),
+  chargeAllocationMethod: z.enum(ALLOCATION_METHODS).optional().default("value"),
 });
 
 interface LineInput {
@@ -44,10 +65,85 @@ interface LineInput {
   expenseAccountId?: string;
 }
 
+interface ChargeInput {
+  kind: ChargeKind;
+  description?: string;
+  amountCents: number;
+}
+
+/**
+ * Allocate charge totals across bill inventory lines. Returns a per-line
+ * cents delta that should be added to the line's inventory cost before
+ * stock receipts post, plus an "unallocated" remainder when the bill has
+ * no inventory lines (it must be expensed to the freight account instead).
+ *
+ * Allocation methods:
+ *   · 'value' (default): weight by each line's post-discount net (cost-weighted).
+ *   · 'quantity': weight by each line's quantity (unit-weighted).
+ *
+ * Uses "largest remainder" to distribute rounding so the sum of per-line
+ * allocations always equals the original charges total exactly — no lost
+ * or orphan cents.
+ */
+export function allocateCharges<T extends { lineNetCents: number; quantity: number; isStocked: boolean }>(
+  lines: T[],
+  chargesTotalCents: number,
+  method: AllocationMethod,
+): { perLineCents: number[]; unallocatedCents: number } {
+  const perLineCents = lines.map(() => 0);
+  if (chargesTotalCents <= 0) return { perLineCents, unallocatedCents: 0 };
+
+  const stockedIdxs = lines
+    .map((l, i) => ({ l, i }))
+    .filter(({ l }) => l.isStocked);
+  if (stockedIdxs.length === 0) {
+    return { perLineCents, unallocatedCents: chargesTotalCents };
+  }
+
+  const weights = stockedIdxs.map(({ l }) =>
+    method === "quantity" ? Math.max(l.quantity, 0) : Math.max(l.lineNetCents, 0),
+  );
+  const totalWeight = weights.reduce((s, w) => s + w, 0);
+  if (totalWeight <= 0) {
+    // Every stocked line has zero weight — fall back to even split.
+    const even = Math.floor(chargesTotalCents / stockedIdxs.length);
+    let remainder = chargesTotalCents - even * stockedIdxs.length;
+    for (const { i } of stockedIdxs) {
+      perLineCents[i] = even + (remainder > 0 ? 1 : 0);
+      if (remainder > 0) remainder -= 1;
+    }
+    return { perLineCents, unallocatedCents: 0 };
+  }
+
+  // Largest-remainder allocation: floor + redistribute leftover cents to
+  // the lines with the highest fractional remainders.
+  const raw = weights.map((w) => (chargesTotalCents * w) / totalWeight);
+  const floors = raw.map((r) => Math.floor(r));
+  const remainders = raw.map((r, i) => r - floors[i]!);
+  let distributed = floors.reduce((s, v) => s + v, 0);
+  const orderedByRemainder = remainders
+    .map((r, i) => ({ i, r }))
+    .sort((a, b) => b.r - a.r);
+  let leftover = chargesTotalCents - distributed;
+  const extra = new Array(weights.length).fill(0);
+  for (const { i } of orderedByRemainder) {
+    if (leftover <= 0) break;
+    extra[i] = 1;
+    leftover -= 1;
+  }
+  for (let k = 0; k < stockedIdxs.length; k++) {
+    const { i } = stockedIdxs[k]!;
+    perLineCents[i] = (floors[k] ?? 0) + (extra[k] ?? 0);
+  }
+  return { perLineCents, unallocatedCents: 0 };
+}
+
 export async function computeBill(
   tx: Parameters<Parameters<typeof withTenant>[1]>[0],
   tenantId: string,
   lineInputs: LineInput[],
+  chargeInputs: ChargeInput[] = [],
+  chargeAllocationMethod: AllocationMethod = "value",
 ) {
   const taxRows = await tx
     .select()
@@ -138,9 +234,50 @@ export async function computeBill(
   const subtotalCents = lines.reduce((s, l) => s + l.lineSubtotalCents, 0);
   const discountCents = lines.reduce((s, l) => s + l.discountCents, 0);
   const taxCents = lines.reduce((s, l) => s + l.taxCents, 0);
-  const totalCents = subtotalCents - discountCents + taxCents;
 
-  return { lines, subtotalCents, discountCents, taxCents, totalCents };
+  // Charges (freight / insurance / customs / etc) — capitalized to inventory
+  // lines via pro-rata allocation. The bill's total grows by chargesTotalCents
+  // (AP credit); DR is split between Inventory (allocated portion) and the
+  // 5130 Freight & handling expense account (unallocated remainder, only when
+  // the bill has zero inventory lines).
+  const charges = chargeInputs.map((c, idx) => ({
+    lineNo: idx + 1,
+    kind: c.kind,
+    description: c.description ?? "",
+    amountCents: c.amountCents,
+  }));
+  const chargesTotalCents = charges.reduce((s, c) => s + c.amountCents, 0);
+
+  const { perLineCents: allocatedPerLineCents, unallocatedCents } = allocateCharges(
+    lines.map((l) => ({
+      lineNetCents: l.lineSubtotalCents - l.discountCents,
+      quantity: l.quantity,
+      isStocked: l.isStocked,
+    })),
+    chargesTotalCents,
+    chargeAllocationMethod,
+  );
+
+  const linesWithLandedCost = lines.map((l, i) => {
+    const landedCostCents = allocatedPerLineCents[i] ?? 0;
+    const landedNetCents = (l.lineSubtotalCents - l.discountCents) + landedCostCents;
+    const landedUnitCostCents = l.quantity > 0 ? Math.round(landedNetCents / l.quantity) : 0;
+    return { ...l, landedCostCents, landedUnitCostCents };
+  });
+
+  const totalCents = subtotalCents - discountCents + taxCents + chargesTotalCents;
+
+  return {
+    lines: linesWithLandedCost,
+    charges,
+    subtotalCents,
+    discountCents,
+    taxCents,
+    chargesTotalCents,
+    chargeAllocationMethod,
+    chargesUnallocatedCents: unallocatedCents,
+    totalCents,
+  };
 }
 
 export const billsRoutes: FastifyPluginAsync = async (fastify) => {
@@ -206,13 +343,19 @@ export const billsRoutes: FastifyPluginAsync = async (fastify) => {
         .where(eq(schema.billLines.billId, bill.id))
         .orderBy(asc(schema.billLines.lineNo));
 
+      const charges = await tx
+        .select()
+        .from(schema.billCharges)
+        .where(eq(schema.billCharges.billId, bill.id))
+        .orderBy(asc(schema.billCharges.lineNo));
+
       const supplierRows = await tx
         .select()
         .from(schema.suppliers)
         .where(eq(schema.suppliers.id, bill.supplierId))
         .limit(1);
 
-      return { bill, lines, supplier: supplierRows[0] ?? null };
+      return { bill, lines, charges, supplier: supplierRows[0] ?? null };
     });
 
     if (!data) return reply.status(404).send({ error: { code: "NOT_FOUND" } });
@@ -251,8 +394,21 @@ export const billsRoutes: FastifyPluginAsync = async (fastify) => {
           .toISOString()
           .slice(0, 10);
 
-      const { lines, subtotalCents, discountCents, taxCents, totalCents } =
-        await computeBill(tx, ctx.tenantId, input.lines);
+      const {
+        lines,
+        charges,
+        subtotalCents,
+        discountCents,
+        taxCents,
+        chargesTotalCents,
+        totalCents,
+      } = await computeBill(
+        tx,
+        ctx.tenantId,
+        input.lines,
+        input.charges ?? [],
+        input.chargeAllocationMethod ?? "value",
+      );
 
       const [b] = await tx
         .insert(schema.bills)
@@ -267,6 +423,8 @@ export const billsRoutes: FastifyPluginAsync = async (fastify) => {
           subtotalCents,
           discountCents,
           taxCents,
+          chargesTotalCents,
+          chargeAllocationMethod: input.chargeAllocationMethod ?? "value",
           totalCents,
           balanceDueCents: totalCents,
           notes: input.notes || null,
@@ -294,6 +452,19 @@ export const billsRoutes: FastifyPluginAsync = async (fastify) => {
           expenseAccountId: l.expenseAccountId,
         })),
       );
+
+      if (charges.length > 0) {
+        await tx.insert(schema.billCharges).values(
+          charges.map((c) => ({
+            tenantId: ctx.tenantId,
+            billId: b.id,
+            lineNo: c.lineNo,
+            kind: c.kind,
+            description: c.description || null,
+            amountCents: c.amountCents,
+          })),
+        );
+      }
 
       return b;
     }).catch((err: Error) => {
@@ -335,6 +506,12 @@ export const billsRoutes: FastifyPluginAsync = async (fastify) => {
         .orderBy(asc(schema.billLines.lineNo));
       if (lines.length === 0) return { error: "NO_LINES" as const };
 
+      const charges = await tx
+        .select()
+        .from(schema.billCharges)
+        .where(eq(schema.billCharges.billId, bill.id))
+        .orderBy(asc(schema.billCharges.lineNo));
+
       const internalReference = await nextDocumentNumber(tx, "bill");
 
       // AP account
@@ -352,16 +529,79 @@ export const billsRoutes: FastifyPluginAsync = async (fastify) => {
       const apAccount = apRows[0];
       if (!apAccount) return { error: "NO_AP_ACCOUNT" as const };
 
+      // Load linked items once — needed both to know which lines are stocked
+      // (for charge allocation) and for the stock-receipt pass below.
+      const trackedLinesForItems = lines.filter((l) => l.itemId !== null);
+      const linkedItems = trackedLinesForItems.length > 0
+        ? await tx
+            .select()
+            .from(schema.items)
+            .where(
+              and(
+                eq(schema.items.tenantId, ctx.tenantId),
+                isNull(schema.items.deletedAt),
+              ),
+            )
+        : [];
+      const itemById = new Map(linkedItems.map((i) => [i.id, i]));
+
+      // Allocate charges across stocked lines pro-rata by value (default) or
+      // by quantity. Lines without a tracked item don't receive any charge
+      // allocation; if zero stocked lines exist, the whole charge total is
+      // unallocated and posts to 5130 Freight & handling (fallback).
+      const allocationLines = lines.map((l) => {
+        const item = l.itemId ? itemById.get(l.itemId) : undefined;
+        const isStocked = item?.trackInventory === true;
+        return {
+          lineNetCents: l.lineSubtotalCents - l.discountCents,
+          quantity: Number(l.quantity),
+          isStocked,
+        };
+      });
+      const chargesTotalCents = charges.reduce((s, c) => s + c.amountCents, 0);
+      const allocationMethod = (bill.chargeAllocationMethod as AllocationMethod) ?? "value";
+      const { perLineCents: allocatedPerLine, unallocatedCents } = allocateCharges(
+        allocationLines,
+        chargesTotalCents,
+        allocationMethod,
+      );
+
       const journalLines: Parameters<typeof postJournal>[1]["lines"] = [];
 
-      // Expense lines grouped by expense account
+      // Expense lines grouped by expense account — for stocked lines this is
+      // the inventory account (charges capitalize here); for expense lines
+      // this is the per-line expense account.
       const expenseByAccount = new Map<string, number>();
-      for (const l of lines) {
+      for (let i = 0; i < lines.length; i++) {
+        const l = lines[i]!;
         if (!l.expenseAccountId) return { error: "MISSING_EXPENSE_ACCOUNT" as const };
         const net = l.lineSubtotalCents - l.discountCents;
+        const allocated = allocatedPerLine[i] ?? 0;
         expenseByAccount.set(
           l.expenseAccountId,
-          (expenseByAccount.get(l.expenseAccountId) ?? 0) + net,
+          (expenseByAccount.get(l.expenseAccountId) ?? 0) + net + allocated,
+        );
+      }
+      // Unallocated charges (bill has no stocked lines) → expense to
+      // 5130 Freight & handling. Falls back to any "cogs" account if 5130
+      // isn't seeded yet on this tenant.
+      if (unallocatedCents > 0) {
+        const freightRows = await tx
+          .select()
+          .from(schema.chartOfAccounts)
+          .where(
+            and(
+              eq(schema.chartOfAccounts.tenantId, ctx.tenantId),
+              eq(schema.chartOfAccounts.code, "5130"),
+              isNull(schema.chartOfAccounts.deletedAt),
+            ),
+          )
+          .limit(1);
+        const freightAccountId = freightRows[0]?.id;
+        if (!freightAccountId) return { error: "NO_FREIGHT_ACCOUNT" as const };
+        expenseByAccount.set(
+          freightAccountId,
+          (expenseByAccount.get(freightAccountId) ?? 0) + unallocatedCents,
         );
       }
       for (const [accountId, amount] of expenseByAccount) {
@@ -413,30 +653,24 @@ export const billsRoutes: FastifyPluginAsync = async (fastify) => {
         lines: journalLines,
       });
 
-      // Stock receipts for tracked items — one per line with itemId referencing a tracked item.
-      const trackedLines = lines.filter((l) => l.itemId !== null);
-      if (trackedLines.length > 0) {
-        const linkedItems = await tx
-          .select()
-          .from(schema.items)
-          .where(
-            and(
-              eq(schema.items.tenantId, ctx.tenantId),
-              isNull(schema.items.deletedAt),
-            ),
-          );
-        const itemById = new Map(linkedItems.map((i) => [i.id, i]));
-
+      // Stock receipts for tracked items — one per line with itemId
+      // referencing a tracked item. Unit cost = line net + allocated landed
+      // cost, divided by quantity. WAVG propagation in applyStockReceipt
+      // picks up the landed figure automatically.
+      if (trackedLinesForItems.length > 0) {
         const defaultWarehouse = await resolveDefaultWarehouse(tx, ctx.tenantId);
         if (!defaultWarehouse) return { error: "NO_DEFAULT_WAREHOUSE" as const };
 
-        for (const l of trackedLines) {
-          const item = itemById.get(l.itemId!);
+        for (let i = 0; i < lines.length; i++) {
+          const l = lines[i]!;
+          if (!l.itemId) continue;
+          const item = itemById.get(l.itemId);
           if (!item || !item.trackInventory) continue;
           const qty = Number(l.quantity);
           if (qty <= 0) continue;
           const netCents = l.lineSubtotalCents - l.discountCents;
-          const unitCost = qty > 0 ? Math.round(netCents / qty) : 0;
+          const allocated = allocatedPerLine[i] ?? 0;
+          const unitCost = Math.round((netCents + allocated) / qty);
           await applyStockReceipt(tx, {
             tenantId: ctx.tenantId,
             itemId: item.id,
@@ -500,6 +734,7 @@ export const billsRoutes: FastifyPluginAsync = async (fastify) => {
         NOT_DRAFT: 409,
         NO_LINES: 400,
         NO_AP_ACCOUNT: 500,
+        NO_FREIGHT_ACCOUNT: 500,
         MISSING_EXPENSE_ACCOUNT: 500,
         NO_DEFAULT_WAREHOUSE: 500,
       };

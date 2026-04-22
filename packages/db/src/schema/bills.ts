@@ -33,6 +33,8 @@ export const bills = pgTable("bills", {
   subtotalCents: bigint("subtotal_cents", { mode: "number" }).notNull().default(0),
   discountCents: bigint("discount_cents", { mode: "number" }).notNull().default(0),
   taxCents: bigint("tax_cents", { mode: "number" }).notNull().default(0),
+  chargesTotalCents: bigint("charges_total_cents", { mode: "number" }).notNull().default(0),
+  chargeAllocationMethod: varchar("charge_allocation_method", { length: 16 }).notNull().default("value"),
   totalCents: bigint("total_cents", { mode: "number" }).notNull().default(0),
   amountPaidCents: bigint("amount_paid_cents", { mode: "number" }).notNull().default(0),
   balanceDueCents: bigint("balance_due_cents", { mode: "number" }).notNull().default(0),
@@ -71,3 +73,17 @@ export const billLines = pgTable("bill_lines", {
 
 export type BillLine = typeof billLines.$inferSelect;
 export type NewBillLine = typeof billLines.$inferInsert;
+
+export const billCharges = pgTable("bill_charges", {
+  id: uuid("id").primaryKey().default(sql`uuid_generate_v7()`),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+  billId: uuid("bill_id").notNull().references(() => bills.id, { onDelete: "cascade" }),
+  lineNo: smallint("line_no").notNull(),
+  kind: varchar("kind", { length: 20 }).notNull(),
+  description: varchar("description", { length: 500 }),
+  amountCents: bigint("amount_cents", { mode: "number" }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type BillCharge = typeof billCharges.$inferSelect;
+export type NewBillCharge = typeof billCharges.$inferInsert;

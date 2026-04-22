@@ -4,7 +4,7 @@ Living counterweight to [`_roadmap.md`](./_roadmap.md). The roadmap says what's 
 
 Every PR should end with a check: does anything here need to be added, cleared, or bumped?
 
-Last updated: 2026-04-22 (PR #57 — final settlement worksheet). Unchanged since #48 RLS hardening: no new bugs, typecheck baseline still 32, no regressions. Modules added to §5 below: stock counts (#50), proforma invoices + recurring bills (#51), recurring journals (#52), number series (#53), audit log viewer (#54), customer statement email (#55), final settlements (#57).
+Last updated: 2026-04-22 (PR #59 — landed cost allocation). Unchanged since #48 RLS hardening: no new bugs, typecheck baseline still 32 (api: 21 + 8 carryover from #50 stock counts = 29 observed, unchanged by #59; web: 10, unchanged), no regressions. Modules added to §5 below: stock counts (#50), proforma invoices + recurring bills (#51), recurring journals (#52), number series (#53), audit log viewer (#54), customer statement email (#55), final settlements (#57), landed cost on bills (#59).
 
 ---
 
@@ -123,7 +123,8 @@ Quick read on which corners are stale. `Tests`: "unit" = unit tests exist, "rout
 | Suppliers | early | — | 0 | Stable. |
 | Purchase orders | early | — | 0 | Stable. |
 | GRNs | early | — | 0 | Stable. |
-| Bills | early + #45 (PDF) | — | 5 typecheck (4 existing + 1 new PDF route) | Feeds WAVG — fragile. See fragile areas §3. |
+| Bills | early + #45 (PDF) + #59 (landed cost) | — | 5 typecheck (4 existing + 1 new PDF route) | Feeds WAVG — fragile. See fragile areas §3. Landed-cost allocation folds freight / insurance / customs / clearing / loading / other charges into inventory unit cost at post time. |
+| Landed cost on bills | #59 | unit (allocateCharges pure fn) | 0 | Charges table + bill-level allocation method. Largest-remainder cents distribution. Fallback to `5130 Freight & handling` when no stocked lines. |
 | Recurring bills | #51 | — | 0 | Same hourly cron as recurring invoices. Auto-post vs review-queue toggle. |
 | Debit notes | early + #46 (PDF) | — | 1 typecheck (new PDF route) | Stable. |
 | Supplier payments | early + #33 (WHT) | — | 1 typecheck | WHT integration here is non-obvious. |
