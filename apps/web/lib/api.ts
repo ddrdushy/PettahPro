@@ -576,6 +576,25 @@ export const api = {
   readAllNotifications: () =>
     request<{ ok: true; markedRead: number }>("/notifications/read-all", { method: "POST" }),
 
+  // Audit log viewer (read-only).
+  listAuditEvents: (filters: AuditLogFilters = {}) => {
+    const qs = new URLSearchParams();
+    if (filters.from) qs.set("from", filters.from);
+    if (filters.to) qs.set("to", filters.to);
+    if (filters.kind) qs.set("kind", filters.kind);
+    if (filters.actorUserId) qs.set("actorUserId", filters.actorUserId);
+    if (filters.refType) qs.set("refType", filters.refType);
+    if (filters.refId) qs.set("refId", filters.refId);
+    if (filters.limit !== undefined) qs.set("limit", String(filters.limit));
+    if (filters.offset !== undefined) qs.set("offset", String(filters.offset));
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return request<AuditLogListResponse>(`/audit-log${suffix}`);
+  },
+  listAuditKinds: () =>
+    request<{ kinds: AuditKindBucket[] }>("/audit-log/kinds"),
+  getAuditEvent: (id: string) =>
+    request<{ event: AuditEvent }>(`/audit-log/${id}`),
+
   listStock: () =>
     request<{ balances: StockBalanceRow[]; totalValueCents: number }>("/stock"),
   stockLedger: (itemId: string) =>
@@ -3857,4 +3876,77 @@ export interface CreateBonusRun {
   label: string;
   payDate: string;
   notes?: string;
+}
+
+export type AuditEventKind =
+  | "user.login"
+  | "user.logout"
+  | "journal.post"
+  | "journal.void"
+  | "journal.approve"
+  | "journal.reject"
+  | "period.close"
+  | "period.reopen"
+  | "period.close_year"
+  | "invoice.void"
+  | "bill.void"
+  | "payment.void"
+  | "supplier_payment.void"
+  | "bad_debt.writeoff"
+  | "bad_debt.reverse"
+  | "customer.credit_hold"
+  | "customer.credit_release"
+  | "employee.exit"
+  | "employee.confirm_probation"
+  | "salary_revision.create"
+  | "payroll.post"
+  | "payroll.void"
+  | "settings.update"
+  | "number_series.update";
+
+export interface AuditEvent {
+  id: string;
+  kind: AuditEventKind | string;
+  refType: string | null;
+  refId: string | null;
+  summary: string;
+  diff: Record<string, unknown> | null;
+  actorUserId: string | null;
+  actorName: string | null;
+  actorEmail: string | null;
+  ipAddress: string | null;
+  userAgent: string | null;
+  createdAt: string;
+}
+
+export interface AuditLogFilters {
+  from?: string;
+  to?: string;
+  kind?: string;
+  actorUserId?: string;
+  refType?: string;
+  refId?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface AuditLogListResponse {
+  events: AuditEvent[];
+  filters: {
+    from: string;
+    to: string;
+    kind: string | null;
+    actorUserId: string | null;
+    refType: string | null;
+    refId: string | null;
+  };
+  paging: {
+    limit: number;
+    offset: number;
+  };
+}
+
+export interface AuditKindBucket {
+  kind: string;
+  count: number;
 }

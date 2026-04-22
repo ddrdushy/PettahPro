@@ -6,6 +6,7 @@ import { requireAuth } from "../../lib/with-tenant.js";
 import { postJournal } from "./journal-posting.js";
 import { loadTenantSettings } from "../settings/routes.js";
 import { emitNotification } from "../notifications/emit.js";
+import { recordAuditEvent } from "../../lib/audit.js";
 
 const LineSchema = z
   .object({
@@ -277,6 +278,22 @@ export const journalEntriesRoutes: FastifyPluginAsync = async (fastify) => {
             description: l.description ?? undefined,
           })),
         });
+        await recordAuditEvent(tx, {
+          kind: "journal.post",
+          summary: `Posted manual journal ${posted.entryNumber} · ${(drTotal / 100).toFixed(2)}`,
+          refType: "journal_entry",
+          refId: posted.entryId,
+          diff: {
+            entryNumber: posted.entryNumber,
+            entryDate,
+            memo: memo && memo.trim() ? memo.trim() : null,
+            totalCents: drTotal,
+            lineCount: normLines.length,
+          },
+          actorUserId: ctx.userId,
+          ipAddress: req.ip ?? null,
+          userAgent: req.headers["user-agent"] ?? null,
+        });
         return {
           status: "posted" as const,
           entryId: posted.entryId,
@@ -376,6 +393,24 @@ export const journalEntriesRoutes: FastifyPluginAsync = async (fastify) => {
         });
       }
 
+      await recordAuditEvent(tx, {
+        kind: "journal.approve",
+        summary: `Approved journal ${entryNumber} · ${(draft.totalCents / 100).toFixed(2)}`,
+        refType: "journal_entry",
+        refId: entryId,
+        diff: {
+          draftId: draft.id,
+          entryNumber,
+          entryDate: draft.entryDate,
+          memo: draft.memo,
+          totalCents: draft.totalCents,
+          createdByUserId: draft.createdByUserId,
+        },
+        actorUserId: ctx.userId,
+        ipAddress: req.ip ?? null,
+        userAgent: req.headers["user-agent"] ?? null,
+      });
+
       return { ok: true as const, entryId, entryNumber };
     });
 
@@ -444,6 +479,25 @@ export const journalEntriesRoutes: FastifyPluginAsync = async (fastify) => {
             refId: draft.id,
           });
         }
+
+        await recordAuditEvent(tx, {
+          kind: "journal.reject",
+          summary: `Rejected journal draft · ${(draft.totalCents / 100).toFixed(2)} · ${reason}`,
+          refType: "journal_entry_draft",
+          refId: draft.id,
+          diff: {
+            draftId: draft.id,
+            entryDate: draft.entryDate,
+            memo: draft.memo,
+            totalCents: draft.totalCents,
+            createdByUserId: draft.createdByUserId,
+            reason,
+          },
+          actorUserId: ctx.userId,
+          ipAddress: req.ip ?? null,
+          userAgent: req.headers["user-agent"] ?? null,
+        });
+
         return { ok: true as const };
       });
 

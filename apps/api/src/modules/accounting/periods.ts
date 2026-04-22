@@ -5,6 +5,7 @@ import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
 import { postJournal } from "./journal-posting.js";
 import { emitNotification } from "../notifications/emit.js";
+import { recordAuditEvent } from "../../lib/audit.js";
 
 export type PeriodStatus = "open" | "soft_closed" | "closed";
 
@@ -162,6 +163,21 @@ export const periodsRoutes: FastifyPluginAsync = async (fastify) => {
         refType: "fiscal_period",
         refId: p.id,
       });
+      await recordAuditEvent(tx, {
+        kind: "period.close",
+        summary: `Soft-closed ${monthName(p.period_no)} ${p.fiscal_year} · ${parsed.data.reason}`,
+        refType: "period",
+        refId: p.id,
+        diff: {
+          fiscalYear: p.fiscal_year,
+          periodNo: p.period_no,
+          lockLevel: "soft_closed",
+          reason: parsed.data.reason,
+        },
+        actorUserId: ctx.userId,
+        ipAddress: req.ip ?? null,
+        userAgent: req.headers["user-agent"] ?? null,
+      });
       return { ok: true };
     });
 
@@ -210,6 +226,21 @@ export const periodsRoutes: FastifyPluginAsync = async (fastify) => {
         body: parsed.data.reason,
         refType: "fiscal_period",
         refId: p.id,
+      });
+      await recordAuditEvent(tx, {
+        kind: "period.reopen",
+        summary: `Reopened ${monthName(p.period_no)} ${p.fiscal_year} · ${parsed.data.reason}`,
+        refType: "period",
+        refId: p.id,
+        diff: {
+          fiscalYear: p.fiscal_year,
+          periodNo: p.period_no,
+          fromStatus: p.status === "open" ? "unknown" : p.status,
+          reason: parsed.data.reason,
+        },
+        actorUserId: ctx.userId,
+        ipAddress: req.ip ?? null,
+        userAgent: req.headers["user-agent"] ?? null,
       });
       return { ok: true };
     });
@@ -386,6 +417,26 @@ export const periodsRoutes: FastifyPluginAsync = async (fastify) => {
           ? `Closing entry ${closingEntryNumber} posted. Net ${netProfit >= 0 ? "profit" : "loss"}: ${Math.abs(netProfit / 100).toFixed(2)}`
           : "No P&L activity to close. Periods locked.",
         refType: "fiscal_year",
+      });
+
+      await recordAuditEvent(tx, {
+        kind: "period.close_year",
+        summary: `Closed FY${fiscalYear} · net ${netProfit >= 0 ? "profit" : "loss"} ${Math.abs(netProfit / 100).toFixed(2)}`,
+        refType: "period",
+        refId: periods[11]!.id,
+        diff: {
+          fiscalYear,
+          reason,
+          retainedEarningsAccountId,
+          closingEntryId,
+          closingEntryNumber,
+          incomeClosedCents: incomeTotal,
+          expenseClosedCents: expenseTotal,
+          netProfitCents: netProfit,
+        },
+        actorUserId: ctx.userId,
+        ipAddress: req.ip ?? null,
+        userAgent: req.headers["user-agent"] ?? null,
       });
 
       return {
