@@ -38,6 +38,10 @@ export type AuditEventKind =
   | "salary_revision.create"
   | "payroll.post"
   | "payroll.void"
+  | "final_settlement.created"
+  | "final_settlement.approved"
+  | "final_settlement.posted"
+  | "final_settlement.cancelled"
   // Settings
   | "settings.update"
   | "number_series.update";

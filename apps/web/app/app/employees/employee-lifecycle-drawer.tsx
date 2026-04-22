@@ -1,10 +1,16 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
-import { Loader2, LogOut, CheckCircle2 } from "lucide-react";
+import { useEffect, useState, type FormEvent } from "react";
+import Link from "next/link";
+import { Loader2, LogOut, CheckCircle2, FileText, ArrowRight } from "lucide-react";
 import { Drawer } from "@/components/app/drawer";
-import { api, ApiError, type EmployeeListRow } from "@/lib/api";
-import { formatDate } from "@/lib/format";
+import {
+  api,
+  ApiError,
+  type EmployeeListRow,
+  type FinalSettlementRow,
+} from "@/lib/api";
+import { formatDate, formatLKR } from "@/lib/format";
 
 /**
  * Employee lifecycle transitions — probation confirmation and exit.
@@ -115,10 +121,7 @@ export function EmployeeLifecycleDrawer({
       description={`${employee.fullName} · hired ${formatDate(employee.hireDate)}`}
     >
       {isExited && (
-        <div className="rounded-card border-hairline border-border bg-surface-recessed p-4 text-small text-text-secondary">
-          This employee is already marked <strong className="text-charcoal capitalize">{employee.status}</strong>.
-          Lifecycle changes are locked.
-        </div>
+        <FinalSettlementSection employee={employee} onClose={onClose} />
       )}
 
       {!isExited && (
@@ -331,6 +334,141 @@ function Field({
       {children}
       {hint && <span className="block text-caption text-text-tertiary">{hint}</span>}
     </label>
+  );
+}
+
+/**
+ * Shown once an employee is marked exited. Lists prior final settlements and
+ * offers a CTA to open the worksheet. The worksheet itself lives at
+ * `/app/final-settlements/...` — this drawer is just an entry point.
+ */
+function FinalSettlementSection({
+  employee,
+  onClose,
+}: {
+  employee: EmployeeListRow;
+  onClose: () => void;
+}) {
+  const [loading, setLoading] = useState(true);
+  const [settlements, setSettlements] = useState<FinalSettlementRow[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .listFinalSettlementsForEmployee(employee.id)
+      .then(({ settlements: rows }) => {
+        if (!cancelled) setSettlements(rows);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(
+            err instanceof ApiError
+              ? err.message
+              : "Couldn't load final settlements.",
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [employee.id]);
+
+  const activeDraft = settlements.find(
+    (s) => s.status === "draft" || s.status === "approved",
+  );
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-card border-hairline border-border bg-surface-recessed p-4 text-small text-text-secondary">
+        Marked <strong className="text-charcoal capitalize">{employee.status}</strong>.
+        Lifecycle changes are locked — prepare a final settlement below.
+      </div>
+
+      {loading ? (
+        <div className="flex items-center gap-2 text-small text-text-tertiary">
+          <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> Loading
+          settlements…
+        </div>
+      ) : error ? (
+        <p className="text-caption text-danger" role="alert">
+          {error}
+        </p>
+      ) : (
+        <>
+          {activeDraft ? (
+            <div className="space-y-2">
+              <p className="text-small text-text-secondary">
+                There's an open final settlement for this employee.
+              </p>
+              <Link
+                href={`/app/final-settlements/${activeDraft.id}`}
+                onClick={onClose}
+                className="btn-primary"
+              >
+                <FileText className="h-4 w-4" aria-hidden />
+                Open {activeDraft.settlementNumber ?? "draft"} ·{" "}
+                <span className="capitalize">{activeDraft.status}</span>
+                <ArrowRight className="h-3.5 w-3.5" aria-hidden />
+              </Link>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <p className="text-small text-text-secondary">
+                No open settlement. Prepare one to compute gratuity, leave
+                encashment, notice, loan recovery, and final PAYE/EPF/ETF.
+              </p>
+              <Link
+                href={`/app/final-settlements/new?employeeId=${employee.id}`}
+                onClick={onClose}
+                className="btn-primary"
+              >
+                <FileText className="h-4 w-4" aria-hidden />
+                Prepare final settlement
+                <ArrowRight className="h-3.5 w-3.5" aria-hidden />
+              </Link>
+            </div>
+          )}
+
+          {settlements.length > 0 && (
+            <div className="space-y-2">
+              <h3 className="text-caption font-semibold uppercase tracking-wider text-text-tertiary">
+                History
+              </h3>
+              <ul className="divide-y-hairline divide-border rounded-card border-hairline border-border">
+                {settlements.map((s) => (
+                  <li key={s.id}>
+                    <Link
+                      href={`/app/final-settlements/${s.id}`}
+                      onClick={onClose}
+                      className="flex items-center justify-between px-3 py-2 text-small hover:bg-surface-recessed"
+                    >
+                      <span className="space-x-2">
+                        <span className="font-medium text-charcoal">
+                          {s.settlementNumber ?? "Draft"}
+                        </span>
+                        <span className="capitalize text-text-tertiary">
+                          · {s.status}
+                        </span>
+                        <span className="text-text-tertiary">
+                          · {formatDate(s.exitDate)}
+                        </span>
+                      </span>
+                      <span className="font-mono text-charcoal">
+                        {formatLKR(s.netPayableCents)}
+                      </span>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </>
+      )}
+    </div>
   );
 }
 

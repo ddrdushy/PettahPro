@@ -1031,6 +1031,53 @@ export const api = {
       `/cheques/${id}/bounce`,
       { method: "POST", json: body },
     ),
+
+  // Final settlement (payroll-module-spec §9) ------------------------------
+  computeFinalSettlement: (
+    employeeId: string,
+    body: { overrides?: FinalSettlementOverrides; notes?: string } = {},
+  ) =>
+    request<{ compute: FinalSettlementComputeResult }>(
+      `/employees/${employeeId}/final-settlement/compute`,
+      { method: "POST", json: body },
+    ),
+  createFinalSettlement: (
+    employeeId: string,
+    body: { overrides?: FinalSettlementOverrides; notes?: string } = {},
+  ) =>
+    request<{ settlement: FinalSettlementRow }>(
+      `/employees/${employeeId}/final-settlement`,
+      { method: "POST", json: body },
+    ),
+  listFinalSettlementsForEmployee: (employeeId: string) =>
+    request<{ settlements: FinalSettlementRow[] }>(
+      `/employees/${employeeId}/final-settlements`,
+    ),
+  listFinalSettlements: () =>
+    request<{ settlements: FinalSettlementRow[] }>(`/final-settlements`),
+  getFinalSettlement: (id: string) =>
+    request<{ settlement: FinalSettlementRow }>(`/final-settlements/${id}`),
+  patchFinalSettlement: (id: string, body: FinalSettlementPatch) =>
+    request<{ ok: true; settlement: FinalSettlementRow }>(
+      `/final-settlements/${id}`,
+      { method: "PATCH", json: body },
+    ),
+  approveFinalSettlement: (id: string) =>
+    request<{ ok: true; settlement: FinalSettlementRow }>(
+      `/final-settlements/${id}/approve`,
+      { method: "POST" },
+    ),
+  postFinalSettlement: (id: string) =>
+    request<{
+      ok: true;
+      settlement: FinalSettlementRow;
+      journalEntryNumber: string;
+    }>(`/final-settlements/${id}/post`, { method: "POST" }),
+  cancelFinalSettlement: (id: string, body: { reason?: string } = {}) =>
+    request<{ ok: true; settlement: FinalSettlementRow }>(
+      `/final-settlements/${id}/cancel`,
+      { method: "POST", json: body },
+    ),
 };
 
 export interface User {
@@ -2424,6 +2471,143 @@ export interface PayrollRun {
   postedAt: string | null;
   notes: string | null;
   createdAt: string;
+}
+
+// Final settlement (payroll-module-spec §9) ----------------------------------
+export type FinalSettlementStatus =
+  | "draft"
+  | "approved"
+  | "posted"
+  | "paid"
+  | "cancelled";
+
+export interface FinalSettlementOverrides {
+  leaveEncashmentDays?: number;
+  gratuityCents?: number;
+  noticePayInLieuCents?: number;
+  noticeShortfallCents?: number;
+  otherEarningsCents?: number;
+  otherDeductionsCents?: number;
+}
+
+export interface FinalSettlementLine {
+  code: string;
+  name: string;
+  kind: "earning" | "deduction" | "statutory";
+  amountCents: number;
+  meta?: Record<string, unknown>;
+}
+
+export interface FinalSettlementComputeResult {
+  employeeId: string;
+  employeeFullName: string;
+  employeeCode: string | null;
+  designation: string | null;
+  department: string | null;
+  hireDate: string;
+  exitDate: string;
+  lastWorkingDay: string;
+  statusAfter: string;
+  basicSalaryCents: number;
+  currency: string;
+
+  yearsOfService: number;
+  gratuityYearsCompleted: number;
+
+  proRataSalaryCents: number;
+  proRataDaysWorked: number;
+  proRataDaysInPeriod: number;
+
+  leaveEncashmentDays: number;
+  leaveEncashmentCents: number;
+  gratuityCents: number;
+  noticePayInLieuCents: number;
+  noticeShortfallCents: number;
+  loanPrincipalRecoveryCents: number;
+  loanInterestRecoveryCents: number;
+  otherEarningsCents: number;
+  otherDeductionsCents: number;
+
+  epfEmployeeCents: number;
+  epfEmployerCents: number;
+  etfEmployerCents: number;
+  payeCents: number;
+
+  grossCents: number;
+  totalDeductionsCents: number;
+  netPayableCents: number;
+
+  lines: FinalSettlementLine[];
+}
+
+export interface FinalSettlementRow {
+  id: string;
+  tenantId: string;
+  settlementNumber: string | null;
+  employeeId: string;
+  employeeCode: string | null;
+  employeeFullName: string;
+  designation: string | null;
+  department: string | null;
+  hireDate: string;
+  exitDate: string;
+  lastWorkingDay: string;
+  statusAfter: string;
+  basicSalaryCents: number;
+  currency: string;
+
+  yearsOfService: string;
+  gratuityYearsCompleted: number;
+
+  proRataSalaryCents: number;
+  leaveEncashmentDays: string;
+  leaveEncashmentCents: number;
+  gratuityCents: number;
+  noticePayInLieuCents: number;
+  noticeShortfallCents: number;
+  loanPrincipalRecoveryCents: number;
+  loanInterestRecoveryCents: number;
+  otherEarningsCents: number;
+  otherDeductionsCents: number;
+
+  epfEmployeeCents: number;
+  epfEmployerCents: number;
+  etfEmployerCents: number;
+  payeCents: number;
+
+  grossCents: number;
+  totalDeductionsCents: number;
+  netPayableCents: number;
+
+  linesSnapshot: FinalSettlementLine[];
+  status: FinalSettlementStatus;
+  notes: string | null;
+
+  approvedAt: string | null;
+  approvedByUserId: string | null;
+  postedAt: string | null;
+  postedByUserId: string | null;
+  journalEntryId: string | null;
+  paidAt: string | null;
+  paidByUserId: string | null;
+  paymentJournalId: string | null;
+  cancelledAt: string | null;
+  cancelledReason: string | null;
+
+  createdAt: string;
+  updatedAt: string;
+  createdByUserId: string | null;
+}
+
+export interface FinalSettlementPatch {
+  leaveEncashmentDays?: number;
+  leaveEncashmentCents?: number;
+  gratuityCents?: number;
+  noticePayInLieuCents?: number;
+  noticeShortfallCents?: number;
+  otherEarningsCents?: number;
+  otherDeductionsCents?: number;
+  notes?: string;
 }
 
 export type LeaveRequestStatus = "draft" | "pending" | "approved" | "rejected" | "cancelled";

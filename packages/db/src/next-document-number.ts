@@ -20,7 +20,8 @@ export type DocumentKind =
   | "grn"
   | "stock_transfer"
   | "bonus_run"
-  | "staff_loan";
+  | "staff_loan"
+  | "final_settlement";
 
 /**
  * Allocate the next document number for the current tenant.
