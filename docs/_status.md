@@ -4,7 +4,7 @@ Living counterweight to [`_roadmap.md`](./_roadmap.md). The roadmap says what's 
 
 Every PR should end with a check: does anything here need to be added, cleared, or bumped?
 
-Last updated: 2026-04-22 (PR #45 — bill PDF)
+Last updated: 2026-04-22 (PR #46 — credit note + debit note PDFs)
 
 ---
 
@@ -24,7 +24,7 @@ Open bugs, grouped by module. **Severity**: `S1` = data loss or posting correctn
 
 These errors existed *before* PR #44. Every one is known, intentional-ish, and not a blocker for shipping features. **Don't let the total grow.** New PRs should add zero new errors; fixing entries here is welcome but out-of-scope for feature PRs.
 
-**Baseline total: 45 errors** — api: 27, web: 17, db: 1. (PR #44 initial baseline under-counted web by 1; true baseline was 44, not 43. PR #45 added one new PDF route matching the existing `Buffer → BodyInit` pattern, bringing the shared-helper sweep from 6 routes to 7 — see sweep #2 below.)
+**Baseline total: 47 errors** — api: 27, web: 19, db: 1. PR #46 adds two more PDF routes (credit-note + debit-note) that match the existing `Buffer → BodyInit` pattern, bringing the shared-helper sweep from 7 routes to 9 — see sweep #2 below. All new errors are the same shape as existing ones; the sweep is now ripe.
 
 ### `packages/db` (1)
 
@@ -58,7 +58,7 @@ if (!first) throw new Error("…");
 | `modules/sell/invoices.ts:763,861,862` | TS2538 × 3 | Array index access without guard |
 | `modules/sell/payments.ts:196` | TS2339 `number` on undefined | `next_document_number` destructure |
 
-### `apps/web` (15)
+### `apps/web` (19)
 
 | File:Line | Error | Notes |
 |---|---|---|
@@ -69,7 +69,9 @@ if (!first) throw new Error("…");
 | `app/app/purchase-orders/[id]/pdf/route.ts:46` | TS2345 `Buffer → BodyInit` | Same root cause. |
 | `app/app/quotations/[id]/pdf/route.ts:50` | TS2345 `Buffer → BodyInit` | Same root cause. |
 | `app/app/stock/transfers/[id]/pdf/route.ts:55` | TS2345 `Buffer → BodyInit` | Same root cause. Added in PR #43 matching existing pattern. |
-| `app/app/bills/[id]/pdf/route.ts:46` | TS2345 `Buffer → BodyInit` | Same root cause. Added in PR #45 matching existing pattern. 7 routes now share this — fix in one shared helper. |
+| `app/app/bills/[id]/pdf/route.ts:46` | TS2345 `Buffer → BodyInit` | Same root cause. Added in PR #45. |
+| `app/app/credit-notes/[id]/pdf/route.ts:54` | TS2345 `Buffer → BodyInit` | Same root cause. Added in PR #46. |
+| `app/app/debit-notes/[id]/pdf/route.ts:54` | TS2345 `Buffer → BodyInit` | Same root cause. Added in PR #46. 9 routes now share this — sweep is ripe; fix in one shared helper. |
 | `components/features.tsx:28,30` | TS2339 `badge` on tuple union | Marketing site tuple type is too narrow. |
 | `components/migration.tsx:34,39,58` | TS2339 `highlight` on tuple union | Same root cause as above (readonly tuples + optional member). |
 | `components/pricing.tsx:56,61,86` | TS2339 `highlight` on tuple union | Same root cause. |
@@ -78,7 +80,7 @@ if (!first) throw new Error("…");
 ### Recommended debt-paydown sweeps (when we get to them)
 
 1. **`next_document_number` helper** (apps/api, ~6 call sites) — wrap the destructure into `withTenant` or a helper so the guard lives in one place. Touches 6 files, zero behavior change.
-2. **PDF route `Buffer → BodyInit`** (apps/web, 7 call sites as of PR #45) — wrap `renderToBuffer` result in `new Uint8Array(buf)` or a shared `pdfResponse()` helper. Touches 7 files (delivery-notes, invoices, payroll payslips, purchase-orders, quotations, stock transfers, bills).
+2. **PDF route `Buffer → BodyInit`** (apps/web, **9 call sites** as of PR #46) — wrap `renderToBuffer` result in `new Uint8Array(buf)` or a shared `pdfResponse()` helper. Touches 9 files (delivery-notes, invoices, payroll payslips, purchase-orders, quotations, stock transfers, bills, credit notes, debit notes). **Ripe for next paydown PR** — same error shape × 9 files, mechanical fix.
 3. **Reports dashboard aging bucket labels** — widen the source or narrow via `as const` at the call site.
 4. **Marketing tuple types** (`components/features.tsx`, `migration.tsx`, `pricing.tsx`) — add optional fields to the declared tuple type or use `satisfies`.
 
@@ -92,7 +94,7 @@ Modules where a past change surprised us. Touch with care and re-test the listed
 |---|---|---|
 | `postJournal` choke point (`apps/api/src/modules/accounting/journal-posting.ts`) | Every new module that posts accounting entries routes through here. Period-lock, approval-threshold, and balance-check are all enforced at this single point. A bad refactor here breaks every post-invoice / post-bill / payroll / bonus flow. | Post: invoice, bill, customer payment, supplier payment, payroll, bonus run, manual JE under + over approval threshold, JE into a soft-closed period. |
 | `next_document_number(kind)` sequence helper | Used by invoices, bills, delivery notes, POs, GRNs, payroll runs, stock transfers, bonus runs, journals. The destructure pattern has been buggy twice — fixed in PR #43 for stock transfers only. | Any new doc-type allocation should use the guard-and-throw pattern from `stock-transfers.ts:311`. |
-| PDF routes (6 of them) | All share the same `renderToBuffer` → `new Response(pdf)` pattern and all have the same pre-existing typecheck error. Easy to copy-paste a subtle bug across six files. | If you fix one, fix all six. Consider a shared helper. |
+| PDF routes (9 of them) | All share the same `renderToBuffer` → `new Response(pdf)` pattern and all have the same pre-existing typecheck error. Easy to copy-paste a subtle bug across nine files. | If you fix one, fix all nine. Shared-helper sweep is queued — see §2 sweep #2. |
 | WAVG propagation on stock movements | `quantity_on_hand`, `total_value_cents`, `average_cost_cents`, `last_movement_at` on `item_balances` + matching `stock_ledger` row must move together. Any path that mutates one without the others silently breaks WAVG. | Bill post, invoice post, delivery-note deliver (if stockRelieveOn=deliver), credit-note post (reversal), stock-transfer dispatch + receive, future: stock count adjustments. |
 | Multi-tenant via `withTenant` + `current_tenant_id()` | Every raw SQL query (`tx.execute(sql\`\`)`) must include `WHERE tenant_id = current_tenant_id()`. Forgetting this leaks across tenants. Drizzle ORM queries inherit the RLS context automatically; raw SQL does not. | Search for new `tx.execute(sql\`` additions and verify tenant predicate. |
 | Cheque lifecycle (9 states) | Every state transition has a reverse path; transitions are gated by current state + what document linked the cheque. | When adding a cheque-using module, run through: issued → handed → deposited → presented → cleared, and separately: bounced, stopped, cancelled, stale. |
@@ -126,13 +128,13 @@ Quick read on which corners are stale. `Tests`: "unit" = unit tests exist, "rout
 | Delivery notes | early | — | 0 | Has `taxType` → new field name drift (see typecheck debt). |
 | Invoices | early + #32 (period lock) + #35 (credit) + #36 (bad debt) | — | 5 typecheck | Heavy module. Any change risks post-flow. |
 | Recurring invoices | mid | — | 0 | Hourly BullMQ cron. Has never misfired in dev but untested in load. |
-| Credit notes | early | — | 0 | Stable. |
+| Credit notes | early + #46 (PDF) | — | 1 typecheck (new PDF route) | Stable. |
 | Customer payments | early + #36 (bad debt reverse) | — | 1 typecheck | Stable. |
 | Suppliers | early | — | 0 | Stable. |
 | Purchase orders | early | — | 0 | Stable. |
 | GRNs | early | — | 0 | Stable. |
 | Bills | early + #45 (PDF) | — | 5 typecheck (4 existing + 1 new PDF route) | Feeds WAVG — fragile. See fragile areas §3. |
-| Debit notes | early | — | 0 | Stable. |
+| Debit notes | early + #46 (PDF) | — | 1 typecheck (new PDF route) | Stable. |
 | Supplier payments | early + #33 (WHT) | — | 1 typecheck | WHT integration here is non-obvious. |
 | Items | early | — | 0 | Stable. |
 | Stock on-hand / ledger | #43 (in-transit) | — | 0 | Just touched. |
