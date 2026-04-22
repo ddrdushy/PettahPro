@@ -4,7 +4,7 @@ Live tracker of what's shipped, what's next, and what's backlog — cross-checke
 
 **Roadmap says what's shipped. [`_status.md`](./_status.md) says what's broken, fragile, or at-risk right now.** Read both before picking up work.
 
-Last updated: 2026-04-22 after shipping #11b final settlement worksheet. **All must-haves shipped.**
+Last updated: 2026-04-22 after shipping #11b final settlement worksheet + roadmap audit. **All must-haves shipped.** Eight should-haves (stock count, proforma invoices, recurring bills, recurring journals, number series, audit log, customer statement email, final settlement) now in the shipped list.
 
 ---
 
@@ -32,6 +32,8 @@ Last updated: 2026-04-22 after shipping #11b final settlement worksheet. **All m
 - Recurring invoices (monthly templates, hourly BullMQ cron → draft invoices, pause/resume/generate-now)
 - Credit notes (CRUD, post, **PDF** with draft banner — PR #46)
 - Customer payments (cash/cheque/bank-transfer, cheque lifecycle linkage)
+- **Proforma invoices** — pre-sale preview document for advance payments / customs purposes. CRUD + send → accepted → converted workflow; converts to a live invoice one-to-one (one proforma → one real invoice, idempotent). Separate `PRO-YYYY-NNNN` number series. **PDF** with clear non-fiscal banner and "proforma invoice — not a tax invoice" footer so it can't be mistaken for a live invoice (PR #51)
+- **Customer statement email delivery** — on-demand send from the customer statement page plus a monthly cron that fires on day-1 for every customer with outstanding balance. `send_statements` per-customer opt-out, `customer_statement_emails` log table with success/failure per send, SMTP retries on transient failure. Bulk send summary shown in the customer list so AR can see at a glance who's been notified this cycle (PR #55)
 
 ### Buy
 - Suppliers (CRUD, statements)
@@ -40,11 +42,13 @@ Last updated: 2026-04-22 after shipping #11b final settlement worksheet. **All m
 - Bills (CRUD, post, void, **PDF** — draft banner on unposted bills so AP approvers can preview before posting)
 - Debit notes (CRUD, post, **PDF** with draft banner — PR #46)
 - Supplier payments (cash/cheque/bank-transfer, cheque lifecycle)
+- **Recurring bill templates** — bills equivalent of recurring invoices. Template captures supplier + items + amount + frequency (weekly / monthly / quarterly / annual) + start/end dates + auto-post-vs-review flag. Hourly BullMQ cron generates drafts; review-queue variant lands in the bills list as draft, auto-post variant posts directly. Pause / resume / edit / end-date supported; variable-amount templates keep the structure fixed and prompt for the per-cycle amount (PR #51)
 
 ### Inventory
 - Items (CRUD, WAVG valuation, reorder_point)
 - Stock on-hand + stock ledger per item (inbound in-transit qty surfaced on the on-hand page)
 - Low-stock report + crossing notifications
+- **Stock counts (physical / cycle counts)** — blind-count workflow (counter can't see system qty until after entry), scope = full warehouse / category / specific items. Draft → in-progress → review → posted state machine; variance review shows System qty vs Counted qty vs Variance (qty + LKR) with per-line reason code (damage / theft / expiry / shrinkage / miscount / system-error / other). Tiered approval per inventory-module-spec §17.3: absolute variance ≤ 1% of counted value posts direct; > 1% routes to Owner per the SOD rule that the count executor ≠ variance approver. Post books the adjustment journal (Inventory adjustment ↔ Inventory) and writes `stock_count_adjustment` ledger entries; the count record becomes immutable once posted (PR #50)
 - **Stock transfer between warehouses** — two-step draft → dispatched → received state machine; dispatch deducts source + writes `transfer_out` ledger + allocates transfer number; receive adds to destination at dispatch-time unit cost (preserving WAVG across warehouses) + writes `transfer_in` ledger; short receipts flag `has_discrepancy` on the header for later reconciliation; draft cancel supported (post-dispatch cancellation = reverse transfer); printable driver's note **PDF** with source/destination route and dispatched/received signatures
 
 ### Accounting
@@ -59,6 +63,9 @@ Last updated: 2026-04-22 after shipping #11b final settlement worksheet. **All m
 - **Customer credit enforcement** — credit_hold hard block + credit_limit soft block at invoice post; auto-flag on 2+ bounced cheques
 - **Bad debt write-off with VAT relief** — give up on collection cleanly, claim SL VAT Act §26 relief on 12+ month-old invoices, reverse if they pay later; `/app/reports/bad-debts` tallies it
 - **Journal entry approval workflow** — tenant-set threshold above which manual JEs go to a drafts queue for second-pair-of-eyes approval; SOD-enforced (approver ≠ creator); `/app/journals/approvals` pending + recent queue
+- **Recurring journal templates** — balanced-entry templates with variable prompts (amount placeholders resolved per cycle); auto-post variant books directly, review-queue variant lands in `/app/recurring-journals` for HR/accountant to adjust before posting. Per-template frequency (monthly / quarterly / annual) + next-run date; hourly cron fires due templates; every generated entry carries template provenance for audit (PR #52)
+- **Number series config** — customise per-document prefix templates with token substitution (`INV-{YYYY}-{####}`, `FS-{YYYY}-{####}`, etc.) and reset period (yearly / monthly / continuous). Live preview before save; tenant-level override of the default per-kind template via `document_sequences.template`; default-template trigger on insert keeps existing kinds backfilled. Every callsite allocates via `nextDocumentNumber(tx, kind)` so changes here flow through uniformly (PR #53)
+- **Audit log viewer** — append-only `audit_events` stream covering identity (login/logout), posting (journal.post/void, approve/reject), period (close/reopen/close_year), void (invoice/bill/payment), AR hygiene (bad_debt writeoff/reverse, credit hold/release), HR (exit, confirm probation, payroll post/void, final-settlement lifecycle), and settings (update, number_series.update) events. Viewer at `/app/audit-log` with filter-by-kind, date range, actor, and deep-link back to the affected entity (journal_entry / invoice / bill / employee / period / customer). `recordAuditEvent` never throws — a failed audit write doesn't break the primary action (PR #54)
 
 ### HR / Payroll
 - Employees (CRUD + salary structure assignments)
@@ -99,21 +106,16 @@ Each item has a spec reference, one-sentence description, and rough sizing (**S*
 
 ### Should-have (convenience/polish)
 
+Numbers left as gaps below = shipped (see the bullets above). Keeps the "by number basis" picking order stable across audits.
+
 | # | Feature | Spec | What it does | Size |
 |---|---|---|---|---|
-| 8 | Stock count / cycle count | inventory §4.4 | Blind count with tiered auto-post vs approval (1% auto, >1% approve). | M |
 | 9 | Landed cost allocation | buy §5.4, inventory §5.4 | Freight/insurance/customs captured at GRN, allocated to item cost. | L |
 | 14 | Expense claims | payroll §8 | Employee submit with receipt → manager approve → bundle with payroll or pay direct. | M |
-| 15 | Proforma invoices | sell §2.5 | Advance/customs preview, convert to live invoice. | M |
 | 16 | Batch / consolidated invoicing | sell §2.5 | Multi-customer batch run; roll up multiple DNs into one invoice per customer. | M |
 | 17 | Multi-currency FX on sales | sell §17 | Rate capture per invoice/bill, LKR-for-ledger + foreign-for-customer. | M |
 | 18 | Multi-currency bank accounts | accounting §4.1 | USD/EUR/GBP accounts with LKR reporting conversion. | M |
-| 19 | Recurring expense templates | buy §11.5 | Bills equivalent of recurring invoices. | M |
 | 20 | Supplier statement reconciliation | buy §13.2 | Parse supplier-sent statement vs our bill record, flag differences. | M |
-| 21 | Customer statement email delivery | sell §15 | Scheduled auto-email + bulk run. | M |
-| 22 | Audit log viewer | tenant-admin §11 | Who-changed-what + login + impersonation, with deep-links. | M |
-| 23 | Number series config | tenant-admin §8 | Customize prefix template, reset period (monthly/yearly), live preview. | M |
-| 24 | Recurring journal templates | accounting §9 | Auto-post vs review-queue, variable prompts. | M |
 | 25 | Notification preferences (user-level) | tenant-admin §10 | Per-user channel + event opt-in, quiet hours. | M |
 | 26 | Approval workflow designer | tenant-admin §7 | Visual multi-step chains with branching conditions. | L |
 | 27 | Custom roles / granular permissions | tenant-admin §3.4 | Per-action permission matrix, Easy templates + Advanced granular. | M |
@@ -155,4 +157,4 @@ These are their own workstreams — track separately from this roadmap.
 
 One PR = one feature. Ship, merge, move on. Batched PRs allowed when features are clearly related (e.g. DN + PO PDFs were batched because they follow the same pattern).
 
-Current recommendation: compliance foundation is complete. The remaining backlog is convenience / polish — no hard compliance gaps left. Pick from should-haves based on what real users start asking for. Top-of-mind candidates: **stock count** (blind count workflow, complements stock transfer shipped in PR #43), **proforma invoices** (pre-sale flow), **multi-currency FX on sales** (exporters), or **audit log viewer** (governance).
+Current recommendation: compliance foundation is complete and the should-have convenience layer is thinning out — 8 of the original should-haves shipped, leaving 9. No hard compliance gaps. Pick from should-haves based on what real users start asking for. Top-of-mind candidates: **#9 landed cost allocation** (freight/insurance at GRN, missing piece of the buy-to-inventory costing story), **#14 expense claims** (completes the HR/payroll reimbursement loop), **#17/18 multi-currency** (exporters, the one remaining hole for non-LKR business), or **#20 supplier statement reconciliation** (AP hygiene — we have the supplier statement read-only but not the compare-to-statement flow).
