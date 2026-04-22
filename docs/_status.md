@@ -158,6 +158,7 @@ Quick read on which corners are stale. `Tests`: "unit" = unit tests exist, "rout
 | Mid-period payroll events | #41 | — | 0 | Pro-rata engine. |
 | Bonus schemes | #42 | — | 0 | Just shipped. |
 | Final settlements | #57 | — | 0 | Gross-to-net exit calc. Waives pending loan schedules on post. FS-series numbers. Partial unique index enforces one active settlement per employee. |
+| Expense claims | #60 | — | 0 | Just shipped. Five-state lifecycle, SOD-enforced, category → GL expense account mapping. Direct-pay path posts DR expense / CR bank. Payroll-bundling path leaves row `approved`; payroll-compute claim integration is a pending mechanical follow-up (columns in place). EXP-series numbers. Snapshot pattern on submit so category re-mapping doesn't rewrite history. |
 | Reports (TB, P&L, BS, GL, VAT, cash flow) | mid | — | 0 | Read-only, low risk. |
 | Reports (dashboard) | mid | — | 4 typecheck | Aging bucket label union mismatch. |
 | AR aging / AP aging / 3-way match | mid | — | 0 | Stable. |

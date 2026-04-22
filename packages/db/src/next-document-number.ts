@@ -21,7 +21,8 @@ export type DocumentKind =
   | "stock_transfer"
   | "bonus_run"
   | "staff_loan"
-  | "final_settlement";
+  | "final_settlement"
+  | "expense_claim";
 
 /**
  * Allocate the next document number for the current tenant.
