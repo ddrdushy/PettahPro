@@ -4,7 +4,7 @@ Live tracker of what's shipped, what's next, and what's backlog — cross-checke
 
 **Three-doc triangle:** this file says what's shipped; [`_status.md`](./_status.md) says what's broken, fragile, or at-risk right now; [`_gaps.md`](./_gaps.md) is the parking lot for real gaps that aren't on the roadmap yet (security, cost-centers, bank feeds, e-filing, observability, platform workstreams). Promote items from `_gaps.md` into this file when it's their turn.
 
-Last updated: 2026-04-23 after shipping #37 stale cheque auto-flag in PR #66. **All must-haves, all original should-haves, and #37 / #42 / #44 follow-ups all shipped.** Remaining tracked backlog: two follow-ups from PR #63 (#43 approval engine wiring, #45 notification digests) plus the Nice-to-have list.
+Last updated: 2026-04-23 after shipping #44 FX revaluation at period close in PR #65. **All must-haves, all original should-haves, and #42 / #44 follow-ups all shipped.** Remaining tracked backlog: two follow-ups from PR #63 (#43 approval engine wiring, #45 notification digests) plus the Nice-to-have list.
 
 ---
 
@@ -162,9 +162,9 @@ These are their own workstreams — track separately from this roadmap.
 
 One PR = one feature. Ship, merge, move on. Batched PRs allowed when features are clearly related (e.g. DN + PO PDFs were batched because they follow the same pattern).
 
-Current recommendation: compliance + convenience + role enforcement + FX revaluation + stale cheque flagging all done. Nothing user-visible is a hard gap. Next work falls in two camps:
+Current recommendation: compliance + convenience + role enforcement + FX revaluation all done. Nothing user-visible is a hard gap. Next work falls in two camps:
 
 1. **Close the remaining loops** — two deferred follow-ups (#43, #45). **#45 notification digest windows** is M-sized and independent — daily / weekly rollup opt-ins that ride alongside the per-kind prefs shipped in PR #63. **#43 approval engine wiring** is the architecturally heavier option (L) — route documents through the policies stored by #26 at submit time, replacing the existing per-domain `pending_approval` columns.
-2. **Pick from Nice-to-have** — **#36 inventory category hierarchy** is the remaining S-sized cheap win (organization for tenants with >50 SKUs). Beyond that the list is all M/L — #34 batch/serial/expiry tracking, #38 petty cash float, #39 attendance capture, #40 dual depreciation.
+2. **Pick from Nice-to-have** — the S-sized ones are cheap wins: **#37 stale cheque auto-flag** (SL banking compliance — 6-month presentment rule) and **#36 inventory category hierarchy** (organization for tenants with >50 SKUs).
 
-Leaning toward **#45 notification digest windows next** — M-sized, independent of #43, and complements the per-kind prefs already shipped. Unlocks "email me a daily rollup of cheque-stale / invoice-overdue / low-stock events" which is exactly the feedback loop we've been queuing up with every new notification kind (including the cheque.stale emits this PR adds). #36 (inventory hierarchy) remains the S-sized fallback if the day calls for a shorter task.
+Leaning toward **#37 stale cheque next** — S-sized, real SL compliance check that tenants with any cheque volume will hit, and the cheque 9-state lifecycle we already have makes the addition a small schema + daily-job delta rather than a new subsystem. Larger architectural work (#43 approval engine) is still on the table but #37 keeps momentum while covering a compliance edge.
