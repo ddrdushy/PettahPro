@@ -27,6 +27,7 @@ import {
   Lock,
   Settings,
   Gift,
+  LogOut,
   ShieldCheck,
   type LucideIcon,
 } from "lucide-react";
@@ -95,6 +96,7 @@ const nav: Group[] = [
       { label: "Employees", href: "/app/employees", icon: UserRound },
       { label: "Salary components", href: "/app/salary-components", icon: Layers },
       { label: "Payroll runs", href: "/app/payroll", icon: Briefcase },
+      { label: "Final settlements", href: "/app/final-settlements", icon: LogOut },
       { label: "Leave types", href: "/app/leave-types", icon: Layers },
       { label: "Leave requests", href: "/app/leave-requests", icon: Briefcase },
       { label: "Staff loans", href: "/app/staff-loans", icon: Wallet },
