@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { cookies } from "next/headers";
+import { Hash, ArrowRight, Bell, CheckCircle2, UserCog } from "lucide-react";
 import { Hash, Coins, ArrowRight } from "lucide-react";
 import type { TenantSettingsResponse } from "@/lib/api";
 import { PageHeader } from "@/components/app/page-header";
@@ -56,6 +57,45 @@ export default async function SettingsPage() {
             <ArrowRight className="h-4 w-4 text-text-tertiary" aria-hidden />
           </Link>
           <Link
+            href="/app/settings/notifications"
+            className="flex items-center justify-between rounded-md border-hairline border-border px-4 py-3 hover:bg-surface-recessed/40"
+          >
+            <div className="flex items-start gap-3">
+              <Bell className="mt-0.5 h-4 w-4 text-text-tertiary" aria-hidden />
+              <div>
+                <p className="text-small font-medium text-charcoal">Notifications</p>
+                <p className="text-caption text-text-secondary">
+                  Choose which in-app notifications you receive — invoices posted, payments recorded, journals pending review, and more.
+                </p>
+              </div>
+            </div>
+            <ArrowRight className="h-4 w-4 text-text-tertiary" aria-hidden />
+          </Link>
+          <Link
+            href="/app/settings/approvals"
+            className="flex items-center justify-between rounded-md border-hairline border-border px-4 py-3 hover:bg-surface-recessed/40"
+          >
+            <div className="flex items-start gap-3">
+              <CheckCircle2 className="mt-0.5 h-4 w-4 text-text-tertiary" aria-hidden />
+              <div>
+                <p className="text-small font-medium text-charcoal">Approval workflows</p>
+                <p className="text-caption text-text-secondary">
+                  Design linear approval chains for journals, expense claims, purchase orders and more. Trigger by amount or submitter; route to roles or named users.
+                </p>
+              </div>
+            </div>
+            <ArrowRight className="h-4 w-4 text-text-tertiary" aria-hidden />
+          </Link>
+          <Link
+            href="/app/settings/roles"
+            className="flex items-center justify-between rounded-md border-hairline border-border px-4 py-3 hover:bg-surface-recessed/40"
+          >
+            <div className="flex items-start gap-3">
+              <UserCog className="mt-0.5 h-4 w-4 text-text-tertiary" aria-hidden />
+              <div>
+                <p className="text-small font-medium text-charcoal">Roles & permissions</p>
+                <p className="text-caption text-text-secondary">
+                  Pick from built-in templates (Owner, Admin, Accountant, Sales, Read-only) or create custom roles. Assign one or more roles per team member.
             href="/app/settings/fx-rates"
             className="flex items-center justify-between rounded-md border-hairline border-border px-4 py-3 hover:bg-surface-recessed/40"
           >
