@@ -9,6 +9,7 @@ import { customerStatementRoutes } from "./modules/operations/customer-statement
 import { customerStatementEmailRoutes } from "./modules/operations/customer-statement-email.js";
 import { suppliersRoutes } from "./modules/operations/suppliers.js";
 import { supplierStatementRoutes } from "./modules/operations/supplier-statement.js";
+import { supplierReconcileRoutes } from "./modules/buy/supplier-reconcile.js";
 import { itemsRoutes } from "./modules/operations/items.js";
 import { coaRoutes, taxCodesRoutes } from "./modules/accounting/coa.js";
 import { journalEntriesRoutes } from "./modules/accounting/journal-entries.js";
@@ -113,6 +114,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await server.register(customerStatementEmailRoutes, { prefix: "/customers" });
   await server.register(suppliersRoutes, { prefix: "/suppliers" });
   await server.register(supplierStatementRoutes, { prefix: "/suppliers" });
+  await server.register(supplierReconcileRoutes, { prefix: "/suppliers" });
   await server.register(itemsRoutes, { prefix: "/items" });
   await server.register(coaRoutes, { prefix: "/coa" });
   await server.register(taxCodesRoutes, { prefix: "/tax-codes" });

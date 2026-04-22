@@ -141,6 +141,11 @@ export const api = {
   },
   createSupplier: (body: CreateSupplier) =>
     request<{ supplier: Supplier }>("/suppliers", { method: "POST", json: body }),
+  reconcileSupplier: (id: string, rows: SupplierReconcileRow[]) =>
+    request<SupplierReconcileResult>(`/suppliers/${id}/reconcile`, {
+      method: "POST",
+      json: { rows },
+    }),
 
   listItems: (q?: string) =>
     request<{ items: Item[] }>(`/items${q ? `?q=${encodeURIComponent(q)}` : ""}`),
@@ -223,6 +228,16 @@ export const api = {
     }),
   duplicateInvoice: (id: string) =>
     request<{ invoice: InvoiceDetail }>(`/invoices/${id}/duplicate`, { method: "POST" }),
+  batchInvoiceFromDeliveryNotes: (body: {
+    deliveryNoteIds: string[];
+    issueDate?: string;
+    dueDate?: string;
+    notes?: string;
+  }) =>
+    request<{ invoice: InvoiceDetail; dnCount: number }>(
+      "/invoices/batch-from-delivery-notes",
+      { method: "POST", json: body },
+    ),
   writeOffInvoice: (id: string, body: { reason: string; claimVatRelief?: boolean }) =>
     request<{
       ok: true;
@@ -1305,6 +1320,44 @@ export interface SupplierStatement {
   totalPaidCents: number;
   transactions: SupplierStatementTransaction[];
   aging: PartyAgingBucket[];
+}
+
+export interface SupplierReconcileRow {
+  reference: string;
+  amount: number;
+  date?: string;
+}
+
+export type SupplierReconcileStatus =
+  | "matched"
+  | "amount_mismatch"
+  | "only_in_ours"
+  | "only_in_theirs";
+
+export interface SupplierReconcileMatch {
+  status: SupplierReconcileStatus;
+  reference: string;
+  theirAmountCents: number | null;
+  theirDate: string | null;
+  ourBillId: string | null;
+  ourBillNumber: string | null;
+  ourInternalReference: string | null;
+  ourBalanceCents: number | null;
+  diffCents: number | null;
+}
+
+export interface SupplierReconcileResult {
+  supplier: { id: string; name: string };
+  summary: {
+    theirTotalCents: number;
+    ourTotalCents: number;
+    diffCents: number;
+    matched: number;
+    amountMismatch: number;
+    onlyInOurs: number;
+    onlyInTheirs: number;
+  };
+  results: SupplierReconcileMatch[];
 }
 
 export interface SupplierDetail {
