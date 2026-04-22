@@ -278,6 +278,69 @@ export const customersRoutes: FastifyPluginAsync = async (fastify) => {
     },
   );
 
+  // PATCH /customers/:id/statement-email-settings — toggle auto statement
+  // emails and configure day-of-month. Constrained to 1..28 to avoid skipping
+  // short months (see migration 50-customer-statement-emails.sql).
+  fastify.patch<{
+    Params: { id: string };
+    Body: { autoStatementEmail?: boolean; statementEmailDay?: number | null };
+  }>("/:id/statement-email-settings", async (req, reply) => {
+    const ctx = requireAuth(req, reply);
+    if (!ctx) return;
+
+    const BodySchema = z.object({
+      autoStatementEmail: z.boolean().optional(),
+      statementEmailDay: z.number().int().min(1).max(28).nullable().optional(),
+    });
+    const parsed = BodySchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: { code: "INVALID_INPUT", issues: parsed.error.issues },
+      });
+    }
+    const patch = parsed.data;
+    if (
+      patch.autoStatementEmail === undefined &&
+      patch.statementEmailDay === undefined
+    ) {
+      return reply.status(400).send({
+        error: { code: "NO_FIELDS", message: "No fields to update." },
+      });
+    }
+
+    const updated = await withTenant(ctx.tenantId, async (tx) => {
+      const updates: Record<string, unknown> = { updatedAt: new Date() };
+      if (patch.autoStatementEmail !== undefined) {
+        updates.autoStatementEmail = patch.autoStatementEmail;
+      }
+      if (patch.statementEmailDay !== undefined) {
+        updates.statementEmailDay = patch.statementEmailDay;
+      }
+
+      const [row] = await tx
+        .update(schema.customers)
+        .set(updates)
+        .where(
+          and(
+            eq(schema.customers.tenantId, ctx.tenantId),
+            eq(schema.customers.id, req.params.id),
+            isNull(schema.customers.deletedAt),
+          ),
+        )
+        .returning({
+          id: schema.customers.id,
+          autoStatementEmail: schema.customers.autoStatementEmail,
+          statementEmailDay: schema.customers.statementEmailDay,
+        });
+      return row;
+    });
+
+    if (!updated) {
+      return reply.status(404).send({ error: { code: "NOT_FOUND" } });
+    }
+    return reply.send({ customer: updated });
+  });
+
   // POST /customers/:id/unhold — clear a credit hold.
   fastify.post<{ Params: { id: string } }>("/:id/unhold", async (req, reply) => {
     const ctx = requireAuth(req, reply);

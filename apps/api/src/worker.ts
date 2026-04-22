@@ -5,6 +5,7 @@ import { db } from "@pettahpro/db";
 import { runDueRecurringInvoices } from "./modules/sell/recurring-invoices.js";
 import { runDueRecurringBills } from "./modules/buy/recurring-bills.js";
 import { runDueRecurringJournals } from "./modules/accounting/recurring-journals.js";
+import { runScheduledStatementEmails } from "./modules/operations/customer-statement-email-cron.js";
 
 const log = pino({
   level: process.env.LOG_LEVEL ?? "info",
@@ -60,6 +61,21 @@ async function registerSchedules() {
     },
   );
   log.info("scheduled: generate-recurring-journals (hourly)");
+
+  // Daily statement-email dispatcher. The SQL helper already filters by
+  // day-of-month + dedupes, so running this every 6h (not 24h) gives us
+  // resilience against a worker that was down during the canonical "1st of
+  // the month" window — it just retries throughout the day.
+  await scheduledQueue.add(
+    "send-scheduled-statement-emails",
+    {},
+    {
+      repeat: { every: 6 * 60 * 60 * 1000 }, // 6h
+      removeOnComplete: 50,
+      removeOnFail: 50,
+    },
+  );
+  log.info("scheduled: send-scheduled-statement-emails (every 6h)");
 }
 
 const defaultWorker = new Worker(
@@ -88,6 +104,11 @@ const scheduledWorker = new Worker(
     if (job.name === "generate-recurring-journals") {
       const result = await runDueRecurringJournals(db, log);
       log.info(result, "recurring-journal run complete");
+      return result;
+    }
+    if (job.name === "send-scheduled-statement-emails") {
+      const result = await runScheduledStatementEmails(db, log);
+      log.info(result, "scheduled statement emails run complete");
       return result;
     }
     log.warn({ name: job.name }, "unknown scheduled job");

@@ -83,6 +83,49 @@ export const api = {
     const q = params.toString();
     return request<CustomerStatement>(`/customers/${id}/statement${q ? `?${q}` : ""}`);
   },
+  emailCustomerStatement: (
+    id: string,
+    body?: {
+      from?: string;
+      to?: string;
+      toEmail?: string;
+      ccEmails?: string[];
+      subjectOverride?: string;
+      messageNote?: string;
+    },
+  ) =>
+    request<{ result: StatementEmailResult }>(
+      `/customers/${id}/statement/email`,
+      { method: "POST", json: body ?? {} },
+    ),
+  emailCustomerStatementsBatch: (body: {
+    customerIds: string[];
+    from?: string;
+    to?: string;
+    messageNote?: string;
+  }) =>
+    request<{
+      results: StatementEmailResult[];
+      summary: { sent: number; failed: number; skipped: number };
+    }>("/customers/statements/email-batch", { method: "POST", json: body }),
+  listCustomerStatementEmails: (id: string) =>
+    request<{ history: StatementEmailHistoryEntry[] }>(
+      `/customers/${id}/statement-emails`,
+    ),
+  updateCustomerStatementEmailSettings: (
+    id: string,
+    body: { autoStatementEmail?: boolean; statementEmailDay?: number | null },
+  ) =>
+    request<{
+      customer: {
+        id: string;
+        autoStatementEmail: boolean;
+        statementEmailDay: number | null;
+      };
+    }>(`/customers/${id}/statement-email-settings`, {
+      method: "PATCH",
+      json: body,
+    }),
   createCustomer: (body: CreateCustomer) =>
     request<{ customer: Customer }>("/customers", { method: "POST", json: body }),
 
@@ -1023,8 +1066,38 @@ export interface Customer {
   creditHoldReason: string | null;
   creditHoldAt: string | null;
   currency: string;
+  autoStatementEmail?: boolean;
+  statementEmailDay?: number | null;
   isActive: boolean;
   createdAt: string;
+}
+
+export interface StatementEmailResult {
+  customerId: string;
+  customerName: string;
+  status: "sent" | "failed" | "skipped";
+  toEmail: string | null;
+  error?: string;
+  emailLogId?: string;
+}
+
+export interface StatementEmailHistoryEntry {
+  id: string;
+  to_email: string;
+  cc_emails: string[];
+  subject: string;
+  statement_from: string | null;
+  statement_to: string;
+  opening_balance_cents: number;
+  closing_balance_cents: number;
+  transaction_count: number;
+  status: "sent" | "failed" | "skipped";
+  error_message: string | null;
+  message_id: string | null;
+  transport: "smtp" | "console";
+  trigger_kind: "manual" | "scheduled";
+  sent_at: string;
+  triggered_by_email: string | null;
 }
 
 export interface CustomerCredit {

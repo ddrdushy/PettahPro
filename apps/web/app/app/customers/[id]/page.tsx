@@ -5,6 +5,7 @@ import { notFound } from "next/navigation";
 import { ArrowLeft, FileText, Mail, MapPin, Phone, Plus } from "lucide-react";
 import type { CustomerCredit, CustomerDetail } from "@/lib/api";
 import { CreditPanel } from "./credit-panel";
+import { StatementEmailSettings } from "./statement-email-settings";
 import { PageHeader } from "@/components/app/page-header";
 import { StatusBadge } from "@/components/app/status-badge";
 import { PartyKpiStrip, AgingBars } from "@/components/app/party-kpis";
@@ -218,6 +219,13 @@ export default async function CustomerDetailPage({ params }: { params: { id: str
           </section>
 
           {data.credit && <CreditPanel customerId={customer.id} credit={data.credit} />}
+
+          <StatementEmailSettings
+            customerId={customer.id}
+            customerEmail={customer.email}
+            initialAuto={customer.autoStatementEmail ?? false}
+            initialDay={customer.statementEmailDay ?? null}
+          />
         </aside>
       </div>
     </main>
