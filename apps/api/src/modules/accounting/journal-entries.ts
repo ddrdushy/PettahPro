@@ -1,9 +1,11 @@
 import type { FastifyPluginAsync } from "fastify";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNull, desc, sql } from "drizzle-orm";
 import { z } from "zod";
 import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
 import { postJournal } from "./journal-posting.js";
+import { loadTenantSettings } from "../settings/routes.js";
+import { emitNotification } from "../notifications/emit.js";
 
 const LineSchema = z
   .object({
@@ -186,7 +188,9 @@ export const journalEntriesRoutes: FastifyPluginAsync = async (fastify) => {
     return reply.send(data);
   });
 
-  // POST /journal-entries — create & post a manual entry
+  // POST /journal-entries — create & post a manual entry. When total >= the
+  // tenant's journalApprovalThresholdCents, this instead parks the entry
+  // as a draft in journal_entry_drafts pending approval.
   fastify.post("/", async (req, reply) => {
     const ctx = requireAuth(req, reply);
     if (!ctx) return;
@@ -200,8 +204,6 @@ export const journalEntriesRoutes: FastifyPluginAsync = async (fastify) => {
 
     const { entryDate, memo, lines } = parsed.data;
 
-    // Balance check up-front so we return a clear error rather than the
-    // trigger's generic one.
     const drTotal = lines.reduce((s, l) => s + (l.drCents ?? 0), 0);
     const crTotal = lines.reduce((s, l) => s + (l.crCents ?? 0), 0);
     if (drTotal === 0) {
@@ -220,26 +222,70 @@ export const journalEntriesRoutes: FastifyPluginAsync = async (fastify) => {
 
     try {
       const result = await withTenant(ctx.tenantId, async (tx) => {
-        return postJournal(tx, {
+        const settings = await loadTenantSettings(tx);
+        const threshold = settings.journalApprovalThresholdCents;
+        const needsApproval = threshold > 0 && drTotal >= threshold;
+
+        const normLines = lines.map((l) => ({
+          accountId: l.accountId,
+          drCents: l.drCents ?? 0,
+          crCents: l.crCents ?? 0,
+          description: l.description && l.description.trim() ? l.description.trim() : null,
+          customerId: l.customerId ?? null,
+          supplierId: l.supplierId ?? null,
+        }));
+
+        if (needsApproval) {
+          const [draft] = await tx
+            .insert(schema.journalEntryDrafts)
+            .values({
+              tenantId: ctx.tenantId,
+              entryDate,
+              memo: memo && memo.trim() ? memo.trim() : null,
+              totalCents: drTotal,
+              payload: { lines: normLines },
+              createdByUserId: ctx.userId,
+            })
+            .returning();
+          if (!draft) throw new Error("Draft insert failed");
+
+          await emitNotification(tx, {
+            tenantId: ctx.tenantId,
+            kind: "je_approval_pending",
+            title: `Journal entry pending approval · ${(drTotal / 100).toFixed(2)}`,
+            body: memo && memo.trim() ? memo.trim() : `Entry dated ${entryDate}`,
+            refType: "journal_entry_draft",
+            refId: draft.id,
+          });
+
+          return {
+            status: "pending_approval" as const,
+            draftId: draft.id,
+            thresholdCents: threshold,
+            totalCents: drTotal,
+          };
+        }
+
+        const posted = await postJournal(tx, {
           tenantId: ctx.tenantId,
           entryDate,
           memo: memo && memo.trim() ? memo.trim() : undefined,
           sourceType: "manual",
           postedByUserId: ctx.userId,
-          lines: lines.map((l) => ({
-            accountId: l.accountId,
-            drCents: l.drCents ?? 0,
-            crCents: l.crCents ?? 0,
-            description: l.description && l.description.trim() ? l.description.trim() : undefined,
-            customerId: l.customerId ?? null,
-            supplierId: l.supplierId ?? null,
+          lines: normLines.map((l) => ({
+            ...l,
+            description: l.description ?? undefined,
           })),
         });
+        return {
+          status: "posted" as const,
+          entryId: posted.entryId,
+          entryNumber: posted.entryNumber,
+        };
       });
-      return reply.status(201).send({ ok: true, entryId: result.entryId, entryNumber: result.entryNumber });
+      return reply.status(201).send({ ok: true, ...result });
     } catch (err) {
       const msg = (err as Error).message ?? "";
-      // Fiscal-period trigger, balance trigger, FK violations all bubble here.
       if (msg.toLowerCase().includes("fiscal period")) {
         return reply
           .status(400)
@@ -251,4 +297,165 @@ export const journalEntriesRoutes: FastifyPluginAsync = async (fastify) => {
       throw err;
     }
   });
+
+  // GET /journal-entries/drafts — pending + recently-decided drafts.
+  fastify.get("/drafts", async (req, reply) => {
+    const ctx = requireAuth(req, reply);
+    if (!ctx) return;
+
+    const drafts = await withTenant(ctx.tenantId, async (tx) =>
+      tx
+        .select()
+        .from(schema.journalEntryDrafts)
+        .where(eq(schema.journalEntryDrafts.tenantId, ctx.tenantId))
+        .orderBy(desc(schema.journalEntryDrafts.createdAt))
+        .limit(200),
+    );
+    return reply.send({ drafts });
+  });
+
+  // POST /journal-entries/drafts/:id/approve — post via postJournal, link
+  // the posted entry back, flip status. Approver can't be the creator
+  // (segregation of duties).
+  fastify.post<{ Params: { id: string } }>("/drafts/:id/approve", async (req, reply) => {
+    const ctx = requireAuth(req, reply);
+    if (!ctx) return;
+
+    const result = await withTenant(ctx.tenantId, async (tx) => {
+      const [draft] = await tx
+        .select()
+        .from(schema.journalEntryDrafts)
+        .where(
+          and(
+            eq(schema.journalEntryDrafts.tenantId, ctx.tenantId),
+            eq(schema.journalEntryDrafts.id, req.params.id),
+          ),
+        )
+        .limit(1);
+      if (!draft) return { error: "NOT_FOUND" as const };
+      if (draft.status !== "pending_approval") return { error: "NOT_PENDING" as const };
+      if (draft.createdByUserId === ctx.userId) return { error: "SELF_APPROVAL" as const };
+
+      const { entryId, entryNumber } = await postJournal(tx, {
+        tenantId: ctx.tenantId,
+        entryDate: draft.entryDate,
+        memo: draft.memo ?? undefined,
+        sourceType: "manual",
+        sourceId: draft.id,
+        postedByUserId: ctx.userId,
+        lines: draft.payload.lines.map((l) => ({
+          accountId: l.accountId,
+          drCents: l.drCents,
+          crCents: l.crCents,
+          description: l.description ?? undefined,
+          customerId: l.customerId ?? null,
+          supplierId: l.supplierId ?? null,
+        })),
+      });
+
+      await tx
+        .update(schema.journalEntryDrafts)
+        .set({
+          status: "approved",
+          approvedByUserId: ctx.userId,
+          approvedAt: new Date(),
+          postedJournalEntryId: entryId,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.journalEntryDrafts.id, draft.id));
+
+      if (draft.createdByUserId) {
+        await emitNotification(tx, {
+          tenantId: ctx.tenantId,
+          userId: draft.createdByUserId,
+          kind: "je_approved",
+          title: `Journal entry approved · ${entryNumber}`,
+          body: draft.memo ?? null,
+          refType: "journal_entry",
+          refId: entryId,
+        });
+      }
+
+      return { ok: true as const, entryId, entryNumber };
+    });
+
+    if ("error" in result) {
+      const map: Record<string, number> = {
+        NOT_FOUND: 404,
+        NOT_PENDING: 409,
+        SELF_APPROVAL: 409,
+      };
+      const msgs: Record<string, string> = {
+        NOT_PENDING: "This draft isn't pending approval.",
+        SELF_APPROVAL: "You can't approve a journal entry you created yourself — ask someone else.",
+      };
+      const code = result.error as string;
+      return reply.status(map[code] ?? 500).send({ error: { code, message: msgs[code] ?? code } });
+    }
+    return reply.send(result);
+  });
+
+  // POST /journal-entries/drafts/:id/reject — shelve with reason.
+  fastify.post<{ Params: { id: string }; Body: { reason: string } }>(
+    "/drafts/:id/reject",
+    async (req, reply) => {
+      const ctx = requireAuth(req, reply);
+      if (!ctx) return;
+      const reason = (req.body?.reason ?? "").trim();
+      if (!reason) {
+        return reply
+          .status(400)
+          .send({ error: { code: "REASON_REQUIRED", message: "Reason is required." } });
+      }
+
+      const result = await withTenant(ctx.tenantId, async (tx) => {
+        const [draft] = await tx
+          .select()
+          .from(schema.journalEntryDrafts)
+          .where(
+            and(
+              eq(schema.journalEntryDrafts.tenantId, ctx.tenantId),
+              eq(schema.journalEntryDrafts.id, req.params.id),
+            ),
+          )
+          .limit(1);
+        if (!draft) return { error: "NOT_FOUND" as const };
+        if (draft.status !== "pending_approval") return { error: "NOT_PENDING" as const };
+
+        await tx
+          .update(schema.journalEntryDrafts)
+          .set({
+            status: "rejected",
+            rejectedByUserId: ctx.userId,
+            rejectedAt: new Date(),
+            rejectionReason: reason,
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.journalEntryDrafts.id, draft.id));
+
+        if (draft.createdByUserId) {
+          await emitNotification(tx, {
+            tenantId: ctx.tenantId,
+            userId: draft.createdByUserId,
+            kind: "je_rejected",
+            title: `Journal entry rejected · ${(draft.totalCents / 100).toFixed(2)}`,
+            body: reason,
+            refType: "journal_entry_draft",
+            refId: draft.id,
+          });
+        }
+        return { ok: true as const };
+      });
+
+      if ("error" in result) {
+        const map: Record<string, number> = {
+          NOT_FOUND: 404,
+          NOT_PENDING: 409,
+        };
+        const code = result.error as string;
+        return reply.status(map[code] ?? 500).send({ error: { code } });
+      }
+      return reply.send(result);
+    },
+  );
 };
