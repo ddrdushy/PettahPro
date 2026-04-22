@@ -26,6 +26,7 @@ import {
   ClipboardCheck,
   Lock,
   Settings,
+  Gift,
   type LucideIcon,
 } from "lucide-react";
 
@@ -93,6 +94,8 @@ const nav: Group[] = [
       { label: "Leave requests", href: "/app/leave-requests", icon: Briefcase },
       { label: "Staff loans", href: "/app/staff-loans", icon: Wallet },
       { label: "Loan types", href: "/app/loan-types", icon: Layers },
+      { label: "Bonus runs", href: "/app/bonus-runs", icon: Gift },
+      { label: "Bonus schemes", href: "/app/bonus-schemes", icon: Layers },
     ],
   },
   {

@@ -646,6 +646,40 @@ export const api = {
       json: body,
     }),
 
+  // Bonus schemes
+  listBonusSchemes: () => request<{ schemes: BonusScheme[] }>("/bonus-schemes"),
+  createBonusScheme: (body: CreateBonusScheme) =>
+    request<{ scheme: BonusScheme }>("/bonus-schemes", { method: "POST", json: body }),
+  updateBonusScheme: (id: string, body: Partial<CreateBonusScheme>) =>
+    request<{ scheme: BonusScheme }>(`/bonus-schemes/${id}`, {
+      method: "PATCH",
+      json: body,
+    }),
+
+  // Bonus runs
+  listBonusRuns: () => request<{ runs: BonusRunRow[] }>("/bonus-runs"),
+  getBonusRun: (id: string) =>
+    request<{ run: BonusRunRow; lines: BonusRunLine[] }>(`/bonus-runs/${id}`),
+  createBonusRun: (body: CreateBonusRun) =>
+    request<{ runId: string }>("/bonus-runs", { method: "POST", json: body }),
+  adjustBonusRunLine: (
+    runId: string,
+    lineId: string,
+    body: { bonusGrossCents: number; notes?: string },
+  ) =>
+    request<{ ok: true }>(`/bonus-runs/${runId}/lines/${lineId}`, {
+      method: "PATCH",
+      json: body,
+    }),
+  postBonusRun: (id: string) =>
+    request<{ runId: string; journalEntryId: string }>(`/bonus-runs/${id}/post`, {
+      method: "POST",
+    }),
+  voidBonusRun: (id: string, body: { reason: string }) =>
+    request<{ runId: string }>(`/bonus-runs/${id}/void`, { method: "POST", json: body }),
+  deleteBonusRun: (id: string) =>
+    request<{ ok: true }>(`/bonus-runs/${id}`, { method: "DELETE" }),
+
   listLeaveTypes: () => request<{ leaveTypes: LeaveType[] }>("/leave-types"),
   createLeaveType: (body: CreateLeaveType) =>
     request<{ leaveType: LeaveType }>("/leave-types", { method: "POST", json: body }),
@@ -3262,4 +3296,120 @@ export interface LoanScheduleRow {
   appliedAt: string | null;
   waivedReason: string | null;
   createdAt: string;
+}
+
+// ─── Bonus schemes / runs ──────────────────────────────────────────────
+
+export type BonusFormulaType =
+  | "flat_amount"
+  | "percent_of_basic"
+  | "days_of_basic"
+  | "manual";
+
+export type BonusRunStatus = "draft" | "posted" | "void";
+
+export interface BonusScheme {
+  id: string;
+  tenantId: string;
+  code: string;
+  name: string;
+  description: string | null;
+  formulaType: BonusFormulaType;
+  formulaValue: number | null;
+  eligibilityMinTenureDays: number;
+  eligibilityEmploymentTypes: string[];
+  eligibilityStatuses: string[];
+  countsForEpf: boolean;
+  countsForEtf: boolean;
+  countsForPaye: boolean;
+  expenseAccountId: string | null;
+  isActive: boolean;
+  isSystem: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateBonusScheme {
+  code: string;
+  name: string;
+  description?: string;
+  formulaType: BonusFormulaType;
+  formulaValue?: number | null;
+  eligibilityMinTenureDays?: number;
+  eligibilityEmploymentTypes?: string[];
+  eligibilityStatuses?: string[];
+  countsForEpf?: boolean;
+  countsForEtf?: boolean;
+  countsForPaye?: boolean;
+  expenseAccountId?: string | null;
+  isActive?: boolean;
+}
+
+export interface BonusRun {
+  id: string;
+  tenantId: string;
+  schemeId: string;
+  runNumber: string | null;
+  label: string;
+  payDate: string;
+  status: BonusRunStatus;
+  employeeCount: number;
+  grossCents: number;
+  epfEmployeeCents: number;
+  epfEmployerCents: number;
+  etfEmployerCents: number;
+  payeCents: number;
+  netPayCents: number;
+  journalEntryId: string | null;
+  postedAt: string | null;
+  postedByUserId: string | null;
+  voidReason: string | null;
+  voidAt: string | null;
+  voidByUserId: string | null;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BonusRunRow extends BonusRun {
+  schemeName: string | null;
+  schemeCode: string | null;
+}
+
+export interface BonusRunLine {
+  id: string;
+  tenantId: string;
+  runId: string;
+  employeeId: string;
+  employeeFullName: string;
+  employeeCode: string | null;
+  nic: string | null;
+  epfNumber: string | null;
+  etfNumber: string | null;
+  designation: string | null;
+  department: string | null;
+  basicAtRunCents: number;
+  bonusGrossCents: number;
+  epfEmployeeCents: number;
+  epfEmployerCents: number;
+  etfEmployerCents: number;
+  payeCents: number;
+  netPayCents: number;
+  wasManuallyAdjusted: boolean;
+  wasEpfApplied: boolean;
+  wasEtfApplied: boolean;
+  wasPayeApplied: boolean;
+  bankName: string | null;
+  bankAccountNo: string | null;
+  bankBranch: string | null;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateBonusRun {
+  schemeId: string;
+  label: string;
+  payDate: string;
+  notes?: string;
 }
