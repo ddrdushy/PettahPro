@@ -3,6 +3,7 @@ import IORedis from "ioredis";
 import pino from "pino";
 import { db } from "@pettahpro/db";
 import { runDueRecurringInvoices } from "./modules/sell/recurring-invoices.js";
+import { runDueRecurringBills } from "./modules/buy/recurring-bills.js";
 
 const log = pino({
   level: process.env.LOG_LEVEL ?? "info",
@@ -36,6 +37,17 @@ async function registerSchedules() {
     },
   );
   log.info("scheduled: generate-recurring-invoices (hourly)");
+
+  await scheduledQueue.add(
+    "generate-recurring-bills",
+    {},
+    {
+      repeat: { every: 60 * 60 * 1000 }, // 1h
+      removeOnComplete: 50,
+      removeOnFail: 50,
+    },
+  );
+  log.info("scheduled: generate-recurring-bills (hourly)");
 }
 
 const defaultWorker = new Worker(
@@ -54,6 +66,11 @@ const scheduledWorker = new Worker(
     if (job.name === "generate-recurring-invoices") {
       const result = await runDueRecurringInvoices(db, log);
       log.info(result, "recurring-invoice run complete");
+      return result;
+    }
+    if (job.name === "generate-recurring-bills") {
+      const result = await runDueRecurringBills(db, log);
+      log.info(result, "recurring-bill run complete");
       return result;
     }
     log.warn({ name: job.name }, "unknown scheduled job");

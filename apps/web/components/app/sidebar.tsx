@@ -42,6 +42,7 @@ const nav: Group[] = [
     items: [
       { label: "Customers", href: "/app/customers", icon: Users },
       { label: "Quotations", href: "/app/quotations", icon: FileText },
+      { label: "Proforma invoices", href: "/app/proforma-invoices", icon: FileText },
       { label: "Sales orders", href: "/app/sales-orders", icon: ShoppingCart },
       { label: "Delivery notes", href: "/app/delivery-notes", icon: FileText },
       { label: "Invoices", href: "/app/invoices", icon: Receipt },
@@ -57,6 +58,7 @@ const nav: Group[] = [
       { label: "Purchase orders", href: "/app/purchase-orders", icon: ShoppingCart },
       { label: "Goods received", href: "/app/grns", icon: FileText },
       { label: "Bills", href: "/app/bills", icon: Receipt },
+      { label: "Recurring bills", href: "/app/recurring-bills", icon: Receipt },
       { label: "Debit notes", href: "/app/debit-notes", icon: Receipt },
       { label: "Payments out", href: "/app/supplier-payments", icon: Banknote },
     ],
