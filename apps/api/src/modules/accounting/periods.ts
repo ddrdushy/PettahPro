@@ -3,6 +3,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
+import { requirePermission } from "../../lib/permissions.js";
 import { postJournal } from "./journal-posting.js";
 import { emitNotification } from "../notifications/emit.js";
 import { recordAuditEvent } from "../../lib/audit.js";
@@ -130,7 +131,7 @@ export const periodsRoutes: FastifyPluginAsync = async (fastify) => {
 
   // POST /periods/:id/soft-close — month-end lock, low-friction reopen.
   fastify.post<{ Params: { id: string } }>("/:id/soft-close", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "accounting.manage");
     if (!ctx) return;
     const parsed = ReasonBody.safeParse(req.body ?? {});
     if (!parsed.success) {
@@ -193,7 +194,7 @@ export const periodsRoutes: FastifyPluginAsync = async (fastify) => {
   // and hard closed periods; hard closures increment reopened_count so
   // repeated reopens are visible in audit.
   fastify.post<{ Params: { id: string } }>("/:id/reopen", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "accounting.manage");
     if (!ctx) return;
     const parsed = ReasonBody.safeParse(req.body ?? {});
     if (!parsed.success) {
@@ -258,7 +259,7 @@ export const periodsRoutes: FastifyPluginAsync = async (fastify) => {
   // then hard-closes all 12 periods for that year. Requires retained
   // earnings account (caller picks from Equity subtype).
   fastify.post("/close-year", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "accounting.manage");
     if (!ctx) return;
     const parsed = CloseYearBody.safeParse(req.body);
     if (!parsed.success) {

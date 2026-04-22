@@ -6,6 +6,7 @@ import { hashPassword, verifyPassword } from "./password.js";
 import { createSession, destroySession, readSession } from "./sessions.js";
 import { SESSION_COOKIE, clearSessionCookie, setSessionCookie } from "./cookies.js";
 import { recordAuditEvent } from "../../lib/audit.js";
+import { getCallerPermissions } from "../../lib/permissions.js";
 
 // Signup/login/me run BEFORE we know which tenant the user belongs to, so we
 // can't set app.tenant_id and let RLS do the filtering. Instead we call a set
@@ -232,9 +233,20 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
     const tenant = tenantRows[0];
     if (!tenant) return reply.status(401).send({ error: { code: "UNAUTHENTICATED" } });
 
+    // Permission map the caller holds, so the web layout can hide
+    // buttons it knows will 403. `enforcementActive=false` means the
+    // tenant hasn't assigned any roles yet — UI should treat every
+    // permission as granted (matches the dormant-mode server check).
+    const perms = await getCallerPermissions(user.tenant_id, user.id);
+
     return reply.send({
       user: { id: user.id, email: user.email, fullName: user.full_name, isOwner: user.is_owner },
       tenant,
+      permissions: {
+        isOwner: perms.isOwner,
+        enforcementActive: perms.enforcementActive,
+        granted: perms.permissions,
+      },
     });
   });
 };

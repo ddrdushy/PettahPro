@@ -3,6 +3,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { withTenant, type Database } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
+import { requirePermission } from "../../lib/permissions.js";
 
 // Defaults applied when the stored JSON doesn't have a key.
 // Keep this as the single source of truth — the API always merges defaults
@@ -56,7 +57,7 @@ export const settingsRoutes: FastifyPluginAsync = async (fastify) => {
   });
 
   fastify.patch("/", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "settings.manage");
     if (!ctx) return;
 
     const parsed = PatchSchema.safeParse(req.body);

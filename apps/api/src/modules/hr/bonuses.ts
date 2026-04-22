@@ -3,6 +3,7 @@ import { and, eq, isNull, desc, asc, sql } from "drizzle-orm";
 import { z } from "zod";
 import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
+import { requirePermission } from "../../lib/permissions.js";
 import { postJournal } from "../accounting/journal-posting.js";
 import {
   computePayrollFromComponents,
@@ -706,7 +707,7 @@ export const bonusRunsRoutes: FastifyPluginAsync = async (fastify) => {
 
   // POST /bonus-runs/:id/post  — book JE, mark posted
   fastify.post<{ Params: { id: string } }>("/:id/post", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "payroll.manage");
     if (!ctx) return;
 
     const result = await withTenant(ctx.tenantId, async (tx) => {
@@ -884,7 +885,7 @@ export const bonusRunsRoutes: FastifyPluginAsync = async (fastify) => {
 
   // POST /bonus-runs/:id/void  — reverse a posted run
   fastify.post<{ Params: { id: string } }>("/:id/void", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "payroll.manage");
     if (!ctx) return;
 
     const parsed = VoidSchema.safeParse(req.body);

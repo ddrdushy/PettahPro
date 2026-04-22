@@ -3,6 +3,7 @@ import { and, eq, isNull, desc, asc, lte, gte, or, inArray, sql } from "drizzle-
 import { z } from "zod";
 import { withTenant, schema, nextDocumentNumber } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
+import { requirePermission } from "../../lib/permissions.js";
 import { postJournal } from "../accounting/journal-posting.js";
 import {
   computePayrollFromComponents,
@@ -875,7 +876,7 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
 
   // POST /payroll-runs/:id/post — finalize draft: allocate number, post GL
   fastify.post<{ Params: { id: string } }>("/:id/post", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "payroll.manage");
     if (!ctx) return;
 
     const result = await withTenant(ctx.tenantId, async (tx) => {

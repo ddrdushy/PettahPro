@@ -4,6 +4,7 @@ import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { z } from "zod";
 import { withTenant, schema, nextDocumentNumber } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
+import { requirePermission } from "../../lib/permissions.js";
 import { recordAuditEvent } from "../../lib/audit.js";
 import { postJournal } from "../accounting/journal-posting.js";
 import { loadTenantSettings } from "../settings/routes.js";
@@ -1012,7 +1013,7 @@ export const finalSettlementByIdRoutes: FastifyPluginAsync = async (fastify) => 
   // number, builds the GL entry, and waives remaining loan schedule rows so
   // the next payroll run doesn't double-recover.
   fastify.post<{ Params: { id: string } }>("/:id/post", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "payroll.manage");
     if (!ctx) return;
 
     const result = await withTenant(ctx.tenantId, async (tx) => {

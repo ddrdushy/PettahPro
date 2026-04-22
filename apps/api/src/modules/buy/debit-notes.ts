@@ -3,6 +3,7 @@ import { and, eq, isNull, desc, sql, asc } from "drizzle-orm";
 import { z } from "zod";
 import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
+import { requirePermission } from "../../lib/permissions.js";
 import { postJournal } from "../accounting/journal-posting.js";
 
 const ReasonEnum = z.enum([
@@ -390,9 +391,10 @@ export const debitNotesRoutes: FastifyPluginAsync = async (fastify) => {
     return reply.status(201).send({ debitNote: result.debitNote });
   });
 
-  // POST /debit-notes/:id/post — post to GL
+  // POST /debit-notes/:id/post — post to GL. Debit notes reverse purchases,
+  // so the poster needs the same gate as bills.post.
   fastify.post<{ Params: { id: string } }>("/:id/post", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "bills.post");
     if (!ctx) return;
 
     const result = await withTenant(ctx.tenantId, async (tx) => {

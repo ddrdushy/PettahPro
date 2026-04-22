@@ -3,6 +3,7 @@ import { and, eq, isNull, desc, sql, asc, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { withTenant, schema, nextDocumentNumber } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
+import { requirePermission } from "../../lib/permissions.js";
 import { postJournal } from "../accounting/journal-posting.js";
 import { emitNotification } from "../notifications/emit.js";
 import {
@@ -672,7 +673,7 @@ export const invoicesRoutes: FastifyPluginAsync = async (fastify) => {
 
   // POST /invoices/:id/post — finalize and post to GL
   fastify.post<{ Params: { id: string } }>("/:id/post", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "invoices.post");
     if (!ctx) return;
 
     const result = await withTenant(ctx.tenantId, async (tx) => {
@@ -996,7 +997,7 @@ export const invoicesRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Params: { id: string }; Body: { reason?: string } }>(
     "/:id/void",
     async (req, reply) => {
-      const ctx = requireAuth(req, reply);
+      const ctx = await requirePermission(req, reply, "invoices.void");
       if (!ctx) return;
 
       const reason = typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
