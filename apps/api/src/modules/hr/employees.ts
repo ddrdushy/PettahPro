@@ -199,4 +199,175 @@ export const employeesRoutes: FastifyPluginAsync = async (fastify) => {
       throw err;
     }
   });
+
+  // POST /employees/:id/exit — kick off the exit workflow
+  //
+  // Mid-period leavers per payroll-module-spec §14.2. Sets exit_date and the
+  // terminal status (resigned / terminated / retired / deceased). The next
+  // payroll run will include them for work done up to last_working_day,
+  // pro-rated, then they drop out of future runs because their status is no
+  // longer in the eligibility set.
+  //
+  // This PR does the pro-rata piece only. Full final-settlement worksheet
+  // (leave encashment, outstanding-loan recovery in full, notice pay,
+  // gratuity) is a follow-up — see roadmap #11 note.
+  const ExitSchema = z.object({
+    exitDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    lastWorkingDay: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    noticePeriodDays: z.number().int().min(0).max(365).optional(),
+    statusAfter: z
+      .enum(["resigned", "terminated", "retired", "deceased"])
+      .default("resigned"),
+    reason: z.string().max(1000).optional().or(z.literal("")),
+  });
+  fastify.post<{ Params: { id: string } }>("/:id/exit", async (req, reply) => {
+    const ctx = requireAuth(req, reply);
+    if (!ctx) return;
+
+    const parsed = ExitSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: { code: "INVALID_INPUT", issues: parsed.error.issues } });
+    }
+    const d = parsed.data;
+    const lwd = d.lastWorkingDay ?? d.exitDate;
+    if (lwd > d.exitDate) {
+      return reply.status(400).send({
+        error: {
+          code: "INVALID_INPUT",
+          message: "Last working day can't be after the exit date.",
+        },
+      });
+    }
+
+    const result = await withTenant(ctx.tenantId, async (tx) => {
+      const [emp] = await tx
+        .select()
+        .from(schema.employees)
+        .where(
+          and(
+            eq(schema.employees.tenantId, ctx.tenantId),
+            eq(schema.employees.id, req.params.id),
+            isNull(schema.employees.deletedAt),
+          ),
+        )
+        .limit(1);
+      if (!emp) return { error: "NOT_FOUND" as const };
+      if (["resigned", "terminated", "retired", "deceased"].includes(emp.status)) {
+        return { error: "ALREADY_EXITED" as const };
+      }
+      if (lwd < emp.hireDate) {
+        return { error: "BEFORE_HIRE" as const };
+      }
+
+      const [updated] = await tx
+        .update(schema.employees)
+        .set({
+          status: d.statusAfter,
+          exitDate: d.exitDate,
+          lastWorkingDay: lwd,
+          noticePeriodDays: d.noticePeriodDays ?? emp.noticePeriodDays,
+          statusChangedAt: new Date(),
+          statusChangeReason: d.reason || `Exit: ${d.statusAfter}`,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.employees.id, emp.id))
+        .returning();
+      return { ok: true as const, employee: updated };
+    });
+
+    if ("error" in result) {
+      let status = 500;
+      let message = "";
+      switch (result.error) {
+        case "NOT_FOUND":
+          status = 404; message = "Employee not found."; break;
+        case "ALREADY_EXITED":
+          status = 409;
+          message = "This employee has already been exited.";
+          break;
+        case "BEFORE_HIRE":
+          status = 400;
+          message = "Last working day can't be before the hire date.";
+          break;
+      }
+      return reply.status(status).send({ error: { code: result.error, message } });
+    }
+    return reply.send({ employee: result.employee });
+  });
+
+  // POST /employees/:id/confirm-probation — flip on_probation → active
+  //
+  // Per payroll-module-spec §14.3. Records confirmation_date so future salary-
+  // component assignments can key off it ("confirmation bonus from date X"),
+  // and parks an audit note on status_change_reason.
+  const ConfirmSchema = z.object({
+    confirmationDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    notes: z.string().max(500).optional().or(z.literal("")),
+  });
+  fastify.post<{ Params: { id: string } }>(
+    "/:id/confirm-probation",
+    async (req, reply) => {
+      const ctx = requireAuth(req, reply);
+      if (!ctx) return;
+
+      const parsed = ConfirmSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ error: { code: "INVALID_INPUT", issues: parsed.error.issues } });
+      }
+      const d = parsed.data;
+
+      const result = await withTenant(ctx.tenantId, async (tx) => {
+        const [emp] = await tx
+          .select()
+          .from(schema.employees)
+          .where(
+            and(
+              eq(schema.employees.tenantId, ctx.tenantId),
+              eq(schema.employees.id, req.params.id),
+              isNull(schema.employees.deletedAt),
+            ),
+          )
+          .limit(1);
+        if (!emp) return { error: "NOT_FOUND" as const };
+        if (emp.status !== "on_probation") {
+          return { error: "NOT_ON_PROBATION" as const };
+        }
+        if (d.confirmationDate < emp.hireDate) {
+          return { error: "BEFORE_HIRE" as const };
+        }
+
+        const [updated] = await tx
+          .update(schema.employees)
+          .set({
+            status: "active",
+            confirmationDate: d.confirmationDate,
+            statusChangedAt: new Date(),
+            statusChangeReason: d.notes || "Probation confirmed",
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.employees.id, emp.id))
+          .returning();
+        return { ok: true as const, employee: updated };
+      });
+
+      if ("error" in result) {
+        let status = 500;
+        let message = "";
+        switch (result.error) {
+          case "NOT_FOUND":
+            status = 404; message = "Employee not found."; break;
+          case "NOT_ON_PROBATION":
+            status = 409;
+            message = "This employee isn't on probation.";
+            break;
+          case "BEFORE_HIRE":
+            status = 400;
+            message = "Confirmation date can't be before the hire date.";
+            break;
+        }
+        return reply.status(status).send({ error: { code: result.error, message } });
+      }
+      return reply.send({ employee: result.employee });
+    },
+  );
 };

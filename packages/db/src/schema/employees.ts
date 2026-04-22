@@ -7,6 +7,7 @@ import {
   date,
   boolean,
   bigint,
+  integer,
   text,
 } from "drizzle-orm/pg-core";
 import { tenants } from "./tenants.js";
@@ -49,6 +50,9 @@ export const employees = pgTable("employees", {
   statusChangedAt: timestamp("status_changed_at", { withTimezone: true }).notNull().defaultNow(),
   statusChangeReason: text("status_change_reason"),
   exitDate: date("exit_date"),
+  confirmationDate: date("confirmation_date"),
+  noticePeriodDays: integer("notice_period_days").notNull().default(30),
+  lastWorkingDay: date("last_working_day"),
   notes: text("notes"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

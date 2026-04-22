@@ -74,6 +74,8 @@ export const payrollRunLines = pgTable("payroll_run_lines", {
   wasPayeApplicable: boolean("was_paye_applicable").notNull(),
   paidLeaveDays: numeric("paid_leave_days", { precision: 6, scale: 2 }).notNull().default("0"),
   unpaidLeaveDays: numeric("unpaid_leave_days", { precision: 6, scale: 2 }).notNull().default("0"),
+  prorataDaysWorked: integer("prorata_days_worked"),
+  prorataDaysInPeriod: integer("prorata_days_in_period"),
   bankName: varchar("bank_name", { length: 128 }),
   bankAccountNo: varchar("bank_account_no", { length: 64 }),
   bankBranch: varchar("bank_branch", { length: 128 }),

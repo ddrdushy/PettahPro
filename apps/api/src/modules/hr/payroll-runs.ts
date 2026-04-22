@@ -153,12 +153,42 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
             isNull(schema.employees.deletedAt),
           ),
         );
-      const eligible = emps.filter(
-        (e) =>
-          ["active", "confirmed", "on_probation"].includes(e.status) &&
-          e.basicSalaryCents > 0,
-      );
+      // Eligibility per payroll-module-spec §14.1 / §14.2:
+      //   · currently-working statuses (active/confirmed/on_probation), OR
+      //   · recently-exited employees whose exit_date falls inside the run
+      //     period (they still earn for days worked before leaving).
+      // Joiners whose hire_date falls AFTER periodEnd are excluded — they
+      // haven't started yet.
+      const eligible = emps.filter((e) => {
+        if (e.basicSalaryCents <= 0) return false;
+        if (e.hireDate && e.hireDate > periodEnd) return false;
+        const working = ["active", "confirmed", "on_probation"].includes(e.status);
+        if (working) return true;
+        const exited = ["resigned", "terminated", "retired", "deceased"].includes(e.status);
+        if (exited) {
+          // Include if the effective last day falls inside this period
+          const endForExited = e.lastWorkingDay ?? e.exitDate;
+          if (endForExited && endForExited >= periodStart) return true;
+        }
+        return false;
+      });
       if (eligible.length === 0) return { error: "NO_ELIGIBLE_EMPLOYEES" as const };
+
+      // Calendar days in this period — denominator for mid-period pro-rata.
+      const periodDays =
+        Math.round(
+          (Date.UTC(
+            Number(periodEnd.slice(0, 4)),
+            Number(periodEnd.slice(5, 7)) - 1,
+            Number(periodEnd.slice(8, 10)),
+          ) -
+            Date.UTC(
+              Number(periodStart.slice(0, 4)),
+              Number(periodStart.slice(5, 7)) - 1,
+              Number(periodStart.slice(8, 10)),
+            )) /
+            86_400_000,
+        ) + 1;
 
       // Insert draft run
       const [run] = await tx
@@ -376,6 +406,38 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
       for (const e of eligible) {
         const assignments = assignmentsByEmployee.get(e.id) ?? [];
 
+        // Mid-period pro-rata (spec §14.1 joiner, §14.2 leaver).
+        // workedStart = max(periodStart, hire_date)
+        // workedEnd   = min(periodEnd, last_working_day ?? exit_date ?? periodEnd)
+        // When the span is shorter than the calendar period, every EARNING
+        // scales by daysWorked / periodDays. Deductions (loans, NOPAY-LV)
+        // stay unscaled — they are fixed obligations, not proportional
+        // to hours worked.
+        const workedStart =
+          e.hireDate && e.hireDate > periodStart ? e.hireDate : periodStart;
+        const endCandidate = e.lastWorkingDay ?? e.exitDate ?? periodEnd;
+        const workedEnd = endCandidate < periodEnd ? endCandidate : periodEnd;
+        const daysWorked = Math.max(
+          0,
+          Math.round(
+            (Date.UTC(
+              Number(workedEnd.slice(0, 4)),
+              Number(workedEnd.slice(5, 7)) - 1,
+              Number(workedEnd.slice(8, 10)),
+            ) -
+              Date.UTC(
+                Number(workedStart.slice(0, 4)),
+                Number(workedStart.slice(5, 7)) - 1,
+                Number(workedStart.slice(8, 10)),
+              )) /
+              86_400_000,
+          ) + 1,
+        );
+        const isProrated = daysWorked > 0 && daysWorked < periodDays;
+        const prorate = (cents: number): number =>
+          isProrated ? Math.round((cents * daysWorked) / periodDays) : cents;
+        const proratedBasic = prorate(e.basicSalaryCents);
+
         // Resolve to flat components for the compute. If no explicit
         // assignments exist, fall back to a single Basic earning built from
         // employees.basic_salary_cents — this keeps v1 employees (pre-
@@ -399,7 +461,7 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
               code: "BASIC",
               name: "Basic salary",
               kind: "earning",
-              amountCents: e.basicSalaryCents,
+              amountCents: proratedBasic,
               countsForEpf: true,
               countsForEtf: true,
               countsForPaye: true,
@@ -411,7 +473,7 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
             code: "BASIC",
             name: "Basic salary",
             kind: "earning",
-            amountCents: e.basicSalaryCents,
+            amountCents: proratedBasic,
             countsForEpf: true,
             countsForEtf: true,
             countsForPaye: true,
@@ -425,6 +487,12 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
               amount = e.basicSalaryCents;
             } else if (a.calculationBasis === "percent_of_basic") {
               amount = Math.round((e.basicSalaryCents * a.percentBps) / 10_000);
+            }
+            // Scale earnings by worked-days ratio for mid-period joiners/leavers.
+            // Deductions pass through unchanged — loan EMIs, ad-hoc deductions
+            // are fixed obligations independent of hours worked.
+            if (kind === "earning" && isProrated) {
+              amount = Math.round((amount * daysWorked) / periodDays);
             }
             snapshotInputs.push({
               componentId: a.componentId,
@@ -457,8 +525,12 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
         const npDays = npDaysByEmployee.get(e.id) ?? 0;
         if (npDays > 0 && e.basicSalaryCents > 0) {
           // SL convention: monthly salary divided by 30 calendar days.
+          // For mid-period joiners/leavers we use the prorated basic as the
+          // denominator base — NP days during the worked window should only
+          // reduce the already-reduced earnings, not claw back unpaid days
+          // the employee never would have been paid for.
           const npDeductionCents = Math.round(
-            (e.basicSalaryCents * npDays) / SALARY_DAYS_PER_MONTH,
+            (proratedBasic * npDays) / SALARY_DAYS_PER_MONTH,
           );
           const npLabel = `No-pay leave (${npDays.toFixed(npDays % 1 === 0 ? 0 : 2)}d)`;
           resolved.push({
@@ -651,7 +723,7 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
             etfNumber: e.etfNumber,
             designation: e.designation,
             department: e.department,
-            basicSalaryCents: e.basicSalaryCents,
+            basicSalaryCents: proratedBasic,
             grossCents: c.grossCents,
             earningsCents: c.earningsCents,
             nonStatutoryDeductionsCents: c.nonStatutoryDeductionsCents,
@@ -667,6 +739,11 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
             wasPayeApplicable: e.payeApplicable,
             paidLeaveDays: (paidDaysByEmployee.get(e.id) ?? 0).toFixed(2),
             unpaidLeaveDays: (npDaysByEmployee.get(e.id) ?? 0).toFixed(2),
+            // Only persist prorata denominator+numerator when the employee
+            // didn't work the full period. NULL keeps the payslip clean for
+            // the 99% steady-state case.
+            prorataDaysWorked: isProrated ? daysWorked : null,
+            prorataDaysInPeriod: isProrated ? periodDays : null,
             bankName: e.bankName,
             bankAccountNo: e.bankAccountNo,
             bankBranch: e.bankBranch,

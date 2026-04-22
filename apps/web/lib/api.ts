@@ -540,6 +540,28 @@ export const api = {
   getEmployee: (id: string) => request<{ employee: Employee }>(`/employees/${id}`),
   createEmployee: (body: CreateEmployee) =>
     request<{ employee: Employee }>("/employees", { method: "POST", json: body }),
+  exitEmployee: (
+    id: string,
+    body: {
+      exitDate: string;
+      lastWorkingDay?: string;
+      noticePeriodDays?: number;
+      statusAfter?: "resigned" | "terminated" | "retired" | "deceased";
+      reason?: string;
+    },
+  ) =>
+    request<{ employee: Employee }>(`/employees/${id}/exit`, {
+      method: "POST",
+      json: body,
+    }),
+  confirmProbation: (
+    id: string,
+    body: { confirmationDate: string; notes?: string },
+  ) =>
+    request<{ employee: Employee }>(`/employees/${id}/confirm-probation`, {
+      method: "POST",
+      json: body,
+    }),
   getSalaryStructure: (employeeId: string) =>
     request<{ employee: Employee; structure: EmployeeStructureRow[] }>(
       `/employees/${employeeId}/salary-structure`,
@@ -2256,6 +2278,8 @@ export interface PayrollRunLine {
   wasPayeApplicable: boolean;
   paidLeaveDays: string;
   unpaidLeaveDays: string;
+  prorataDaysWorked: number | null;
+  prorataDaysInPeriod: number | null;
   bankName: string | null;
   bankAccountNo: string | null;
   bankBranch: string | null;
@@ -2319,6 +2343,9 @@ export interface Employee extends EmployeeListRow {
   statusChangedAt: string;
   statusChangeReason: string | null;
   exitDate: string | null;
+  confirmationDate: string | null;
+  noticePeriodDays: number;
+  lastWorkingDay: string | null;
   notes: string | null;
   createdAt: string;
   updatedAt: string;

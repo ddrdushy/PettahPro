@@ -2,13 +2,14 @@
 
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Plus, Search, UserRound, Layers, TrendingUp } from "lucide-react";
+import { Plus, Search, UserRound, Layers, TrendingUp, MoreHorizontal } from "lucide-react";
 import { PageHeader } from "@/components/app/page-header";
 import { DataTable, type Column } from "@/components/app/data-table";
 import { Drawer } from "@/components/app/drawer";
 import { EmployeeForm } from "./employee-form";
 import { SalaryStructureDrawer } from "./salary-structure-drawer";
 import { SalaryRevisionsDrawer } from "./salary-revisions-drawer";
+import { EmployeeLifecycleDrawer } from "./employee-lifecycle-drawer";
 import { formatLKR, formatDate, initials } from "@/lib/format";
 import type { EmployeeListRow, EmployeeStatus, SalaryComponent } from "@/lib/api";
 
@@ -47,6 +48,7 @@ export function EmployeesClient({
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [salaryFor, setSalaryFor] = useState<EmployeeListRow | null>(null);
   const [reviseFor, setReviseFor] = useState<EmployeeListRow | null>(null);
+  const [lifecycleFor, setLifecycleFor] = useState<EmployeeListRow | null>(null);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -171,6 +173,15 @@ export function EmployeesClient({
             <Layers className="h-3.5 w-3.5" aria-hidden />
             Salary
           </button>
+          <button
+            type="button"
+            onClick={() => setLifecycleFor(e)}
+            className="btn-link inline-flex items-center gap-1 text-caption"
+            title="Record exit or confirm probation"
+          >
+            <MoreHorizontal className="h-3.5 w-3.5" aria-hidden />
+            Lifecycle
+          </button>
         </div>
       ),
     },
@@ -267,6 +278,18 @@ export function EmployeesClient({
             // Keep the drawer open so HR can see the new revision in-line;
             // just refresh the underlying list so the basic salary shown
             // on the table reflects the new rate.
+            router.refresh();
+          }}
+        />
+      )}
+
+      {lifecycleFor && (
+        <EmployeeLifecycleDrawer
+          employee={lifecycleFor}
+          onClose={() => setLifecycleFor(null)}
+          onUpdated={(next) => {
+            setRows((r) => r.map((row) => (row.id === next.id ? { ...row, ...next } : row)));
+            setLifecycleFor(null);
             router.refresh();
           }}
         />
