@@ -506,9 +506,12 @@ export const api = {
   listStockTransfers: () =>
     request<{ transfers: StockTransferListRow[] }>("/stock-transfers"),
   getStockTransfer: (id: string) =>
-    request<{ transfer: StockTransferDetail; lines: StockTransferLineRow[] }>(
-      `/stock-transfers/${id}`,
-    ),
+    request<{
+      transfer: StockTransferDetail;
+      lines: StockTransferLineRow[];
+      source: StockTransferWarehouse | null;
+      destination: StockTransferWarehouse | null;
+    }>(`/stock-transfers/${id}`),
   createStockTransfer: (body: CreateStockTransfer) =>
     request<{ transfer: StockTransferDetail }>("/stock-transfers", {
       method: "POST",
@@ -2432,6 +2435,8 @@ export interface StockBalanceRow {
   averageCostCents: number;
   totalValueCents: number;
   lastMovementAt: string | null;
+  /** Stock dispatched to this warehouse from another warehouse but not yet received. */
+  inTransitInboundQty: number;
 }
 
 export interface StockLedgerMovement {
@@ -2491,6 +2496,12 @@ export interface StockTransferDetail {
   notes: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface StockTransferWarehouse {
+  id: string;
+  code: string;
+  name: string;
 }
 
 export interface StockTransferLineRow {

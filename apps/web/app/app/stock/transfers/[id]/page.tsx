@@ -3,7 +3,11 @@ import Link from "next/link";
 import { cookies } from "next/headers";
 import { notFound } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
-import type { StockTransferDetail, StockTransferLineRow } from "@/lib/api";
+import type {
+  StockTransferDetail,
+  StockTransferLineRow,
+  StockTransferWarehouse,
+} from "@/lib/api";
 import { PageHeader } from "@/components/app/page-header";
 import { TransferActionsClient } from "./actions-client";
 
@@ -12,6 +16,8 @@ export const metadata: Metadata = { title: "Stock transfer" };
 async function fetchTransfer(id: string): Promise<{
   transfer: StockTransferDetail;
   lines: StockTransferLineRow[];
+  source: StockTransferWarehouse | null;
+  destination: StockTransferWarehouse | null;
 } | null> {
   const res = await fetch(
     `${process.env.INTERNAL_API_URL ?? "http://api:4000"}/stock-transfers/${id}`,
@@ -22,13 +28,15 @@ async function fetchTransfer(id: string): Promise<{
   return (await res.json()) as {
     transfer: StockTransferDetail;
     lines: StockTransferLineRow[];
+    source: StockTransferWarehouse | null;
+    destination: StockTransferWarehouse | null;
   };
 }
 
 export default async function StockTransferDetailPage({ params }: { params: { id: string } }) {
   const data = await fetchTransfer(params.id);
   if (!data) notFound();
-  const { transfer, lines } = data;
+  const { transfer, lines, source, destination } = data;
 
   return (
     <main className="container-p py-10">
@@ -45,7 +53,12 @@ export default async function StockTransferDetailPage({ params }: { params: { id
         description={transfer.notes ?? undefined}
       />
 
-      <TransferActionsClient transfer={transfer} lines={lines} />
+      <TransferActionsClient
+        transfer={transfer}
+        lines={lines}
+        source={source}
+        destination={destination}
+      />
     </main>
   );
 }

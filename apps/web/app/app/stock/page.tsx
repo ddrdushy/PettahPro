@@ -66,6 +66,23 @@ export default async function StockPage() {
       },
     },
     {
+      header: "In transit",
+      align: "right",
+      mono: true,
+      accessor: (b) =>
+        b.inTransitInboundQty > 0 ? (
+          <Link
+            href="/app/stock/transfers"
+            className="inline-block rounded-full bg-amber-50 px-2 py-0.5 text-caption font-medium text-amber-800 underline-offset-4 hover:underline"
+            title="Stock dispatched from another warehouse, not yet received"
+          >
+            +{b.inTransitInboundQty.toLocaleString("en-LK")} {b.unit}
+          </Link>
+        ) : (
+          <span className="text-text-tertiary">—</span>
+        ),
+    },
+    {
       header: "Avg cost",
       align: "right",
       mono: true,
