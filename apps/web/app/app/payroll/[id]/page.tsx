@@ -158,6 +158,14 @@ export default async function PayrollRunDetailPage({ params }: { params: { id: s
                           {formatDays(l.unpaidLeaveDays)} no-pay
                         </span>
                       )}
+                      {l.prorataDaysWorked != null && l.prorataDaysInPeriod != null && (
+                        <span
+                          className="rounded-full bg-warning-bg px-1.5 py-0.5 text-micro text-warning"
+                          title={`Worked ${l.prorataDaysWorked} of ${l.prorataDaysInPeriod} calendar days in this period — basic and earnings are pro-rated`}
+                        >
+                          {l.prorataDaysWorked}/{l.prorataDaysInPeriod} days
+                        </span>
+                      )}
                       {(() => {
                         const arrears = l.components?.find(
                           (c) => c.code === "ARREARS",
