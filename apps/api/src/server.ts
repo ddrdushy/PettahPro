@@ -11,6 +11,7 @@ import { supplierStatementRoutes } from "./modules/operations/supplier-statement
 import { itemsRoutes } from "./modules/operations/items.js";
 import { coaRoutes, taxCodesRoutes } from "./modules/accounting/coa.js";
 import { journalEntriesRoutes } from "./modules/accounting/journal-entries.js";
+import { recurringJournalsRoutes } from "./modules/accounting/recurring-journals.js";
 import { fixedAssetsRoutes } from "./modules/accounting/fixed-assets.js";
 import { periodsRoutes } from "./modules/accounting/periods.js";
 import { whtRoutes } from "./modules/accounting/wht.js";
@@ -104,6 +105,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await server.register(coaRoutes, { prefix: "/coa" });
   await server.register(taxCodesRoutes, { prefix: "/tax-codes" });
   await server.register(journalEntriesRoutes, { prefix: "/journal-entries" });
+  await server.register(recurringJournalsRoutes, { prefix: "/recurring-journals" });
   await server.register(fixedAssetsRoutes, { prefix: "/fixed-assets" });
   await server.register(periodsRoutes, { prefix: "/periods" });
   await server.register(whtRoutes, { prefix: "/wht" });
