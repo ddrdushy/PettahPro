@@ -2,11 +2,16 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { Check, AlertTriangle, Loader2 } from "lucide-react";
+import { Check, AlertTriangle, Loader2, RefreshCw } from "lucide-react";
 import { Drawer } from "@/components/app/drawer";
 import { Field } from "@/components/auth/field";
 import { api, ApiError } from "@/lib/api";
 import { formatLKR } from "@/lib/format";
+
+function todayISO(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
 
 const REASONS: Array<{ value: string; label: string }> = [
   { value: "insufficient_funds", label: "Insufficient funds" },
@@ -179,6 +184,137 @@ export function ChequeActions({
                 </>
               ) : (
                 "Record bounce"
+              )}
+            </button>
+          </div>
+        </form>
+      </Drawer>
+    </>
+  );
+}
+
+/**
+ * Shown only for issued-direction stale cheques. Lets AP cut a fresh cheque
+ * to the same supplier for the same amount without touching the original JE —
+ * the old row flips to status='replaced' with replaced_by_cheque_id pointing
+ * at the new one, preserving the audit chain.
+ */
+export function ChequeReissueAction({
+  id,
+  chequeNumber,
+  amountCents,
+}: {
+  id: string;
+  chequeNumber: string;
+  amountCents: number;
+}) {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [newChequeNumber, setNewChequeNumber] = useState("");
+  const [newChequeDate, setNewChequeDate] = useState(todayISO());
+  const [memo, setMemo] = useState("");
+
+  async function handleReissue(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setError(null);
+    if (!newChequeNumber.trim()) {
+      setError("Enter the new cheque number.");
+      return;
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(newChequeDate)) {
+      setError("Enter a valid date.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await api.reissueCheque(id, {
+        newChequeNumber: newChequeNumber.trim(),
+        newChequeDate,
+        memo: memo.trim() || undefined,
+      });
+      setOpen(false);
+      router.push(`/app/cheques/${res.newChequeId}`);
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Couldn't reissue the cheque.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="btn-primary"
+      >
+        <RefreshCw className="h-4 w-4" aria-hidden />
+        Reissue cheque
+      </button>
+
+      <Drawer
+        open={open}
+        onClose={() => setOpen(false)}
+        title={`Reissue cheque ${chequeNumber}`}
+        description={`Creates a new cheque for ${formatLKR(amountCents)} to the same supplier. The original flips to 'Replaced' and links to the new one. No journal entries are posted — your AP balance already reflects the obligation.`}
+      >
+        <form onSubmit={handleReissue} className="space-y-6" noValidate>
+          <Field
+            label="New cheque number"
+            name="newChequeNumber"
+            value={newChequeNumber}
+            onChange={(e) => setNewChequeNumber(e.currentTarget.value)}
+            placeholder="e.g. 004512"
+            required
+          />
+
+          <Field
+            label="New cheque date"
+            name="newChequeDate"
+            type="date"
+            value={newChequeDate}
+            onChange={(e) => setNewChequeDate(e.currentTarget.value)}
+            hint="Cheque becomes stale 6 months after this date."
+            required
+          />
+
+          <Field
+            label="Memo (optional)"
+            name="memo"
+            value={memo}
+            onChange={(e) => setMemo(e.currentTarget.value)}
+            placeholder={`Reissue of stale cheque ${chequeNumber}`}
+          />
+
+          {error && (
+            <div
+              role="alert"
+              className="rounded-md border-hairline border-danger/40 bg-danger-bg/50 p-3 text-small text-danger"
+            >
+              {error}
+            </div>
+          )}
+
+          <div className="flex items-center justify-end gap-3">
+            <button type="button" onClick={() => setOpen(false)} className="btn-link">
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={busy}
+              className="btn-primary disabled:opacity-50"
+            >
+              {busy ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> Reissuing…
+                </>
+              ) : (
+                <>
+                  <RefreshCw className="h-4 w-4" aria-hidden /> Reissue
+                </>
               )}
             </button>
           </div>

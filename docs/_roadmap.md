@@ -61,6 +61,7 @@ Last updated: 2026-04-23 after shipping #44 FX revaluation at period close in PR
 - Fixed assets (CRUD, monthly depreciation run)
 - Bank reconciliation (CSV import, auto-match to customer/supplier payments + cleared cheques, reconcile)
 - Cheques (9-state lifecycle: issued → handed-over → deposited → presented → cleared | bounced | stopped | cancelled | stale, with legal-action flag)
+- Stale cheque auto-flag (PR #66) — daily cron transitions past-6-month cheques to `stale`, emits per-cheque notifications, offers reissue for issued-direction (new cheque linked via `replaced_by_cheque_id`, original JE untouched)
 - **Period lock** (soft_closed / closed) enforced at `postJournal` choke point; month-end and year-end close with P&L→retained-earnings transfer; reopen audit trail
 - **WHT** withheld at supplier-payment time; `/app/accounting/wht` dashboard with per-month balance, by-supplier totals, remittance history, and remit-to-IRD action
 - **Opening balance** import for onboarding tenants from BUSY/Tally (TB grid with paste-CSV + one-shot posting guardrails)
@@ -137,7 +138,7 @@ Each item has a spec reference, one-sentence description, and rough sizing (**S*
 | 34 | Item batch / serial / expiry tracking | inventory §2.7 | Per-item toggle, FIFO by batch, recall capability. | L |
 | 35 | Kit / bundle items | inventory §9 | Sale consumes components, bundle priced < sum of components. | M |
 | 36 | Inventory category hierarchy | inventory §2.4 | Unlimited-depth tree with inherited defaults. | S |
-| 37 | Stale cheque auto-flag | business-tenant-layer2 §6.2 | 6-month-old cheques auto-flag + offer reissue (SL banking law). | S |
+| 37 | ~~Stale cheque auto-flag~~ | business-tenant-layer2 §6.2 | **Shipped in PR #66.** Daily cron flips active cheques past their 6-month `stale_at` date to `status='stale'` with per-cheque notifications. Issued-direction cheques get a Reissue action that mints a new cheque linked via `replaced_by_cheque_id` (preserves the original JE; AP stays the same). Manual `POST /cheques/flag-stale` for ad-hoc triggers. | ~~S~~ |
 | 38 | Petty cash float | business-tenant-layer2 §7 | Per-branch ceiling, top-up workflow, EOD reconciliation. | M |
 | 39 | Attendance capture | business-tenant-layer2 §5 | QR / biometric file import / geofence+photo / manual muster. | M |
 | 40 | Dual depreciation (book vs tax) | accounting §8 | Parallel schedules for tax filing alongside management books. | M |

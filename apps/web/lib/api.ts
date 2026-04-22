@@ -1180,6 +1180,25 @@ export const api = {
       `/cheques/${id}/bounce`,
       { method: "POST", json: body },
     ),
+  reissueCheque: (
+    id: string,
+    body: { newChequeNumber: string; newChequeDate: string; memo?: string },
+  ) =>
+    request<{ ok: true; newChequeId: string }>(`/cheques/${id}/reissue`, {
+      method: "POST",
+      json: body,
+    }),
+  flagStaleCheques: () =>
+    request<{
+      flagged: number;
+      cheques: Array<{
+        id: string;
+        chequeNumber: string;
+        direction: "received" | "issued";
+        amountCents: number;
+        staleAt: string;
+      }>;
+    }>(`/cheques/flag-stale`, { method: "POST" }),
 
   // Final settlement (payroll-module-spec §9) ------------------------------
   computeFinalSettlement: (
@@ -2663,6 +2682,7 @@ export interface Cheque {
   legalActionInitiated: boolean;
   legalActionInitiatedAt: string | null;
   legalCaseReference: string | null;
+  replacedByChequeId: string | null;
   createdAt: string;
   updatedAt: string;
   memo: string | null;

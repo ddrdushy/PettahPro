@@ -1,10 +1,12 @@
 import type { FastifyPluginAsync } from "fastify";
 import { and, eq, desc, inArray, asc, sql } from "drizzle-orm";
 import { z } from "zod";
-import { withTenant, schema } from "@pettahpro/db";
+import { withTenant, schema, db as rootDb } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
+import { requirePermission } from "../../lib/permissions.js";
 import { postJournal } from "../accounting/journal-posting.js";
 import { resolveChequeGLAccounts } from "./accounts.js";
+import { runStaleFlaggingForTenant } from "./stale-flag.js";
 
 const BOUNCE_REASONS = [
   "insufficient_funds",
@@ -451,6 +453,142 @@ export const chequesRoutes: FastifyPluginAsync = async (fastify) => {
         NO_BANK_FEES_ACCOUNT: 500,
       };
       return reply.status(map[result.error] ?? 500).send({ error: { code: result.error } });
+    }
+    return reply.send(result);
+  });
+
+  // POST /cheques/flag-stale — manual trigger of the daily flagger for just
+  // this tenant. Useful for "we just migrated a pile of old cheques and want
+  // to flip the already-past-due ones right now" flows. The scheduled worker
+  // does this daily anyway, so this endpoint is purely a convenience.
+  fastify.post("/flag-stale", async (req, reply) => {
+    const ctx = await requirePermission(req, reply, "accounting.manage");
+    if (!ctx) return;
+
+    const result = await runStaleFlaggingForTenant(rootDb, ctx.tenantId);
+    return reply.send({
+      flagged: result.flagged,
+      cheques: result.rows.map((r) => ({
+        id: r.id,
+        chequeNumber: r.cheque_number,
+        direction: r.direction,
+        amountCents: Number(r.amount_cents),
+        staleAt: r.stale_at,
+      })),
+    });
+  });
+
+  const ReissueSchema = z.object({
+    newChequeNumber: z.string().min(1).max(32),
+    newChequeDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    memo: z.string().max(500).optional(),
+  });
+
+  // POST /cheques/:id/reissue — for issued-direction stale cheques.
+  //
+  // When our own cheque to a supplier goes stale, SL banking practice is
+  // to issue a new cheque (new number, new date) for the same amount and
+  // hand it over. The underlying AP obligation stays the same — we're not
+  // reversing the original JE, just superseding the cheque instrument.
+  //
+  // Mechanics here:
+  //   · Original cheque must be direction='issued' AND status='stale'
+  //   · New cheque inherits supplier / amount / bank / sourcePaymentId /
+  //     journalEntryIdCreate from the original (same AP leg, same JE)
+  //   · Original flips to status='replaced' with replaced_by_cheque_id
+  //     pointing at the new row — preserves the audit chain without
+  //     reversing any ledger postings.
+  //
+  // Received-direction: deliberately NOT supported here. When a customer's
+  // cheque to us goes stale, the workflow is "call them and get a new cheque"
+  // which is a brand new receipt entry with its own JE (the prior cheque's
+  // JE reversal — if it was ever posted — is handled at bounce time, not here).
+  fastify.post<{ Params: { id: string } }>("/:id/reissue", async (req, reply) => {
+    const ctx = await requirePermission(req, reply, "accounting.manage");
+    if (!ctx) return;
+
+    const parsed = ReissueSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply
+        .status(400)
+        .send({ error: { code: "INVALID_INPUT", issues: parsed.error.issues } });
+    }
+    const { newChequeNumber, newChequeDate, memo } = parsed.data;
+
+    const result = await withTenant(ctx.tenantId, async (tx) => {
+      const original = (
+        await tx
+          .select()
+          .from(schema.cheques)
+          .where(
+            and(
+              eq(schema.cheques.tenantId, ctx.tenantId),
+              eq(schema.cheques.id, req.params.id),
+            ),
+          )
+          .limit(1)
+      )[0];
+      if (!original) return { error: "NOT_FOUND" as const };
+      if (original.direction !== "issued") return { error: "NOT_ISSUED" as const };
+      if (original.status !== "stale") return { error: "NOT_STALE" as const };
+      if (!original.bankAccountId) return { error: "NO_BANK_ACCOUNT" as const };
+
+      // SL convention: cheques go stale 6 months after cheque date
+      const staleDate = new Date(newChequeDate + "T00:00:00Z");
+      staleDate.setMonth(staleDate.getMonth() + 6);
+      const newStaleAt = staleDate.toISOString().slice(0, 10);
+
+      const now = new Date();
+      const [inserted] = await tx
+        .insert(schema.cheques)
+        .values({
+          tenantId: ctx.tenantId,
+          direction: "issued",
+          status: "issued",
+          chequeNumber: newChequeNumber,
+          chequeDate: newChequeDate,
+          amountCents: original.amountCents,
+          currency: original.currency,
+          supplierId: original.supplierId,
+          payeeName: original.payeeName,
+          bankAccountId: original.bankAccountId,
+          draweeBankName: original.draweeBankName,
+          draweeBranchName: original.draweeBranchName,
+          draweeAccountNumber: original.draweeAccountNumber,
+          sourcePaymentId: original.sourcePaymentId,
+          issuedAt: now,
+          handedOverAt: now,
+          staleAt: newStaleAt,
+          journalEntryIdCreate: original.journalEntryIdCreate,
+          createdByUserId: ctx.userId,
+          memo: memo ?? `Reissue of stale cheque ${original.chequeNumber}`,
+        })
+        .returning({ id: schema.cheques.id });
+      if (!inserted) return { error: "INSERT_FAILED" as const };
+
+      await tx
+        .update(schema.cheques)
+        .set({
+          status: "replaced",
+          replacedByChequeId: inserted.id,
+          updatedAt: now,
+        })
+        .where(eq(schema.cheques.id, original.id));
+
+      return { ok: true as const, newChequeId: inserted.id };
+    });
+
+    if ("error" in result && result.error) {
+      const code: string = result.error;
+      const map: Record<string, number> = {
+        NOT_FOUND: 404,
+        NOT_ISSUED: 409,
+        NOT_STALE: 409,
+        NO_BANK_ACCOUNT: 500,
+        INSERT_FAILED: 500,
+      };
+      const status = map[code] ?? 500;
+      return reply.status(status).send({ error: { code } });
     }
     return reply.send(result);
   });

@@ -2,11 +2,11 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { cookies } from "next/headers";
 import { notFound } from "next/navigation";
-import { ArrowLeft, AlertTriangle } from "lucide-react";
+import { ArrowLeft, AlertTriangle, Clock } from "lucide-react";
 import type { Cheque, ChequeBounceEvent, ChequeStatus } from "@/lib/api";
 import { PageHeader } from "@/components/app/page-header";
 import { formatLKR, formatDate } from "@/lib/format";
-import { ChequeActions } from "./actions";
+import { ChequeActions, ChequeReissueAction } from "./actions";
 
 export const metadata: Metadata = { title: "Cheque" };
 
@@ -80,6 +80,7 @@ export default async function ChequeDetailPage({ params }: { params: { id: strin
     cheque.direction === "issued" &&
     (["drafted", "issued", "presented"] as const).includes(cheque.status as never);
   const canAct = isActiveReceived || isActiveIssued;
+  const canReissue = cheque.direction === "issued" && cheque.status === "stale";
 
   // Timeline steps per direction
   const steps =
@@ -129,9 +130,47 @@ export default async function ChequeDetailPage({ params }: { params: { id: strin
                 amountCents={cheque.amountCents}
               />
             )}
+            {canReissue && (
+              <ChequeReissueAction
+                id={cheque.id}
+                chequeNumber={cheque.chequeNumber}
+                amountCents={cheque.amountCents}
+              />
+            )}
           </div>
         }
       />
+
+      {cheque.status === "stale" && (
+        <div className="mt-6 flex items-start gap-3 rounded-card border-hairline border-warning/40 bg-warning-bg/60 p-4">
+          <Clock className="mt-0.5 h-4 w-4 flex-none text-warning" aria-hidden />
+          <div className="flex-1">
+            <p className="text-small font-medium text-charcoal">
+              Stale since {cheque.staleAt ? formatDate(cheque.staleAt) : "—"}
+            </p>
+            <p className="text-caption text-text-secondary">
+              {cheque.direction === "received"
+                ? "The bank will refuse to present this cheque (SL convention: 6 months from the cheque date). Ask the customer for a replacement and record it as a new receipt."
+                : "The bank will refuse to present this cheque (SL convention: 6 months from the cheque date). Issue a replacement to the supplier using the Reissue action — the AP obligation stays the same, only the cheque instrument changes."}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {cheque.status === "replaced" && cheque.replacedByChequeId && (
+        <div className="mt-6 rounded-card border-hairline border-border bg-surface-elevated p-4">
+          <p className="text-small text-text-secondary">
+            Replaced by{" "}
+            <Link
+              href={`/app/cheques/${cheque.replacedByChequeId}`}
+              className="font-medium text-charcoal hover:underline"
+            >
+              a newer cheque
+            </Link>
+            . The original JE is untouched.
+          </p>
+        </div>
+      )}
 
       {cheque.bounceCount > 0 && cheque.status === "bounced" && (
         <div className="mt-6 flex items-start gap-3 rounded-card border-hairline border-danger/40 bg-danger-bg/60 p-4">
