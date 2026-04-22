@@ -158,6 +158,34 @@ export default async function PayrollRunDetailPage({ params }: { params: { id: s
                           {formatDays(l.unpaidLeaveDays)} no-pay
                         </span>
                       )}
+                      {(() => {
+                        const arrears = l.components?.find(
+                          (c) => c.code === "ARREARS",
+                        );
+                        if (!arrears) return null;
+                        return (
+                          <span
+                            className="rounded-full bg-mint-surface/80 px-1.5 py-0.5 text-micro text-mint-dark"
+                            title={`${arrears.name} · included in gross above`}
+                          >
+                            +{formatLKR(arrears.amountCents)} arrears
+                          </span>
+                        );
+                      })()}
+                      {(() => {
+                        const overpay = l.components?.find(
+                          (c) => c.code === "OVERPAY-REC",
+                        );
+                        if (!overpay) return null;
+                        return (
+                          <span
+                            className="rounded-full bg-danger-bg/60 px-1.5 py-0.5 text-micro text-danger"
+                            title={`${overpay.name} · deducted from gross above`}
+                          >
+                            −{formatLKR(overpay.amountCents)} overpay
+                          </span>
+                        );
+                      })()}
                     </div>
                   </td>
                   <td className="px-4 py-3">

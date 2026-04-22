@@ -58,3 +58,28 @@ export const employees = pgTable("employees", {
 
 export type Employee = typeof employees.$inferSelect;
 export type NewEmployee = typeof employees.$inferInsert;
+
+// Immutable history of basic salary changes. The employees.basicSalaryCents
+// column always reflects the latest rate; this table keeps the paper trail
+// AND drives ARREARS auto-computation on the next payroll run (per
+// payroll-module-spec §14.4). `applied_in_run_id` marks the revision as
+// already compensated so it can't pay arrears twice.
+export const employeeSalaryRevisions = pgTable("employee_salary_revisions", {
+  id: uuid("id").primaryKey().default(sql`uuid_generate_v7()`),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+  employeeId: uuid("employee_id").notNull().references(() => employees.id, { onDelete: "cascade" }),
+  effectiveDate: date("effective_date").notNull(),
+  previousBasicSalaryCents: bigint("previous_basic_salary_cents", { mode: "number" }).notNull(),
+  newBasicSalaryCents: bigint("new_basic_salary_cents", { mode: "number" }).notNull(),
+  reason: varchar("reason", { length: 255 }),
+  notes: text("notes"),
+  // Payroll run that compensated the arrears. NULL = pending.
+  appliedInRunId: uuid("applied_in_run_id"),
+  appliedAt: timestamp("applied_at", { withTimezone: true }),
+  arrearsCentsApplied: bigint("arrears_cents_applied", { mode: "number" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  createdByUserId: uuid("created_by_user_id"),
+});
+
+export type EmployeeSalaryRevision = typeof employeeSalaryRevisions.$inferSelect;
+export type NewEmployeeSalaryRevision = typeof employeeSalaryRevisions.$inferInsert;

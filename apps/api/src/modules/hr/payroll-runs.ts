@@ -274,6 +274,43 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
         bucket.set(r.employee_id, (bucket.get(r.employee_id) ?? 0) + days);
       }
 
+      // Load unapplied salary revisions that land on this run's arrears.
+      // A revision is in scope if effective_date <= periodEnd. The live
+      // employees.basic_salary_cents already holds the new rate (set when
+      // the revision was saved) so the current run pays at the new rate.
+      // Arrears = (new - previous) × whole-months between effective-date
+      // and periodStart, i.e. count of already-paid prior periods. Per
+      // payroll-module-spec §14.4.
+      const revisionRows = eligible.length
+        ? await tx
+            .select()
+            .from(schema.employeeSalaryRevisions)
+            .where(
+              and(
+                eq(schema.employeeSalaryRevisions.tenantId, ctx.tenantId),
+                isNull(schema.employeeSalaryRevisions.appliedInRunId),
+                inArray(
+                  schema.employeeSalaryRevisions.employeeId,
+                  eligible.map((e) => e.id),
+                ),
+                lte(schema.employeeSalaryRevisions.effectiveDate, periodEnd),
+              ),
+            )
+        : [];
+      const revisionsByEmployee = new Map<string, typeof revisionRows>();
+      for (const r of revisionRows) {
+        const list = revisionsByEmployee.get(r.employeeId) ?? [];
+        list.push(r);
+        revisionsByEmployee.set(r.employeeId, list);
+      }
+      // periodStart is YYYY-MM-01 — parse for whole-month diff math.
+      const periodStartParts = periodStart.split("-").map(Number);
+      const periodStartYear = periodStartParts[0] ?? input.periodYear;
+      const periodStartMonth = periodStartParts[1] ?? input.periodMonth;
+
+      // Revisions we touch during compute, applied en-masse after the loop.
+      const consumedRevisions: Array<{ id: string; arrearsCents: number }> = [];
+
       // Compute each line and persist
       let gross = 0,
         epfEmp = 0,
@@ -395,6 +432,87 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
           });
         }
 
+        // Arrears injection — each unapplied revision contributes
+        // (new − previous) × monthsUnpaid. Summed into one ARREARS line if
+        // positive (retroactive raise), or OVERPAY-REC deduction if the
+        // net is negative (retroactive cut). A revision with effective_date
+        // inside the current run period contributes 0 arrears but is still
+        // marked applied — the live basic_salary_cents already reflects it.
+        const revisions = revisionsByEmployee.get(e.id) ?? [];
+        let arrearsNet = 0;
+        const effectiveDates: string[] = [];
+        for (const r of revisions) {
+          const effParts = r.effectiveDate.split("-").map(Number);
+          const effY = effParts[0] ?? periodStartYear;
+          const effM = effParts[1] ?? periodStartMonth;
+          const monthsUnpaid = Math.max(
+            0,
+            (periodStartYear - effY) * 12 + (periodStartMonth - effM),
+          );
+          const diff = r.newBasicSalaryCents - r.previousBasicSalaryCents;
+          const cents = diff * monthsUnpaid;
+          arrearsNet += cents;
+          consumedRevisions.push({ id: r.id, arrearsCents: cents });
+          effectiveDates.push(r.effectiveDate);
+        }
+        if (arrearsNet > 0) {
+          const label =
+            effectiveDates.length === 1
+              ? `Arrears (effective ${effectiveDates[0]})`
+              : `Arrears (${effectiveDates.length} revisions)`;
+          resolved.push({
+            code: "ARREARS",
+            name: label,
+            kind: "earning",
+            amountCents: arrearsNet,
+            // Arrears form part of remuneration in the month received —
+            // count for EPF/ETF (SL EPF Act s.23 basis is wages earned)
+            // and PAYE (tax-in-period-received, the simpler option per
+            // payroll-module-spec §14.4).
+            countsForEpf: true,
+            countsForEtf: true,
+            countsForPaye: true,
+            sortOrder: 90,
+          });
+          snapshotInputs.push({
+            componentId: null,
+            code: "ARREARS",
+            name: label,
+            kind: "earning",
+            amountCents: arrearsNet,
+            countsForEpf: true,
+            countsForEtf: true,
+            countsForPaye: true,
+            sortOrder: 90,
+          });
+        } else if (arrearsNet < 0) {
+          const label =
+            effectiveDates.length === 1
+              ? `Overpayment recovery (effective ${effectiveDates[0]})`
+              : `Overpayment recovery (${effectiveDates.length} revisions)`;
+          resolved.push({
+            code: "OVERPAY-REC",
+            name: label,
+            kind: "deduction",
+            amountCents: -arrearsNet,
+            countsForEpf: true,
+            countsForEtf: true,
+            countsForPaye: true,
+            sortOrder: 90,
+          });
+          snapshotInputs.push({
+            componentId: null,
+            code: "OVERPAY-REC",
+            name: label,
+            kind: "deduction",
+            amountCents: -arrearsNet,
+            countsForEpf: true,
+            countsForEtf: true,
+            countsForPaye: true,
+            sortOrder: 90,
+          });
+        }
+
         const c = computePayrollFromComponents({
           components: resolved,
           epfEligible: e.epfEligible,
@@ -461,6 +579,21 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
         etfEr += c.etfEmployerCents;
         paye += c.payeCents;
         net += c.netPayCents;
+      }
+
+      // Atomically claim every revision we just compensated so it can't
+      // drive arrears on a subsequent run. Arrears-paid amount is stamped
+      // for audit. If a void/delete endpoint is ever added for runs, it
+      // MUST unset applied_in_run_id on these revisions to release them.
+      for (const cr of consumedRevisions) {
+        await tx
+          .update(schema.employeeSalaryRevisions)
+          .set({
+            appliedInRunId: run.id,
+            appliedAt: new Date(),
+            arrearsCentsApplied: cr.arrearsCents,
+          })
+          .where(eq(schema.employeeSalaryRevisions.id, cr.id));
       }
 
       // Update run aggregates
