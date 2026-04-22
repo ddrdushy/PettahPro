@@ -4,6 +4,7 @@ import pino from "pino";
 import { db } from "@pettahpro/db";
 import { runDueRecurringInvoices } from "./modules/sell/recurring-invoices.js";
 import { runDueRecurringBills } from "./modules/buy/recurring-bills.js";
+import { runDueRecurringJournals } from "./modules/accounting/recurring-journals.js";
 
 const log = pino({
   level: process.env.LOG_LEVEL ?? "info",
@@ -48,6 +49,17 @@ async function registerSchedules() {
     },
   );
   log.info("scheduled: generate-recurring-bills (hourly)");
+
+  await scheduledQueue.add(
+    "generate-recurring-journals",
+    {},
+    {
+      repeat: { every: 60 * 60 * 1000 }, // 1h
+      removeOnComplete: 50,
+      removeOnFail: 50,
+    },
+  );
+  log.info("scheduled: generate-recurring-journals (hourly)");
 }
 
 const defaultWorker = new Worker(
@@ -71,6 +83,11 @@ const scheduledWorker = new Worker(
     if (job.name === "generate-recurring-bills") {
       const result = await runDueRecurringBills(db, log);
       log.info(result, "recurring-bill run complete");
+      return result;
+    }
+    if (job.name === "generate-recurring-journals") {
+      const result = await runDueRecurringJournals(db, log);
+      log.info(result, "recurring-journal run complete");
       return result;
     }
     log.warn({ name: job.name }, "unknown scheduled job");

@@ -30,6 +30,7 @@ export * from "./bank-reconciliation.js";
 export * from "./tenant-settings.js";
 export * from "./recurring-invoices.js";
 export * from "./recurring-bills.js";
+export * from "./recurring-journals.js";
 export * from "./proforma-invoices.js";
 export * from "./staff-loans.js";
 export * from "./bonuses.js";

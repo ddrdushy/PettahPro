@@ -374,6 +374,34 @@ export const api = {
   deleteRecurringBill: (id: string) =>
     request<{ ok: true }>(`/recurring-bills/${id}`, { method: "DELETE" }),
 
+  listRecurringJournals: () =>
+    request<{ recurringJournals: RecurringJournalListRow[] }>("/recurring-journals"),
+  getRecurringJournal: (id: string) =>
+    request<{
+      recurringJournal: RecurringJournalDetail;
+      lines: RecurringJournalLine[];
+    }>(`/recurring-journals/${id}`),
+  createRecurringJournal: (body: CreateRecurringJournal) =>
+    request<{ recurringJournal: RecurringJournalDetail }>(`/recurring-journals`, {
+      method: "POST",
+      json: body,
+    }),
+  updateRecurringJournal: (id: string, body: Partial<CreateRecurringJournal> & { isActive?: boolean }) =>
+    request<{ ok: true }>(`/recurring-journals/${id}`, { method: "PATCH", json: body }),
+  pauseRecurringJournal: (id: string) =>
+    request<{ ok: true }>(`/recurring-journals/${id}/pause`, { method: "POST" }),
+  resumeRecurringJournal: (id: string) =>
+    request<{ ok: true }>(`/recurring-journals/${id}/resume`, { method: "POST" }),
+  generateRecurringJournalNow: (id: string) =>
+    request<{
+      ok: true;
+      entryId?: string;
+      entryNumber?: string;
+      draftId?: string;
+    }>(`/recurring-journals/${id}/generate-now`, { method: "POST" }),
+  deleteRecurringJournal: (id: string) =>
+    request<{ ok: true }>(`/recurring-journals/${id}`, { method: "DELETE" }),
+
   listPurchaseOrders: () => request<{ purchaseOrders: PurchaseOrderListRow[] }>("/purchase-orders"),
   getPurchaseOrder: (id: string) =>
     request<{ purchaseOrder: PurchaseOrderDetail; lines: PurchaseOrderLine[]; supplier: Supplier | null }>(
@@ -3220,6 +3248,83 @@ export interface CreateRecurringBill {
     taxCodeId?: string;
     expenseAccountId?: string;
   }>;
+}
+
+export interface RecurringJournalListRow {
+  id: string;
+  scheduleName: string;
+  frequency: string;
+  dayOfMonth: number;
+  startDate: string;
+  endDate: string | null;
+  nextRunDate: string;
+  lastRunDate: string | null;
+  autoPost: boolean;
+  memoTemplate: string | null;
+  isActive: boolean;
+  pausedAt: string | null;
+  generatedCount: number;
+  lastGeneratedEntryId: string | null;
+  lastGeneratedDraftId: string | null;
+  totalCents: number;
+  createdAt: string;
+}
+
+export interface RecurringJournalDetail {
+  id: string;
+  scheduleName: string;
+  frequency: string;
+  dayOfMonth: number;
+  startDate: string;
+  endDate: string | null;
+  nextRunDate: string;
+  lastRunDate: string | null;
+  autoPost: boolean;
+  memoTemplate: string | null;
+  notes: string | null;
+  isActive: boolean;
+  pausedAt: string | null;
+  generatedCount: number;
+  lastGeneratedEntryId: string | null;
+  lastGeneratedDraftId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  createdByUserId: string | null;
+  deletedAt: string | null;
+}
+
+export interface RecurringJournalLine {
+  id: string;
+  recurringJournalId: string;
+  lineNo: number;
+  accountId: string;
+  drCents: number;
+  crCents: number;
+  description: string | null;
+  customerId: string | null;
+  supplierId: string | null;
+  createdAt: string;
+}
+
+export interface CreateRecurringJournalLine {
+  accountId: string;
+  drCents: number;
+  crCents: number;
+  description?: string;
+  customerId?: string;
+  supplierId?: string;
+}
+
+export interface CreateRecurringJournal {
+  scheduleName: string;
+  frequency?: "monthly";
+  dayOfMonth?: number;
+  startDate: string;
+  endDate?: string;
+  autoPost?: boolean;
+  memoTemplate?: string;
+  notes?: string;
+  lines: CreateRecurringJournalLine[];
 }
 
 export type StockRelieveOn = "invoice" | "delivery_note";
