@@ -4,7 +4,7 @@ Live tracker of what's shipped, what's next, and what's backlog — cross-checke
 
 **Three-doc triangle:** this file says what's shipped; [`_status.md`](./_status.md) says what's broken, fragile, or at-risk right now; [`_gaps.md`](./_gaps.md) is the parking lot for real gaps that aren't on the roadmap yet (security, cost-centers, bank feeds, e-filing, observability, platform workstreams). Promote items from `_gaps.md` into this file when it's their turn.
 
-Last updated: 2026-04-23 after shipping #42 role enforcement middleware in PR #64. **All must-haves, all original should-haves, and #42 follow-up all shipped.** Remaining tracked backlog: three follow-ups from PR #61/#63 (#43 approval engine wiring, #44 FX revaluation, #45 notification digests) plus the Nice-to-have list.
+Last updated: 2026-04-23 after shipping #44 FX revaluation at period close in PR #65. **All must-haves, all original should-haves, and #42 / #44 follow-ups all shipped.** Remaining tracked backlog: two follow-ups from PR #63 (#43 approval engine wiring, #45 notification digests) plus the Nice-to-have list.
 
 ---
 
@@ -71,6 +71,7 @@ Last updated: 2026-04-23 after shipping #42 role enforcement middleware in PR #6
 - **Number series config** — customise per-document prefix templates with token substitution (`INV-{YYYY}-{####}`, `FS-{YYYY}-{####}`, etc.) and reset period (yearly / monthly / continuous). Live preview before save; tenant-level override of the default per-kind template via `document_sequences.template`; default-template trigger on insert keeps existing kinds backfilled. Every callsite allocates via `nextDocumentNumber(tx, kind)` so changes here flow through uniformly (PR #53)
 - **Audit log viewer** — append-only `audit_events` stream covering identity (login/logout), posting (journal.post/void, approve/reject), period (close/reopen/close_year), void (invoice/bill/payment), AR hygiene (bad_debt writeoff/reverse, credit hold/release), HR (exit, confirm probation, payroll post/void, final-settlement lifecycle), and settings (update, number_series.update) events. Viewer at `/app/audit-log` with filter-by-kind, date range, actor, and deep-link back to the affected entity (journal_entry / invoice / bill / employee / period / customer). `recordAuditEvent` never throws — a failed audit write doesn't break the primary action (PR #54)
 - **FX rates catalogue** — `fx_rates` table keyed by `(tenant_id, currency, rate_date)` with `rate_cents_per_unit` storing LKR × 10⁴ per foreign unit for four decimals of precision. Admin page `/app/settings/fx-rates` to enter daily rates manually for USD/EUR/GBP (auto-fetch from CBSL / exchangerate.host is a v2 follow-up). Document capture uses the latest `rate_date ≤ document_date`, so back-dated documents pick up the contemporaneously-valid rate. Underpins the multi-currency fields on invoices/bills/payments shipped in PR #61
+- **FX revaluation at period close** — standard LKAS 21 / IFRS re-measurement of open foreign AR (invoices) and AP (bills) to the closing rate on a user-picked `as_of_date`. `/app/accounting/fx-revaluation` drives a draft → posted → voided lifecycle: compute a draft to preview per-document deltas, post to book the Unrealized FX gain (4510) / loss (5510) journal against the AR (1100) / AP (2000) control accounts, or void to post a reversing JE. Incremental-delta semantics — each line records `cumulative_delta_cents` (vs issue-date rate) and `previous_cumulative_delta_cents` (the last posted run's cumulative for the same document), so the JE only books the incremental change. New runs naturally supersede prior ones without a month-start reversal. Unique `(tenant, as_of_date)` index where `status <> 'voided'` blocks duplicate active runs. Open foreign-outstanding computed proportionally from `amount_paid_cents / total_cents` — a pragmatic v1 approximation until the realized-FX-on-settlement path lands. v1 scope: invoices + bills (credit / debit notes float outside the "open balance" concept until explicitly allocated). Gated by `accounting.manage`; JE posts dated as-of so period-lock is enforced by `postJournal` (PR #65)
 
 ### HR / Payroll
 - Employees (CRUD + salary structure assignments)
@@ -116,12 +117,11 @@ Each item has a spec reference, one-sentence description, and rough sizing (**S*
 
 ### Should-have (convenience/polish)
 
-🎉 **All original should-haves shipped + #42 role enforcement closed in PR #64.** Three deferred follow-ups remain — the shipped work is usable as-is, these close the remaining edges.
+🎉 **All original should-haves shipped + #42 role enforcement closed in PR #64 + #44 FX revaluation closed in PR #65.** Two deferred follow-ups remain — the shipped work is usable as-is, these close the remaining edges.
 
 | # | Feature | Spec | What it does | Size |
 |---|---|---|---|---|
 | 43 | Approval engine wiring | tenant-admin §7 | Route documents (journal entries, expense claims, bills, POs, bonus runs, final settlements) through the `approval_policies` designed in #26 at submit time. Today the designer persists policies but nothing consumes them — existing per-domain `pending_approval` columns keep working but don't know about the new engine. Follow-up to PR #63. | L |
-| 44 | FX revaluation at period close | accounting §8.4 | Foreign-currency AR/AP open balances re-measured at the month-end rate; delta books to Unrealized FX gain/loss (new COA 4910 / 5910). Existing Realized FX gain/loss (4900 / 5900) seeded in #17 handles settlement; this closes the unrealized leg. Follow-up to PR #61. | M |
 | 45 | Notification digest windows | tenant-admin §10.2 | Opt in to daily / weekly rollup of kinds where per-event noise is too much (low_stock summary, pending-approval summary). v1 shipped per-kind on/off — digest is orthogonal. Follow-up to PR #63. | M |
 
 ### Nice-to-have (advanced/niche)
@@ -161,9 +161,9 @@ These are their own workstreams — track separately from this roadmap.
 
 One PR = one feature. Ship, merge, move on. Batched PRs allowed when features are clearly related (e.g. DN + PO PDFs were batched because they follow the same pattern).
 
-Current recommendation: compliance + convenience + role enforcement all done. Nothing user-visible is a hard gap. Next work falls in two camps:
+Current recommendation: compliance + convenience + role enforcement + FX revaluation all done. Nothing user-visible is a hard gap. Next work falls in two camps:
 
-1. **Close the remaining loops** — three deferred follow-ups (#43–#45). **#44 FX revaluation** is the most accounting-core: any exporter using the PR #61 multi-currency fields will hit an un-revalued foreign AR/AP balance at their first month-end, and we already have the Realized FX gain/loss accounts seeded so adding the unrealized leg is surgical. #43 approval engine is bigger (L) and architectural; #45 digest windows is small but orthogonal.
-2. **Pick from Nice-to-have** — the S-sized ones are cheap wins: **#37 stale cheque auto-flag** (SL banking compliance) and **#36 inventory category hierarchy** (organization for tenants with >50 SKUs).
+1. **Close the remaining loops** — two deferred follow-ups (#43, #45). **#45 notification digest windows** is M-sized and independent — daily / weekly rollup opt-ins that ride alongside the per-kind prefs shipped in PR #63. **#43 approval engine wiring** is the architecturally heavier option (L) — route documents through the policies stored by #26 at submit time, replacing the existing per-domain `pending_approval` columns.
+2. **Pick from Nice-to-have** — the S-sized ones are cheap wins: **#37 stale cheque auto-flag** (SL banking compliance — 6-month presentment rule) and **#36 inventory category hierarchy** (organization for tenants with >50 SKUs).
 
-Leaning toward **#44 FX revaluation next** — M-sized, closes an accounting correctness gap that exporters will hit first, and keeps momentum on the post-shipped follow-ups before the backlog turns cold.
+Leaning toward **#37 stale cheque next** — S-sized, real SL compliance check that tenants with any cheque volume will hit, and the cheque 9-state lifecycle we already have makes the addition a small schema + daily-job delta rather than a new subsystem. Larger architectural work (#43 approval engine) is still on the table but #37 keeps momentum while covering a compliance edge.

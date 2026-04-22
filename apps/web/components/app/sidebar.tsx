@@ -85,6 +85,7 @@ const nav: Group[] = [
       { label: "Opening balance", href: "/app/accounting/opening-balance", icon: BookOpen },
       { label: "Fiscal periods", href: "/app/accounting/periods", icon: Lock },
       { label: "WHT", href: "/app/accounting/wht", icon: FileBarChart },
+      { label: "FX revaluation", href: "/app/accounting/fx-revaluation", icon: FileBarChart },
       { label: "Fixed assets", href: "/app/fixed-assets", icon: Box },
       { label: "Bank reconciliation", href: "/app/bank-reconciliation", icon: ScrollText },
       { label: "Cheques", href: "/app/cheques", icon: FileSignature },

@@ -638,6 +638,30 @@ export const api = {
   deleteFxRate: (id: string) =>
     request<void>(`/fx-rates/${id}`, { method: "DELETE" }),
 
+  listFxRevaluations: () =>
+    request<{ revaluations: FxRevaluation[] }>("/fx-revaluations"),
+  getFxRevaluation: (id: string) =>
+    request<{ revaluation: FxRevaluation; lines: FxRevaluationLine[] }>(
+      `/fx-revaluations/${id}`,
+    ),
+  createFxRevaluation: (body: { asOfDate: string; notes?: string }) =>
+    request<{ revaluation: FxRevaluation; lineCount: number }>("/fx-revaluations", {
+      method: "POST",
+      json: body,
+    }),
+  postFxRevaluation: (id: string) =>
+    request<{ journalEntryId: string; entryNumber: string }>(
+      `/fx-revaluations/${id}/post`,
+      { method: "POST" },
+    ),
+  voidFxRevaluation: (id: string, body?: { reason?: string; reversalDate?: string }) =>
+    request<{ voidJournalEntryId: string; entryNumber: string }>(
+      `/fx-revaluations/${id}/void`,
+      { method: "POST", json: body ?? {} },
+    ),
+  deleteFxRevaluation: (id: string) =>
+    request<void>(`/fx-revaluations/${id}`, { method: "DELETE" }),
+
   listNumberSeries: () => request<{ series: NumberSeries[] }>("/number-series"),
   getNumberSeries: (name: string) =>
     request<{ series: NumberSeries }>(`/number-series/${name}`),
@@ -3925,6 +3949,45 @@ export interface CreateFxRate {
   rate: number;
   source?: string;
   note?: string;
+}
+
+export interface FxRevaluation {
+  id: string;
+  asOfDate: string;
+  status: "draft" | "posted" | "voided";
+  arGainCents: number;
+  arLossCents: number;
+  apGainCents: number;
+  apLossCents: number;
+  currencySummary: Record<
+    string,
+    { openForeign: number; openLkr: number; asOfRate: number; deltaLkr: number }
+  >;
+  journalEntryId: string | null;
+  voidJournalEntryId: string | null;
+  notes: string | null;
+  createdAt: string;
+  postedAt: string | null;
+  voidedAt: string | null;
+  voidReason: string | null;
+}
+
+export interface FxRevaluationLine {
+  id: string;
+  revaluationId: string;
+  sourceType: "invoice" | "bill";
+  sourceId: string;
+  docNumber?: string | null;
+  currency: string;
+  issueFxRate: string;
+  foreignOutstandingCents: number;
+  lkrOnLedgerCents: number;
+  asOfRate: string;
+  lkrAtAsOfCents: number;
+  cumulativeDeltaCents: number;
+  previousCumulativeDeltaCents: number;
+  incrementalDeltaCents: number;
+  direction: "ar" | "ap";
 }
 
 export type NumberSeriesScope = "year" | "month" | "global";
