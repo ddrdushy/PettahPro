@@ -536,6 +536,49 @@ export const api = {
       json: reason ? { reason } : {},
     }),
 
+  listStockCounts: () =>
+    request<{ counts: StockCountListRow[] }>("/stock-counts"),
+  getStockCount: (id: string) =>
+    request<{ count: StockCountDetail }>(`/stock-counts/${id}`),
+  createStockCount: (body: CreateStockCount) =>
+    request<{ id: string }>("/stock-counts", { method: "POST", json: body }),
+  updateStockCountLines: (
+    id: string,
+    body: { lines: Array<{ lineId: string; countedQty: number }> },
+  ) =>
+    request<{ ok: true }>(`/stock-counts/${id}/lines`, {
+      method: "PATCH",
+      json: body,
+    }),
+  reviewStockCount: (
+    id: string,
+    body: {
+      reasons?: Array<{
+        lineId: string;
+        reasonCode: StockCountReasonCode;
+        notes?: string;
+      }>;
+    },
+  ) =>
+    request<{
+      status: StockCountStatus;
+      maxVarianceBps: number | null;
+      totalVarianceValueCents: number | null;
+      requiresApproval: boolean;
+    }>(`/stock-counts/${id}/review`, { method: "POST", json: body }),
+  approveStockCount: (id: string) =>
+    request<{ ok: true }>(`/stock-counts/${id}/approve`, { method: "POST" }),
+  postStockCount: (id: string) =>
+    request<{ ok: true; countNumber: string | null; journalEntryId: string | null }>(
+      `/stock-counts/${id}/post`,
+      { method: "POST" },
+    ),
+  cancelStockCount: (id: string, reason?: string) =>
+    request<{ ok: true }>(`/stock-counts/${id}/cancel`, {
+      method: "POST",
+      json: reason ? { reason } : {},
+    }),
+
   listEmployees: (q?: string) =>
     request<{ employees: EmployeeListRow[] }>(
       `/employees${q ? `?q=${encodeURIComponent(q)}` : ""}`,
@@ -2524,6 +2567,96 @@ export interface CreateStockTransfer {
   requestedDate?: string;
   notes?: string;
   lines: Array<{ itemId: string; quantityRequested: number; notes?: string }>;
+}
+
+export type StockCountStatus =
+  | "draft"
+  | "review"
+  | "pending_approval"
+  | "posted"
+  | "cancelled";
+
+export type StockCountReasonCode =
+  | "damage"
+  | "theft"
+  | "expiry"
+  | "shrinkage"
+  | "miscount"
+  | "sample"
+  | "system_error"
+  | "other";
+
+export interface StockCountListRow {
+  id: string;
+  countNumber: string | null;
+  status: StockCountStatus;
+  countDate: string;
+  scopeType: "warehouse" | "items";
+  requiresApproval: boolean;
+  maxVarianceBps: number | null;
+  totalVarianceValueCents: number | null;
+  postedAt: string | null;
+  createdAt: string;
+  warehouseCode: string;
+  warehouseName: string;
+  lineCount: number;
+  countedCount: number;
+}
+
+export interface StockCountLineRow {
+  id: string;
+  lineNo: number;
+  itemId: string;
+  itemSku: string;
+  itemName: string;
+  itemUom: string | null;
+  systemQty: number;
+  systemAvgCostCents: number;
+  countedQty: number | null;
+  varianceQty: number | null;
+  varianceValueCents: number | null;
+  reasonCode: StockCountReasonCode | null;
+  notes: string | null;
+}
+
+export interface StockCountDetail {
+  id: string;
+  tenantId: string;
+  countNumber: string | null;
+  warehouseId: string;
+  scopeType: "warehouse" | "items";
+  countDate: string;
+  status: StockCountStatus;
+  blindCount: boolean;
+  varianceThresholdBps: number;
+  maxVarianceBps: number | null;
+  totalVarianceValueCents: number | null;
+  requiresApproval: boolean;
+  countedAt: string | null;
+  reviewedAt: string | null;
+  postedAt: string | null;
+  postedByUserId: string | null;
+  approvedAt: string | null;
+  approvedByUserId: string | null;
+  cancelledAt: string | null;
+  cancelledReason: string | null;
+  journalEntryId: string | null;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+  createdByUserId: string | null;
+  warehouse: { id: string; code: string; name: string } | null;
+  lines: StockCountLineRow[];
+  reasonCodes: readonly StockCountReasonCode[];
+}
+
+export interface CreateStockCount {
+  warehouseId: string;
+  countDate?: string;
+  scopeType: "warehouse" | "items";
+  lines?: Array<{ itemId: string }>;
+  notes?: string;
+  varianceThresholdBps?: number;
 }
 
 export interface LowStockItem {

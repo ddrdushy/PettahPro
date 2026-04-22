@@ -68,6 +68,7 @@ const nav: Group[] = [
       { label: "On hand", href: "/app/stock", icon: Boxes },
       { label: "Low stock", href: "/app/stock/low-stock", icon: Boxes },
       { label: "Transfers", href: "/app/stock/transfers", icon: Boxes },
+      { label: "Stock counts", href: "/app/stock/counts", icon: ClipboardCheck },
     ],
   },
   {

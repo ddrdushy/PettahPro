@@ -10,6 +10,7 @@ import {
   smallint,
   boolean,
   text,
+  integer,
 } from "drizzle-orm/pg-core";
 import { tenants } from "./tenants.js";
 import { items } from "./items.js";
@@ -97,3 +98,57 @@ export const stockTransferLines = pgTable("stock_transfer_lines", {
 
 export type StockTransferLine = typeof stockTransferLines.$inferSelect;
 export type NewStockTransferLine = typeof stockTransferLines.$inferInsert;
+
+// ---------------------------------------------------------------------------
+// Stock counts (physical count / cycle count)
+// ---------------------------------------------------------------------------
+export const stockCounts = pgTable("stock_counts", {
+  id: uuid("id").primaryKey().default(sql`uuid_generate_v7()`),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+  countNumber: varchar("count_number", { length: 48 }),
+  warehouseId: uuid("warehouse_id").notNull().references(() => warehouses.id, { onDelete: "restrict" }),
+  scopeType: varchar("scope_type", { length: 16 }).notNull().default("warehouse"),
+  countDate: date("count_date").notNull(),
+  status: varchar("status", { length: 20 }).notNull().default("draft"),
+  blindCount: boolean("blind_count").notNull().default(true),
+  varianceThresholdBps: integer("variance_threshold_bps").notNull().default(100),
+  maxVarianceBps: integer("max_variance_bps"),
+  totalVarianceValueCents: bigint("total_variance_value_cents", { mode: "number" }),
+  requiresApproval: boolean("requires_approval").notNull().default(false),
+  countedAt: timestamp("counted_at", { withTimezone: true }),
+  reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+  postedAt: timestamp("posted_at", { withTimezone: true }),
+  postedByUserId: uuid("posted_by_user_id"),
+  approvedAt: timestamp("approved_at", { withTimezone: true }),
+  approvedByUserId: uuid("approved_by_user_id"),
+  cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+  cancelledReason: text("cancelled_reason"),
+  journalEntryId: uuid("journal_entry_id").references(() => journalEntries.id, { onDelete: "set null" }),
+  notes: text("notes"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  createdByUserId: uuid("created_by_user_id"),
+  deletedAt: timestamp("deleted_at", { withTimezone: true }),
+});
+
+export type StockCount = typeof stockCounts.$inferSelect;
+export type NewStockCount = typeof stockCounts.$inferInsert;
+
+export const stockCountLines = pgTable("stock_count_lines", {
+  id: uuid("id").primaryKey().default(sql`uuid_generate_v7()`),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+  stockCountId: uuid("stock_count_id").notNull().references(() => stockCounts.id, { onDelete: "cascade" }),
+  lineNo: smallint("line_no").notNull(),
+  itemId: uuid("item_id").notNull().references(() => items.id, { onDelete: "restrict" }),
+  systemQty: numeric("system_qty", { precision: 18, scale: 4 }).notNull(),
+  systemAvgCostCents: bigint("system_avg_cost_cents", { mode: "number" }).notNull(),
+  countedQty: numeric("counted_qty", { precision: 18, scale: 4 }),
+  varianceQty: numeric("variance_qty", { precision: 18, scale: 4 }),
+  varianceValueCents: bigint("variance_value_cents", { mode: "number" }),
+  reasonCode: varchar("reason_code", { length: 32 }),
+  notes: varchar("notes", { length: 500 }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type StockCountLine = typeof stockCountLines.$inferSelect;
+export type NewStockCountLine = typeof stockCountLines.$inferInsert;
