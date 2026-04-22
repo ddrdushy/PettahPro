@@ -878,6 +878,68 @@ export const api = {
   deleteBonusRun: (id: string) =>
     request<{ ok: true }>(`/bonus-runs/${id}`, { method: "DELETE" }),
 
+  // Expense categories
+  listExpenseCategories: () =>
+    request<{ categories: ExpenseCategory[] }>("/expense-categories"),
+  createExpenseCategory: (body: CreateExpenseCategory) =>
+    request<{ category: ExpenseCategory }>("/expense-categories", {
+      method: "POST",
+      json: body,
+    }),
+  updateExpenseCategory: (
+    id: string,
+    body: Partial<CreateExpenseCategory> & { isActive?: boolean },
+  ) =>
+    request<{ category: ExpenseCategory }>(`/expense-categories/${id}`, {
+      method: "PATCH",
+      json: body,
+    }),
+  deleteExpenseCategory: (id: string) =>
+    request<{ ok: true }>(`/expense-categories/${id}`, { method: "DELETE" }),
+
+  // Expense claims
+  listExpenseClaims: () => request<{ claims: ExpenseClaimRow[] }>("/expense-claims"),
+  getExpenseClaim: (id: string) =>
+    request<{ claim: ExpenseClaimRow }>(`/expense-claims/${id}`),
+  createExpenseClaim: (body: CreateExpenseClaim) =>
+    request<{ claim: ExpenseClaim }>("/expense-claims", {
+      method: "POST",
+      json: body,
+    }),
+  updateExpenseClaim: (id: string, body: UpdateExpenseClaim) =>
+    request<{ claim: ExpenseClaim }>(`/expense-claims/${id}`, {
+      method: "PATCH",
+      json: body,
+    }),
+  submitExpenseClaim: (id: string) =>
+    request<{ claim: ExpenseClaim }>(`/expense-claims/${id}/submit`, {
+      method: "POST",
+    }),
+  approveExpenseClaim: (id: string) =>
+    request<{ claim: ExpenseClaim }>(`/expense-claims/${id}/approve`, {
+      method: "POST",
+      json: {},
+    }),
+  approveAndPayExpenseClaim: (id: string, body: ApproveAndPayExpenseClaim) =>
+    request<{ claim: ExpenseClaim }>(`/expense-claims/${id}/approve-and-pay`, {
+      method: "POST",
+      json: body,
+    }),
+  rejectExpenseClaim: (id: string, body: { reason: string }) =>
+    request<{ claim: ExpenseClaim }>(`/expense-claims/${id}/reject`, {
+      method: "POST",
+      json: body,
+    }),
+  voidExpenseClaim: (id: string, body?: { reason?: string }) =>
+    request<{ claim: ExpenseClaim }>(`/expense-claims/${id}/void`, {
+      method: "POST",
+      json: body ?? {},
+    }),
+  listExpenseClaimsByEmployee: (employeeId: string) =>
+    request<{ claims: ExpenseClaim[]; ytdCents: number; year: number }>(
+      `/expense-claims/by-employee/${employeeId}`,
+    ),
+
   listLeaveTypes: () => request<{ leaveTypes: LeaveType[] }>("/leave-types"),
   createLeaveType: (body: CreateLeaveType) =>
     request<{ leaveType: LeaveType }>("/leave-types", { method: "POST", json: body }),
@@ -4201,6 +4263,102 @@ export interface CreateBonusRun {
   label: string;
   payDate: string;
   notes?: string;
+}
+
+// ─── Expense claims ────────────────────────────────────────────────────
+
+export type ExpenseClaimStatus =
+  | "draft"
+  | "submitted"
+  | "approved"
+  | "rejected"
+  | "paid"
+  | "void";
+
+export type ExpenseDisbursementMethod = "direct" | "payroll";
+
+export interface ExpenseCategory {
+  id: string;
+  tenantId: string;
+  code: string;
+  name: string;
+  description: string | null;
+  expenseAccountId: string | null;
+  isTaxable: boolean;
+  isActive: boolean;
+  isSystem: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateExpenseCategory {
+  code: string;
+  name: string;
+  description?: string;
+  expenseAccountId?: string | null;
+  isTaxable?: boolean;
+  isActive?: boolean;
+}
+
+export interface ExpenseClaim {
+  id: string;
+  tenantId: string;
+  claimNumber: string | null;
+  employeeId: string;
+  categoryId: string | null;
+  categoryName: string | null;
+  expenseAccountId: string | null;
+  claimDate: string;
+  amountCents: number;
+  description: string | null;
+  receiptRef: string | null;
+  disbursementMethod: ExpenseDisbursementMethod;
+  isTaxable: boolean;
+  status: ExpenseClaimStatus;
+  submittedAt: string | null;
+  submittedByUserId: string | null;
+  approvedAt: string | null;
+  approvedByUserId: string | null;
+  rejectedAt: string | null;
+  rejectedByUserId: string | null;
+  rejectionReason: string | null;
+  paidAt: string | null;
+  paidByUserId: string | null;
+  paymentAccountId: string | null;
+  paymentJournalId: string | null;
+  paymentDate: string | null;
+  paymentReference: string | null;
+  appliedInRunId: string | null;
+  appliedInRunLineId: string | null;
+  appliedAt: string | null;
+  voidAt: string | null;
+  voidReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+  createdByUserId: string | null;
+}
+
+export interface ExpenseClaimRow extends ExpenseClaim {
+  employeeName: string;
+  employeeCode: string | null;
+}
+
+export interface CreateExpenseClaim {
+  employeeId: string;
+  categoryId: string;
+  claimDate: string;
+  amountCents: number;
+  description?: string;
+  receiptRef?: string;
+  disbursementMethod?: ExpenseDisbursementMethod;
+}
+
+export type UpdateExpenseClaim = Partial<CreateExpenseClaim>;
+
+export interface ApproveAndPayExpenseClaim {
+  paymentAccountId: string;
+  paymentDate: string;
+  paymentReference?: string;
 }
 
 export type AuditEventKind =

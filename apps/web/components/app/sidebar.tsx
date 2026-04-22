@@ -103,6 +103,8 @@ const nav: Group[] = [
       { label: "Loan types", href: "/app/loan-types", icon: Layers },
       { label: "Bonus runs", href: "/app/bonus-runs", icon: Gift },
       { label: "Bonus schemes", href: "/app/bonus-schemes", icon: Layers },
+      { label: "Expense claims", href: "/app/expense-claims", icon: Receipt },
+      { label: "Expense categories", href: "/app/expense-categories", icon: Layers },
     ],
   },
   {
