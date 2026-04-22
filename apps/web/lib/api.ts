@@ -556,6 +556,24 @@ export const api = {
       json: body,
     }),
 
+  listSalaryRevisions: (employeeId: string) =>
+    request<{ revisions: SalaryRevision[] }>(
+      `/employees/${employeeId}/salary-revisions`,
+    ),
+  createSalaryRevision: (
+    employeeId: string,
+    body: {
+      effectiveDate: string;
+      newBasicSalaryCents: number;
+      reason?: string;
+      notes?: string;
+    },
+  ) =>
+    request<{ revision: SalaryRevision }>(
+      `/employees/${employeeId}/salary-revisions`,
+      { method: "POST", json: body },
+    ),
+
   listLeaveTypes: () => request<{ leaveTypes: LeaveType[] }>("/leave-types"),
   createLeaveType: (body: CreateLeaveType) =>
     request<{ leaveType: LeaveType }>("/leave-types", { method: "POST", json: body }),
@@ -2112,6 +2130,22 @@ export interface CreateSalaryComponent {
   countsForPaye?: boolean;
   sortOrder?: number;
   notes?: string;
+}
+
+export interface SalaryRevision {
+  id: string;
+  tenantId: string;
+  employeeId: string;
+  effectiveDate: string;
+  previousBasicSalaryCents: number;
+  newBasicSalaryCents: number;
+  reason: string | null;
+  notes: string | null;
+  appliedInRunId: string | null;
+  appliedAt: string | null;
+  arrearsCentsApplied: number | null;
+  createdAt: string;
+  createdByUserId: string | null;
 }
 
 export interface EmployeeStructureRow {
