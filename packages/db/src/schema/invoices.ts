@@ -33,6 +33,7 @@ export const invoices = pgTable("invoices", {
   discountCents: bigint("discount_cents", { mode: "number" }).notNull().default(0),
   taxCents: bigint("tax_cents", { mode: "number" }).notNull().default(0),
   totalCents: bigint("total_cents", { mode: "number" }).notNull().default(0),
+  foreignTotalCents: bigint("foreign_total_cents", { mode: "number" }),
   amountPaidCents: bigint("amount_paid_cents", { mode: "number" }).notNull().default(0),
   balanceDueCents: bigint("balance_due_cents", { mode: "number" }).notNull().default(0),
   reference: varchar("reference", { length: 64 }),

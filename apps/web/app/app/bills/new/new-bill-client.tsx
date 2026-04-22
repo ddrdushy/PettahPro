@@ -93,6 +93,8 @@ export function NewBillClient({
   const [billDate, setBillDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [dueDate, setDueDate] = useState("");
   const [notes, setNotes] = useState("");
+  const [currency, setCurrency] = useState("LKR");
+  const [fxRate, setFxRate] = useState("1");
   const [lines, setLines] = useState<LineDraft[]>([emptyLine()]);
   const [charges, setCharges] = useState<ChargeDraft[]>([]);
   const [allocationMethod, setAllocationMethod] =
@@ -244,6 +246,8 @@ export function NewBillClient({
         supplierBillNumber: supplierBillNumber.trim() || undefined,
         billDate,
         dueDate: effectiveDueDate || undefined,
+        currency: currency.toUpperCase(),
+        fxRate: Number(fxRate) || 1,
         notes: notes.trim() || undefined,
         lines: validLines.map((l) => ({
           itemId: l.itemId || undefined,
@@ -294,7 +298,12 @@ export function NewBillClient({
                 <label className="block text-small font-medium text-charcoal">Supplier</label>
                 <select
                   value={supplierId}
-                  onChange={(e) => setSupplierId(e.target.value)}
+                  onChange={(e) => {
+                    const id = e.target.value;
+                    setSupplierId(id);
+                    const picked = suppliers.find((s) => s.id === id);
+                    if (picked?.currency) setCurrency(picked.currency);
+                  }}
                   className="mt-1.5 w-full rounded-md border-hairline border-border-emphasis bg-surface-elevated px-3 py-2.5 text-body text-charcoal focus:border-charcoal focus:outline-none focus:ring-1 focus:ring-charcoal"
                 >
                   <option value="">Select a supplier…</option>
@@ -341,6 +350,46 @@ export function NewBillClient({
                     onChange={(e) => setDueDate(e.target.value)}
                     className="mt-1.5 w-full rounded-md border-hairline border-border-emphasis bg-surface-elevated px-3 py-2.5 text-body text-charcoal focus:border-charcoal focus:outline-none focus:ring-1 focus:ring-charcoal"
                   />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-small font-medium text-charcoal">Currency</label>
+                  <input
+                    list="bill-currencies"
+                    value={currency}
+                    onChange={(e) => setCurrency(e.target.value.toUpperCase().slice(0, 3))}
+                    maxLength={3}
+                    className="mt-1.5 w-full rounded-md border-hairline border-border-emphasis bg-surface-elevated px-3 py-2.5 text-body uppercase text-charcoal focus:border-charcoal focus:outline-none focus:ring-1 focus:ring-charcoal"
+                  />
+                  <datalist id="bill-currencies">
+                    <option value="LKR" />
+                    <option value="USD" />
+                    <option value="EUR" />
+                    <option value="GBP" />
+                    <option value="AUD" />
+                    <option value="INR" />
+                    <option value="SGD" />
+                    <option value="AED" />
+                  </datalist>
+                </div>
+                <div>
+                  <label className="block text-small font-medium text-charcoal">
+                    FX rate <span className="text-caption text-text-tertiary">(to LKR)</span>
+                  </label>
+                  <input
+                    type="number"
+                    step="0.000001"
+                    value={fxRate}
+                    onChange={(e) => setFxRate(e.target.value)}
+                    disabled={currency.toUpperCase() === "LKR"}
+                    className="mt-1.5 w-full rounded-md border-hairline border-border-emphasis bg-surface-elevated px-3 py-2.5 text-body text-charcoal focus:border-charcoal focus:outline-none focus:ring-1 focus:ring-charcoal disabled:bg-surface-recessed"
+                  />
+                  {currency.toUpperCase() !== "LKR" && (
+                    <p className="mt-1 text-caption text-text-tertiary">
+                      1 {currency.toUpperCase()} = {fxRate || "?"} LKR. <Link href="/app/settings/fx-rates" className="underline">Manage rates</Link>
+                    </p>
+                  )}
                 </div>
               </div>
             </div>

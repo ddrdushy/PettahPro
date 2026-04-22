@@ -49,6 +49,10 @@ const CreateSchema = z.object({
   supplierBillNumber: z.string().max(64).optional().or(z.literal("")),
   billDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  // Multi-currency — same semantics as invoices. amount_cents is LKR;
+  // currency + fxRate are display-only in v1.
+  currency: z.string().length(3).optional(),
+  fxRate: z.number().positive().optional(),
   notes: z.string().optional().or(z.literal("")),
   lines: z.array(LineSchema).min(1),
   charges: z.array(ChargeSchema).optional().default([]),
@@ -410,6 +414,12 @@ export const billsRoutes: FastifyPluginAsync = async (fastify) => {
         input.chargeAllocationMethod ?? "value",
       );
 
+      const currency = (input.currency ?? supplier.currency ?? "LKR").toUpperCase();
+      const fxRate = input.fxRate ?? 1.0;
+      const foreignTotalCents = currency === "LKR"
+        ? totalCents
+        : Math.round(totalCents / fxRate);
+
       const [b] = await tx
         .insert(schema.bills)
         .values({
@@ -419,13 +429,15 @@ export const billsRoutes: FastifyPluginAsync = async (fastify) => {
           status: "draft",
           billDate,
           dueDate,
-          currency: supplier.currency ?? "LKR",
+          currency,
+          fxRate: fxRate.toString(),
           subtotalCents,
           discountCents,
           taxCents,
           chargesTotalCents,
           chargeAllocationMethod: input.chargeAllocationMethod ?? "value",
           totalCents,
+          foreignTotalCents,
           balanceDueCents: totalCents,
           notes: input.notes || null,
           createdByUserId: ctx.userId,

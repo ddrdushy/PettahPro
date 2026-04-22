@@ -31,6 +31,12 @@ const CreateSchema = z.object({
   customerId: z.string().uuid(),
   issueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  // Multi-currency: `currency` + `fxRate` are display metadata; header
+  // `total_cents` stays in LKR. If caller sends non-LKR currency without
+  // a rate we default to 1.0 — the UI is expected to source the rate
+  // from the fx_rates table or let the user override it.
+  currency: z.string().length(3).optional(),
+  fxRate: z.number().positive().optional(),
   reference: z.string().max(64).optional().or(z.literal("")),
   poNumber: z.string().max(64).optional().or(z.literal("")),
   notes: z.string().optional().or(z.literal("")),
@@ -273,6 +279,16 @@ export const invoicesRoutes: FastifyPluginAsync = async (fastify) => {
       const { lines, subtotalCents, discountCents, taxCents, totalCents } =
         await computeInvoice(tx, ctx.tenantId, input.lines);
 
+      const currency = (input.currency ?? customer.currency ?? "LKR").toUpperCase();
+      const fxRate = input.fxRate ?? 1.0;
+      // foreign_total_cents mirrors total_cents when LKR, otherwise it's
+      // the explicit amount the PDF should show in the foreign currency.
+      // Stored alongside rather than re-derived so the rate rounding is
+      // locked at issue time.
+      const foreignTotalCents = currency === "LKR"
+        ? totalCents
+        : Math.round(totalCents / fxRate);
+
       const [inv] = await tx
         .insert(schema.invoices)
         .values({
@@ -281,11 +297,13 @@ export const invoicesRoutes: FastifyPluginAsync = async (fastify) => {
           status: "draft",
           issueDate,
           dueDate,
-          currency: customer.currency ?? "LKR",
+          currency,
+          fxRate: fxRate.toString(),
           subtotalCents,
           discountCents,
           taxCents,
           totalCents,
+          foreignTotalCents,
           balanceDueCents: totalCents,
           reference: input.reference || null,
           poNumber: input.poNumber || null,

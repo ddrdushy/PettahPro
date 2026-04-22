@@ -36,6 +36,7 @@ export const bills = pgTable("bills", {
   chargesTotalCents: bigint("charges_total_cents", { mode: "number" }).notNull().default(0),
   chargeAllocationMethod: varchar("charge_allocation_method", { length: 16 }).notNull().default("value"),
   totalCents: bigint("total_cents", { mode: "number" }).notNull().default(0),
+  foreignTotalCents: bigint("foreign_total_cents", { mode: "number" }),
   amountPaidCents: bigint("amount_paid_cents", { mode: "number" }).notNull().default(0),
   balanceDueCents: bigint("balance_due_cents", { mode: "number" }).notNull().default(0),
   notes: text("notes"),

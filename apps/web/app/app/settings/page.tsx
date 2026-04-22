@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { cookies } from "next/headers";
-import { Hash, ArrowRight } from "lucide-react";
+import { Hash, Coins, ArrowRight } from "lucide-react";
 import type { TenantSettingsResponse } from "@/lib/api";
 import { PageHeader } from "@/components/app/page-header";
 import { SettingsFormClient } from "./settings-form-client";
@@ -50,6 +50,21 @@ export default async function SettingsPage() {
                 <p className="text-small font-medium text-charcoal">Number series</p>
                 <p className="text-caption text-text-secondary">
                   Customise invoice, bill, journal and other document number formats. Supports tokens like <code>{"{YYYY}"}</code> <code>{"{MM}"}</code> <code>{"{SEQ}"}</code>.
+                </p>
+              </div>
+            </div>
+            <ArrowRight className="h-4 w-4 text-text-tertiary" aria-hidden />
+          </Link>
+          <Link
+            href="/app/settings/fx-rates"
+            className="flex items-center justify-between rounded-md border-hairline border-border px-4 py-3 hover:bg-surface-recessed/40"
+          >
+            <div className="flex items-start gap-3">
+              <Coins className="mt-0.5 h-4 w-4 text-text-tertiary" aria-hidden />
+              <div>
+                <p className="text-small font-medium text-charcoal">FX rates</p>
+                <p className="text-caption text-text-secondary">
+                  Daily exchange rates for invoicing in foreign currencies. Used for display on USD/EUR/GBP documents; the ledger stays in LKR.
                 </p>
               </div>
             </div>
