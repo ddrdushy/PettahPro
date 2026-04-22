@@ -2,11 +2,11 @@
 
 Live tracker of what's shipped, what's next, and what's backlog — cross-checked against the 23 spec files in `/docs/` (see [`_summary.md`](./_summary.md) for a per-file digest).
 
-Last updated: 2026-04-22 after PR #41. **All must-haves shipped.**
+Last updated: 2026-04-22 after PR #42. **All must-haves shipped.**
 
 ---
 
-## ✅ Shipped (PRs #1 – #41)
+## ✅ Shipped (PRs #1 – #42)
 
 ### Platform foundation
 - Multi-tenant Postgres with RLS (`current_tenant_id()` + `SET LOCAL app.tenant_id`)
@@ -65,6 +65,7 @@ Last updated: 2026-04-22 after PR #41. **All must-haves shipped.**
 - **Salary revisions with auto-arrears** — HR records a back-dated rate change, the live basic updates immediately, the next payroll run auto-computes (new − previous) × intervening months as an ARREARS earning line (counts for EPF/ETF/PAYE); period-lock enforced on revision effective dates so you can't quietly rewrite closed months
 - **Staff loan module** — apply → approve (SOD-enforced) → disburse (DR 1150 Employee loans receivable / CR bank); flat-rate amortization with installment schedule; EMIs auto-deduct as LOAN-REC on the next payroll run, atomically claimed at draft, principal and interest split on post (CR loans receivable / CR interest income); write-off moves outstanding to bad debt and waives remaining installments. Five SL-typical types (festival, salary advance, emergency, housing, vehicle) seeded per tenant with caps + defaults
 - **Mid-period payroll events (pro-rata)** — mid-period joiners and leavers now earn for days actually worked. Exit workflow (`POST /employees/:id/exit`) stamps `exit_date` + `last_working_day` + notice period and flips status to resigned/terminated/retired/deceased. Probation confirmation (`POST /employees/:id/confirm-probation`) promotes status to active. Payroll compute expands eligibility to include in-period leavers, computes `daysWorked / daysInPeriod` and scales every earning by the ratio (basic, from_basic, percent_of_basic, fixed earnings); deductions stay unscaled (fixed obligations). Payslip shows an "N/M days" chip so HR can explain the smaller basic at a glance
+- **Bonus schemes library** — tenant-configured bonus programs (Avurudu, Christmas, 13th-month, performance) with four formula types: `flat_amount` (cents), `percent_of_basic` (bps), `days_of_basic` (e.g. 15 days = half-month), or `manual` (HR enters per employee). Per-scheme eligibility (minimum tenure, employment types, statuses) + tax flags (counts for EPF / ETF / PAYE). Bulk bonus run workflow draft → posted → void: creating a draft filters eligible employees and seeds per-person amounts from the formula; HR can adjust any line before post; post books the journal (DR Salaries & wages / DR EPF+ETF employer / CR EPF+ETF payable / CR PAYE / CR Salaries payable) reusing the sl-tax compute engine for consistency with regular payroll; void reverses the entry. Four SL-typical schemes (AVURUDU, CHRISTMAS, 13TH_MONTH, PERFORMANCE) seeded at tenant signup
 
 ### Reports
 - Trial balance, P&L (with compare), balance sheet, general ledger, VAT return, cash flow
@@ -97,7 +98,6 @@ Each item has a spec reference, one-sentence description, and rough sizing (**S*
 | 8 | Stock count / cycle count | inventory §4.4 | Blind count with tiered auto-post vs approval (1% auto, >1% approve). | M |
 | 9 | Landed cost allocation | buy §5.4, inventory §5.4 | Freight/insurance/customs captured at GRN, allocated to item cost. | L |
 | 11b | Final settlement worksheet | payroll §14.2 | Leave encashment, loan recovery on exit, gratuity, notice pay-in-lieu, "exit run" document. Mid-period pro-rata shipped in PR #41; this is the richer settlement layer on top. | M |
-| 12 | Bonus schemes library | payroll §7 | Avurudu / Christmas / 13th-month / performance, eligibility rules, off-cycle. | M |
 | 14 | Expense claims | payroll §8 | Employee submit with receipt → manager approve → bundle with payroll or pay direct. | M |
 | 15 | Proforma invoices | sell §2.5 | Advance/customs preview, convert to live invoice. | M |
 | 16 | Batch / consolidated invoicing | sell §2.5 | Multi-customer batch run; roll up multiple DNs into one invoice per customer. | M |
