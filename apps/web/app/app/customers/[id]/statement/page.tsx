@@ -6,6 +6,7 @@ import { ArrowLeft } from "lucide-react";
 import type { CustomerStatement, PartyAgingBucket } from "@/lib/api";
 import { PageHeader } from "@/components/app/page-header";
 import { formatLKR, formatDate } from "@/lib/format";
+import { EmailStatementButton } from "./email-statement-button";
 
 export const metadata: Metadata = { title: "Customer statement" };
 
@@ -84,6 +85,15 @@ export default async function CustomerStatementPage({
           </div>
           <button type="submit" className="btn-secondary text-small">Apply</button>
         </form>
+      </div>
+
+      <div className="mb-6 print:hidden">
+        <EmailStatementButton
+          customerId={customer.id}
+          defaultEmail={customer.email}
+          from={data.asOfFrom}
+          to={data.asOfTo}
+        />
       </div>
 
       <PageHeader
