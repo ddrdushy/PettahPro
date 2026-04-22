@@ -7,6 +7,7 @@ import {
   date,
   bigint,
   text,
+  numeric,
 } from "drizzle-orm/pg-core";
 import { tenants } from "./tenants.js";
 import { customers } from "./customers.js";
@@ -23,6 +24,8 @@ export const customerPayments = pgTable("customer_payments", {
   method: varchar("method", { length: 16 }).notNull(),
   amountCents: bigint("amount_cents", { mode: "number" }).notNull(),
   currency: varchar("currency", { length: 3 }).notNull().default("LKR"),
+  fxRate: numeric("fx_rate", { precision: 18, scale: 6 }).notNull().default("1.0"),
+  foreignAmountCents: bigint("foreign_amount_cents", { mode: "number" }),
   bankAccountId: uuid("bank_account_id")
     .notNull()
     .references(() => chartOfAccounts.id, { onDelete: "restrict" }),

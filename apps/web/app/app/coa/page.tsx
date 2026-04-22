@@ -57,6 +57,19 @@ export default async function CoaPage() {
       accessor: (a) => <span className="text-caption uppercase text-text-tertiary">{a.normalSide}</span>,
     },
     {
+      header: "Currency",
+      align: "center",
+      accessor: (a) => (
+        <span
+          className={`text-caption tabular-nums ${
+            a.currency && a.currency !== "LKR" ? "font-medium text-mint-dark" : "text-text-tertiary"
+          }`}
+        >
+          {a.currency || "LKR"}
+        </span>
+      ),
+    },
+    {
       header: "Source",
       align: "center",
       accessor: (a) =>

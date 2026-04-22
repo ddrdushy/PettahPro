@@ -56,6 +56,12 @@ export function NewInvoiceClient({
   const [reference, setReference] = useState("");
   const [poNumber, setPoNumber] = useState("");
   const [notes, setNotes] = useState("");
+  // Multi-currency (v1). Currency auto-follows the picked customer's
+  // default. Fx rate is 1.0 for LKR and required when non-LKR — but we
+  // don't hard-block empty because the form stays usable if the user
+  // hasn't captured a rate yet; the back-end defaults to 1.0.
+  const [currency, setCurrency] = useState("LKR");
+  const [fxRate, setFxRate] = useState("1");
   const [lines, setLines] = useState<LineDraft[]>([emptyLine()]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -64,6 +70,11 @@ export function NewInvoiceClient({
     () => customers.find((c) => c.id === customerId) ?? null,
     [customers, customerId],
   );
+  // Snap currency to the customer's default whenever customer changes and
+  // the user hasn't manually overridden. We detect "manually overridden"
+  // as simply: whatever's typed in the input wins once it's set. Using a
+  // state-setter effect would be wrong here — we just update synchronously
+  // when customer changes via the select handler below.
   const effectiveDueDate = useMemo(() => {
     if (dueDate) return dueDate;
     if (!selectedCustomer) return "";
@@ -146,6 +157,8 @@ export function NewInvoiceClient({
         customerId,
         issueDate,
         dueDate: effectiveDueDate || undefined,
+        currency: currency.toUpperCase(),
+        fxRate: Number(fxRate) || 1,
         reference: reference.trim() || undefined,
         poNumber: poNumber.trim() || undefined,
         notes: notes.trim() || undefined,
@@ -191,7 +204,12 @@ export function NewInvoiceClient({
                 <label className="block text-small font-medium text-charcoal">Customer</label>
                 <select
                   value={customerId}
-                  onChange={(e) => setCustomerId(e.target.value)}
+                  onChange={(e) => {
+                    const id = e.target.value;
+                    setCustomerId(id);
+                    const picked = customers.find((c) => c.id === id);
+                    if (picked?.currency) setCurrency(picked.currency);
+                  }}
                   className="mt-1.5 w-full rounded-md border-hairline border-border-emphasis bg-surface-elevated px-3 py-2.5 text-body text-charcoal focus:border-charcoal focus:outline-none focus:ring-1 focus:ring-charcoal"
                 >
                   <option value="">Select a customer…</option>
@@ -248,6 +266,46 @@ export function NewInvoiceClient({
                   placeholder="If provided"
                   className="mt-1.5 w-full rounded-md border-hairline border-border-emphasis bg-surface-elevated px-3 py-2.5 text-body text-charcoal placeholder:text-text-tertiary focus:border-charcoal focus:outline-none focus:ring-1 focus:ring-charcoal"
                 />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-small font-medium text-charcoal">Currency</label>
+                  <input
+                    list="invoice-currencies"
+                    value={currency}
+                    onChange={(e) => setCurrency(e.target.value.toUpperCase().slice(0, 3))}
+                    maxLength={3}
+                    className="mt-1.5 w-full rounded-md border-hairline border-border-emphasis bg-surface-elevated px-3 py-2.5 text-body uppercase text-charcoal focus:border-charcoal focus:outline-none focus:ring-1 focus:ring-charcoal"
+                  />
+                  <datalist id="invoice-currencies">
+                    <option value="LKR" />
+                    <option value="USD" />
+                    <option value="EUR" />
+                    <option value="GBP" />
+                    <option value="AUD" />
+                    <option value="INR" />
+                    <option value="SGD" />
+                    <option value="AED" />
+                  </datalist>
+                </div>
+                <div>
+                  <label className="block text-small font-medium text-charcoal">
+                    FX rate <span className="text-caption text-text-tertiary">(to LKR)</span>
+                  </label>
+                  <input
+                    type="number"
+                    step="0.000001"
+                    value={fxRate}
+                    onChange={(e) => setFxRate(e.target.value)}
+                    disabled={currency.toUpperCase() === "LKR"}
+                    className="mt-1.5 w-full rounded-md border-hairline border-border-emphasis bg-surface-elevated px-3 py-2.5 text-body text-charcoal focus:border-charcoal focus:outline-none focus:ring-1 focus:ring-charcoal disabled:bg-surface-recessed"
+                  />
+                  {currency.toUpperCase() !== "LKR" && (
+                    <p className="mt-1 text-caption text-text-tertiary">
+                      1 {currency.toUpperCase()} = {fxRate || "?"} LKR. Totals still post in LKR. <Link href="/app/settings/fx-rates" className="underline">Manage rates</Link>
+                    </p>
+                  )}
+                </div>
               </div>
             </div>
           </section>
