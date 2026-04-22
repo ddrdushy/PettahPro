@@ -3,7 +3,7 @@ import Link from "next/link";
 import { cookies } from "next/headers";
 import { notFound } from "next/navigation";
 import { ArrowLeft, Download } from "lucide-react";
-import type { Account, BillDetail, BillLine, Supplier, TaxCode } from "@/lib/api";
+import type { Account, BillCharge, BillDetail, BillLine, Supplier, TaxCode } from "@/lib/api";
 import { PageHeader } from "@/components/app/page-header";
 import { StatusBadge } from "@/components/app/status-badge";
 import { formatLKR, formatDate } from "@/lib/format";
@@ -26,6 +26,7 @@ async function fetchBill(id: string) {
   const data = (await bRes.json()) as {
     bill: BillDetail;
     lines: BillLine[];
+    charges: BillCharge[];
     supplier: Supplier | null;
   };
   const coa = coaRes.ok ? ((await coaRes.json()) as { accounts: Account[] }).accounts : [];
@@ -40,7 +41,7 @@ async function fetchBill(id: string) {
 export default async function BillDetailPage({ params }: { params: { id: string } }) {
   const data = await fetchBill(params.id);
   if (!data) notFound();
-  const { bill, lines, supplier, bankAccounts, whtTaxCodes } = data;
+  const { bill, lines, charges, supplier, bankAccounts, whtTaxCodes } = data;
 
   const isPayable =
     (bill.status === "posted" || bill.status === "partially_paid") && bill.balanceDueCents > 0;
@@ -168,6 +169,51 @@ export default async function BillDetailPage({ params }: { params: { id: string 
             </div>
           </section>
 
+          {charges.length > 0 && (
+            <section className="overflow-hidden rounded-card border-hairline border-border bg-surface-elevated">
+              <div className="flex items-center justify-between border-b-hairline border-border px-6 py-4">
+                <div>
+                  <p className="text-caption uppercase tracking-wide text-text-tertiary">
+                    Additional charges
+                  </p>
+                  <p className="mt-1 text-small text-text-secondary">
+                    Allocated pro-rata to inventory lines by{" "}
+                    <span className="font-medium text-charcoal">
+                      {bill.chargeAllocationMethod === "quantity" ? "quantity" : "value"}
+                    </span>{" "}
+                    — folded into each item&apos;s landed unit cost.
+                  </p>
+                </div>
+              </div>
+              <table className="w-full text-small">
+                <thead className="bg-surface-recessed text-caption uppercase tracking-wide text-text-tertiary">
+                  <tr>
+                    <th className="w-10 px-4 py-3 text-center">#</th>
+                    <th className="px-4 py-3 text-left">Kind</th>
+                    <th className="px-4 py-3 text-left">Description</th>
+                    <th className="w-32 px-4 py-3 text-right">Amount</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y-hairline divide-border">
+                  {charges.map((c) => (
+                    <tr key={c.id}>
+                      <td className="px-4 py-3 text-center text-caption text-text-tertiary">
+                        {c.lineNo}
+                      </td>
+                      <td className="px-4 py-3 capitalize text-charcoal">{c.kind}</td>
+                      <td className="px-4 py-3 text-text-secondary">
+                        {c.description ?? <span className="text-text-tertiary">—</span>}
+                      </td>
+                      <td className="px-4 py-3 text-right tabular-nums font-medium text-charcoal">
+                        {formatLKR(c.amountCents)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </section>
+          )}
+
           {bill.notes && (
             <section className="rounded-card border-hairline border-border bg-surface-elevated p-6">
               <p className="text-caption uppercase tracking-wide text-text-tertiary">Notes</p>
@@ -202,6 +248,9 @@ export default async function BillDetailPage({ params }: { params: { id: string 
               <Row label="Subtotal" value={bill.subtotalCents} />
               {bill.discountCents > 0 && <Row label="Discount" value={-bill.discountCents} />}
               <Row label="Input tax" value={bill.taxCents} />
+              {bill.chargesTotalCents > 0 && (
+                <Row label="Charges (landed cost)" value={bill.chargesTotalCents} />
+              )}
               <div className="border-t-hairline border-border pt-2">
                 <Row label="Bill total" value={bill.totalCents} emphasize />
               </div>

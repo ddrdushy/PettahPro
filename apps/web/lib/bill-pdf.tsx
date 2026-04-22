@@ -1,5 +1,5 @@
 import { Document, Page, Text, View, StyleSheet } from "@react-pdf/renderer";
-import type { BillDetail, BillLine, Supplier, Tenant } from "@/lib/api";
+import type { BillCharge, BillDetail, BillLine, Supplier, Tenant } from "@/lib/api";
 
 // Brand tokens (shared with invoice-pdf / delivery-note-pdf / etc).
 const CHARCOAL = "#1A1A1A";
@@ -207,11 +207,13 @@ export function BillPDF({
   tenant,
   bill,
   lines,
+  charges,
   supplier,
 }: {
   tenant: Pick<Tenant, "businessName">;
   bill: BillDetail;
   lines: BillLine[];
+  charges: BillCharge[];
   supplier: Supplier | null;
 }) {
   const statusStyle = {
@@ -351,6 +353,31 @@ export function BillPDF({
           ))}
         </View>
 
+        {charges.length > 0 && (
+          <View style={styles.table} wrap={false}>
+            <View style={[styles.row, styles.rowHeader]}>
+              <Text style={[styles.colNum, styles.th]}>#</Text>
+              <Text style={[styles.colDesc, styles.th]}>
+                Additional charges — allocated by{" "}
+                {bill.chargeAllocationMethod === "quantity" ? "quantity" : "value"}
+              </Text>
+              <Text style={[styles.colTotal, styles.th]}>Amount</Text>
+            </View>
+            {charges.map((c) => (
+              <View key={c.id} style={styles.row} wrap={false}>
+                <Text style={[styles.colNum, styles.td]}>{c.lineNo}</Text>
+                <View style={styles.colDesc}>
+                  <Text style={[styles.td, { textTransform: "capitalize" }]}>{c.kind}</Text>
+                  {c.description && (
+                    <Text style={styles.tdMuted}>{c.description}</Text>
+                  )}
+                </View>
+                <Text style={[styles.colTotal, styles.td]}>{formatLKR(c.amountCents)}</Text>
+              </View>
+            ))}
+          </View>
+        )}
+
         <View style={styles.totalsBlock}>
           <View style={styles.totalRow}>
             <Text style={styles.totalLabel}>Subtotal</Text>
@@ -366,6 +393,12 @@ export function BillPDF({
             <Text style={styles.totalLabel}>Input tax</Text>
             <Text style={styles.totalValue}>{formatLKR(bill.taxCents)}</Text>
           </View>
+          {bill.chargesTotalCents > 0 && (
+            <View style={styles.totalRow}>
+              <Text style={styles.totalLabel}>Charges (landed cost)</Text>
+              <Text style={styles.totalValue}>{formatLKR(bill.chargesTotalCents)}</Text>
+            </View>
+          )}
           <View style={styles.totalDivider} />
           <View style={styles.grandTotal}>
             <Text style={styles.grandLabel}>Bill total</Text>

@@ -4,11 +4,11 @@ Live tracker of what's shipped, what's next, and what's backlog — cross-checke
 
 **Roadmap says what's shipped. [`_status.md`](./_status.md) says what's broken, fragile, or at-risk right now.** Read both before picking up work.
 
-Last updated: 2026-04-22 after shipping #11b final settlement worksheet + roadmap audit. **All must-haves shipped.** Eight should-haves (stock count, proforma invoices, recurring bills, recurring journals, number series, audit log, customer statement email, final settlement) now in the shipped list.
+Last updated: 2026-04-22 after shipping #9 landed cost allocation. **All must-haves shipped.** Nine should-haves (stock count, proforma invoices, recurring bills, recurring journals, number series, audit log, customer statement email, final settlement, landed cost) now in the shipped list.
 
 ---
 
-## ✅ Shipped (PRs #1 – #57)
+## ✅ Shipped (PRs #1 – #59)
 
 ### Platform foundation
 - Multi-tenant Postgres with RLS (`current_tenant_id()` + `SET LOCAL app.tenant_id`), enforced at a non-superuser `pettahpro_app` role so dev and prod both actually exercise the policies (PR #48)
@@ -43,6 +43,7 @@ Last updated: 2026-04-22 after shipping #11b final settlement worksheet + roadma
 - Debit notes (CRUD, post, **PDF** with draft banner — PR #46)
 - Supplier payments (cash/cheque/bank-transfer, cheque lifecycle)
 - **Recurring bill templates** — bills equivalent of recurring invoices. Template captures supplier + items + amount + frequency (weekly / monthly / quarterly / annual) + start/end dates + auto-post-vs-review flag. Hourly BullMQ cron generates drafts; review-queue variant lands in the bills list as draft, auto-post variant posts directly. Pause / resume / edit / end-date supported; variable-amount templates keep the structure fixed and prompt for the per-cycle amount (PR #51)
+- **Landed cost allocation** — freight / insurance / customs / clearing / loading / other charges captured as extra lines on a supplier bill. At post time those amounts allocate pro-rata across the bill's inventory lines (by `value` default, or by `quantity`) and fold into each item's unit cost before the stock receipt posts, so WAVG reflects the true landed cost. Largest-remainder rounding keeps the cents balanced; journal stays balanced (DR Inventory grows by base + allocated, CR AP matches). Charges on a bill with no inventory lines expense to a fallback `5130 Freight & handling` account (rare clearing-agent-only path). Client-side preview mirrors the server allocation algorithm. V2 follow-ups explicitly deferred (see #9b once scoped): post-GRN retrospective landed-cost bills, pro-rata by weight, per-line manual override, FX-tied landed cost (PR #59)
 
 ### Inventory
 - Items (CRUD, WAVG valuation, reorder_point)
@@ -110,7 +111,6 @@ Numbers left as gaps below = shipped (see the bullets above). Keeps the "by numb
 
 | # | Feature | Spec | What it does | Size |
 |---|---|---|---|---|
-| 9 | Landed cost allocation | buy §5.4, inventory §5.4 | Freight/insurance/customs captured at GRN, allocated to item cost. | L |
 | 14 | Expense claims | payroll §8 | Employee submit with receipt → manager approve → bundle with payroll or pay direct. | M |
 | 16 | Batch / consolidated invoicing | sell §2.5 | Multi-customer batch run; roll up multiple DNs into one invoice per customer. | M |
 | 17 | Multi-currency FX on sales | sell §17 | Rate capture per invoice/bill, LKR-for-ledger + foreign-for-customer. | M |
@@ -157,4 +157,4 @@ These are their own workstreams — track separately from this roadmap.
 
 One PR = one feature. Ship, merge, move on. Batched PRs allowed when features are clearly related (e.g. DN + PO PDFs were batched because they follow the same pattern).
 
-Current recommendation: compliance foundation is complete and the should-have convenience layer is thinning out — 8 of the original should-haves shipped, leaving 9. No hard compliance gaps. Pick from should-haves based on what real users start asking for. Top-of-mind candidates: **#9 landed cost allocation** (freight/insurance at GRN, missing piece of the buy-to-inventory costing story), **#14 expense claims** (completes the HR/payroll reimbursement loop), **#17/18 multi-currency** (exporters, the one remaining hole for non-LKR business), or **#20 supplier statement reconciliation** (AP hygiene — we have the supplier statement read-only but not the compare-to-statement flow).
+Current recommendation: compliance foundation is complete and the should-have convenience layer is thinning out — 9 of the original should-haves shipped, leaving 8. No hard compliance gaps. Pick from should-haves based on what real users start asking for. Top-of-mind candidates: **#14 expense claims** (completes the HR/payroll reimbursement loop), **#17/18 multi-currency** (exporters, the one remaining hole for non-LKR business), or **#20 supplier statement reconciliation** (AP hygiene — we have the supplier statement read-only but not the compare-to-statement flow).

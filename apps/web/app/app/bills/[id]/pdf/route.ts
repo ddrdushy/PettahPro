@@ -2,7 +2,7 @@ import { cookies } from "next/headers";
 import { renderToBuffer } from "@react-pdf/renderer";
 import { BillPDF } from "@/lib/bill-pdf";
 import { pdfResponse } from "@/lib/pdf-response";
-import type { BillDetail, BillLine, Supplier, Tenant } from "@/lib/api";
+import type { BillCharge, BillDetail, BillLine, Supplier, Tenant } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -30,6 +30,7 @@ export async function GET(
   const data = (await billRes.json()) as {
     bill: BillDetail;
     lines: BillLine[];
+    charges: BillCharge[];
     supplier: Supplier | null;
   };
 
@@ -38,6 +39,7 @@ export async function GET(
       tenant: { businessName: me.tenant.businessName },
       bill: data.bill,
       lines: data.lines,
+      charges: data.charges,
       supplier: data.supplier,
     }),
   );

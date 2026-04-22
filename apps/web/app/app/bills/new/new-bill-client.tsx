@@ -4,7 +4,16 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { ArrowLeft, Loader2, Plus, Trash2 } from "lucide-react";
-import { api, ApiError, type Account, type Item, type Supplier, type TaxCode } from "@/lib/api";
+import {
+  api,
+  ApiError,
+  type Account,
+  type BillChargeAllocationMethod,
+  type BillChargeKind,
+  type Item,
+  type Supplier,
+  type TaxCode,
+} from "@/lib/api";
 import { formatLKR } from "@/lib/format";
 import { PageHeader } from "@/components/app/page-header";
 
@@ -19,6 +28,22 @@ interface LineDraft {
   expenseAccountId: string;
 }
 
+interface ChargeDraft {
+  id: string;
+  kind: BillChargeKind;
+  description: string;
+  amount: string;
+}
+
+const CHARGE_KIND_LABELS: Record<BillChargeKind, string> = {
+  freight: "Freight",
+  insurance: "Insurance",
+  customs: "Customs duty",
+  clearing: "Clearing / forwarding",
+  loading: "Loading / unloading",
+  other: "Other",
+};
+
 function emptyLine(): LineDraft {
   return {
     id: crypto.randomUUID(),
@@ -29,6 +54,15 @@ function emptyLine(): LineDraft {
     discountPct: "0",
     taxCodeId: "",
     expenseAccountId: "",
+  };
+}
+
+function emptyCharge(): ChargeDraft {
+  return {
+    id: crypto.randomUUID(),
+    kind: "freight",
+    description: "",
+    amount: "0",
   };
 }
 
@@ -60,6 +94,9 @@ export function NewBillClient({
   const [dueDate, setDueDate] = useState("");
   const [notes, setNotes] = useState("");
   const [lines, setLines] = useState<LineDraft[]>([emptyLine()]);
+  const [charges, setCharges] = useState<ChargeDraft[]>([]);
+  const [allocationMethod, setAllocationMethod] =
+    useState<BillChargeAllocationMethod>("value");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -89,13 +126,72 @@ export function NewBillClient({
       const taxRate = taxCodes.find((t) => t.id === l.taxCodeId)?.rateBps ?? 0;
       const taxLine = Math.round((taxable * taxRate) / 10_000);
       const total = taxable + taxLine;
+      const item = items.find((i) => i.id === l.itemId);
+      const isStocked = item?.trackInventory === true;
       subtotal += subLine;
       discount += discLine;
       tax += taxLine;
-      return { subLine, discLine, taxLine, total };
+      return { subLine, discLine, taxLine, total, net: taxable, qty, isStocked };
     });
-    return { perLine, subtotal, discount, tax, total: subtotal - discount + tax };
-  }, [lines, taxCodes]);
+
+    // Mirrors allocateCharges() on the server: pro-rata across stocked
+    // lines by value or quantity, largest-remainder distribution so the
+    // sum always matches chargesTotal exactly.
+    const chargesTotal = charges.reduce((s, c) => s + toInt(c.amount), 0);
+    const stockedIdx = perLine
+      .map((l, i) => ({ l, i }))
+      .filter(({ l }) => l.isStocked);
+    const allocatedPerLine = perLine.map(() => 0);
+    let unallocated = 0;
+    if (chargesTotal > 0) {
+      if (stockedIdx.length === 0) {
+        unallocated = chargesTotal;
+      } else {
+        const weights = stockedIdx.map(({ l }) =>
+          allocationMethod === "quantity" ? Math.max(l.qty, 0) : Math.max(l.net, 0),
+        );
+        const totalW = weights.reduce((s, w) => s + w, 0);
+        if (totalW <= 0) {
+          const even = Math.floor(chargesTotal / stockedIdx.length);
+          let rem = chargesTotal - even * stockedIdx.length;
+          for (const { i } of stockedIdx) {
+            allocatedPerLine[i] = even + (rem > 0 ? 1 : 0);
+            if (rem > 0) rem -= 1;
+          }
+        } else {
+          const raw = weights.map((w) => (chargesTotal * w) / totalW);
+          const floors = raw.map((r) => Math.floor(r));
+          const remainders = raw.map((r, idx) => r - floors[idx]!);
+          const distributed = floors.reduce((s, v) => s + v, 0);
+          let leftover = chargesTotal - distributed;
+          const ordered = remainders
+            .map((r, idx) => ({ idx, r }))
+            .sort((a, b) => b.r - a.r);
+          const extra = new Array(weights.length).fill(0);
+          for (const { idx } of ordered) {
+            if (leftover <= 0) break;
+            extra[idx] = 1;
+            leftover -= 1;
+          }
+          for (let k = 0; k < stockedIdx.length; k++) {
+            const { i } = stockedIdx[k]!;
+            allocatedPerLine[i] = (floors[k] ?? 0) + (extra[k] ?? 0);
+          }
+        }
+      }
+    }
+
+    return {
+      perLine,
+      allocatedPerLine,
+      chargesTotal,
+      unallocated,
+      subtotal,
+      discount,
+      tax,
+      total: subtotal - discount + tax + chargesTotal,
+    };
+  }, [lines, taxCodes, items, charges, allocationMethod]);
 
   function addLine() {
     setLines((r) => [...r, emptyLine()]);
@@ -106,6 +202,16 @@ export function NewBillClient({
   function patchLine(id: string, patch: Partial<LineDraft>) {
     setLines((r) => r.map((l) => (l.id === id ? { ...l, ...patch } : l)));
   }
+  function addCharge() {
+    setCharges((r) => [...r, emptyCharge()]);
+  }
+  function removeCharge(id: string) {
+    setCharges((r) => r.filter((c) => c.id !== id));
+  }
+  function patchCharge(id: string, patch: Partial<ChargeDraft>) {
+    setCharges((r) => r.map((c) => (c.id === id ? { ...c, ...patch } : c)));
+  }
+
   function onPickItem(lineId: string, itemId: string) {
     const item = items.find((i) => i.id === itemId);
     if (!item) {
@@ -132,6 +238,7 @@ export function NewBillClient({
     }
     setBusy(true);
     try {
+      const validCharges = charges.filter((c) => toInt(c.amount) > 0);
       const { bill } = await api.createBill({
         supplierId,
         supplierBillNumber: supplierBillNumber.trim() || undefined,
@@ -147,6 +254,12 @@ export function NewBillClient({
           taxCodeId: l.taxCodeId || undefined,
           expenseAccountId: l.expenseAccountId || undefined,
         })),
+        charges: validCharges.map((c) => ({
+          kind: c.kind,
+          description: c.description.trim() || undefined,
+          amountCents: toInt(c.amount),
+        })),
+        chargeAllocationMethod: allocationMethod,
       });
       if (alsoPost) await api.postBill(bill.id);
       router.push(`/app/bills/${bill.id}`);
@@ -354,6 +467,119 @@ export function NewBillClient({
             </div>
           </section>
 
+          <section className="rounded-card border-hairline border-border bg-surface-elevated">
+            <div className="flex items-start justify-between gap-4 border-b-hairline border-border px-6 py-4">
+              <div>
+                <h2 className="text-h3 text-charcoal">Additional charges</h2>
+                <p className="text-caption text-text-tertiary">
+                  Freight, customs, clearing — capitalized into item cost (WAVG) pro-rata across stocked lines.
+                </p>
+              </div>
+              <button type="button" onClick={addCharge} className="btn-secondary text-small">
+                <Plus className="h-3.5 w-3.5" aria-hidden /> Add charge
+              </button>
+            </div>
+
+            {charges.length > 0 && (
+              <>
+                <div className="flex items-center gap-3 border-b-hairline border-border bg-surface-recessed px-6 py-3">
+                  <span className="text-caption uppercase tracking-wide text-text-tertiary">
+                    Allocate by
+                  </span>
+                  <select
+                    value={allocationMethod}
+                    onChange={(e) =>
+                      setAllocationMethod(e.target.value as BillChargeAllocationMethod)
+                    }
+                    className="rounded-md border-hairline border-border bg-surface-elevated px-2 py-1 text-small text-charcoal focus:border-charcoal focus:outline-none"
+                  >
+                    <option value="value">Line value (cost-weighted)</option>
+                    <option value="quantity">Quantity (unit-weighted)</option>
+                  </select>
+                  {computed.unallocated > 0 && (
+                    <span className="ml-auto text-caption text-text-tertiary">
+                      No stocked lines — charges expense to <span className="font-mono">5130 Freight &amp; handling</span>.
+                    </span>
+                  )}
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-small">
+                    <thead className="bg-surface-recessed">
+                      <tr className="text-caption uppercase tracking-wide text-text-tertiary">
+                        <th className="w-40 px-3 py-3 text-left">Kind</th>
+                        <th className="px-3 py-3 text-left">Description</th>
+                        <th className="w-32 px-3 py-3 text-right">Amount</th>
+                        <th className="w-10 px-3 py-3" aria-hidden />
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y-hairline divide-border">
+                      {charges.map((c) => (
+                        <tr key={c.id} className="align-top">
+                          <td className="px-3 py-3">
+                            <select
+                              value={c.kind}
+                              onChange={(e) =>
+                                patchCharge(c.id, { kind: e.target.value as BillChargeKind })
+                              }
+                              className="w-full rounded-md border-hairline border-border bg-surface-elevated px-2 py-1.5 text-small text-charcoal focus:border-charcoal focus:outline-none"
+                            >
+                              {(Object.keys(CHARGE_KIND_LABELS) as BillChargeKind[]).map((k) => (
+                                <option key={k} value={k}>
+                                  {CHARGE_KIND_LABELS[k]}
+                                </option>
+                              ))}
+                            </select>
+                          </td>
+                          <td className="px-3 py-3">
+                            <input
+                              value={c.description}
+                              onChange={(e) => patchCharge(c.id, { description: e.target.value })}
+                              placeholder="Optional · e.g. BOE-4812 customs duty"
+                              className="w-full rounded-md border-hairline border-border bg-surface-elevated px-2 py-1.5 text-small text-charcoal placeholder:text-text-tertiary focus:border-charcoal focus:outline-none"
+                            />
+                          </td>
+                          <td className="px-3 py-3">
+                            <input
+                              type="number"
+                              min={0}
+                              step="0.01"
+                              value={c.amount}
+                              onChange={(e) => patchCharge(c.id, { amount: e.target.value })}
+                              className="w-full rounded-md border-hairline border-border bg-surface-elevated px-2 py-1.5 text-right text-small tabular-nums text-charcoal focus:border-charcoal focus:outline-none"
+                            />
+                          </td>
+                          <td className="px-3 py-3 text-center">
+                            <button
+                              type="button"
+                              onClick={() => removeCharge(c.id)}
+                              aria-label="Remove charge"
+                              className="text-text-tertiary transition-colors hover:text-danger"
+                            >
+                              <Trash2 className="h-4 w-4" aria-hidden />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {computed.chargesTotal > 0 && computed.unallocated === 0 && (
+                  <div className="border-t-hairline border-border px-6 py-3 text-caption text-text-tertiary">
+                    Allocation preview:{" "}
+                    {computed.allocatedPerLine
+                      .map((cents, i) =>
+                        cents > 0 ? `Line ${i + 1}: +${formatLKR(cents)}` : null,
+                      )
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </div>
+                )}
+              </>
+            )}
+          </section>
+
           <section className="rounded-card border-hairline border-border bg-surface-elevated p-6">
             <label className="block text-small font-medium text-charcoal">Notes</label>
             <textarea
@@ -373,6 +599,9 @@ export function NewBillClient({
               <Row label="Subtotal" value={computed.subtotal} />
               {computed.discount > 0 && <Row label="Discount" value={-computed.discount} />}
               <Row label="Input tax" value={computed.tax} />
+              {computed.chargesTotal > 0 && (
+                <Row label="Charges (landed cost)" value={computed.chargesTotal} />
+              )}
               <div className="border-t-hairline border-border pt-2">
                 <Row label="Bill total" value={computed.total} emphasize />
               </div>

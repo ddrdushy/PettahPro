@@ -378,7 +378,7 @@ export const api = {
 
   listBills: () => request<{ bills: BillListRow[] }>("/bills"),
   getBill: (id: string) =>
-    request<{ bill: BillDetail; lines: BillLine[]; supplier: Supplier | null }>(`/bills/${id}`),
+    request<{ bill: BillDetail; lines: BillLine[]; charges: BillCharge[]; supplier: Supplier | null }>(`/bills/${id}`),
   createBill: (body: CreateBill) =>
     request<{ bill: BillDetail }>("/bills", { method: "POST", json: body }),
   postBill: (id: string) =>
@@ -1603,6 +1603,8 @@ export interface BillDetail {
   subtotalCents: number;
   discountCents: number;
   taxCents: number;
+  chargesTotalCents: number;
+  chargeAllocationMethod: BillChargeAllocationMethod;
   totalCents: number;
   amountPaidCents: number;
   balanceDueCents: number;
@@ -1611,6 +1613,30 @@ export interface BillDetail {
   postedAt: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export type BillChargeKind =
+  | "freight"
+  | "insurance"
+  | "customs"
+  | "clearing"
+  | "loading"
+  | "other";
+
+export type BillChargeAllocationMethod = "value" | "quantity";
+
+export interface BillCharge {
+  id: string;
+  lineNo: number;
+  kind: BillChargeKind;
+  description: string | null;
+  amountCents: number;
+}
+
+export interface CreateBillCharge {
+  kind: BillChargeKind;
+  description?: string;
+  amountCents: number;
 }
 
 export interface BillLine {
@@ -1647,6 +1673,8 @@ export interface CreateBill {
   dueDate?: string;
   notes?: string;
   lines: CreateBillLine[];
+  charges?: CreateBillCharge[];
+  chargeAllocationMethod?: BillChargeAllocationMethod;
 }
 
 export type PurchaseOrderStatus =
