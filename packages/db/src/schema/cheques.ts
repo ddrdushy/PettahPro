@@ -53,6 +53,7 @@ export const cheques = pgTable("cheques", {
   legalActionInitiated: boolean("legal_action_initiated").notNull().default(false),
   legalActionInitiatedAt: timestamp("legal_action_initiated_at", { withTimezone: true }),
   legalCaseReference: varchar("legal_case_reference", { length: 64 }),
+  replacedByChequeId: uuid("replaced_by_cheque_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   createdByUserId: uuid("created_by_user_id"),

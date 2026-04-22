@@ -6,6 +6,7 @@ import { runDueRecurringInvoices } from "./modules/sell/recurring-invoices.js";
 import { runDueRecurringBills } from "./modules/buy/recurring-bills.js";
 import { runDueRecurringJournals } from "./modules/accounting/recurring-journals.js";
 import { runScheduledStatementEmails } from "./modules/operations/customer-statement-email-cron.js";
+import { runStaleChequeFlagging } from "./modules/cheques/stale-flag.js";
 
 const log = pino({
   level: process.env.LOG_LEVEL ?? "info",
@@ -76,6 +77,21 @@ async function registerSchedules() {
     },
   );
   log.info("scheduled: send-scheduled-statement-emails (every 6h)");
+
+  // Daily stale-cheque flagger. SL cheques go stale at 6 months — well
+  // beyond typical clearing timelines — so we don't need sub-daily cadence.
+  // Running every 24h fits the business cycle and keeps notification
+  // noise down (we only emit on the day a cheque first goes stale).
+  await scheduledQueue.add(
+    "flag-stale-cheques",
+    {},
+    {
+      repeat: { every: 24 * 60 * 60 * 1000 }, // 24h
+      removeOnComplete: 50,
+      removeOnFail: 50,
+    },
+  );
+  log.info("scheduled: flag-stale-cheques (daily)");
 }
 
 const defaultWorker = new Worker(
@@ -109,6 +125,11 @@ const scheduledWorker = new Worker(
     if (job.name === "send-scheduled-statement-emails") {
       const result = await runScheduledStatementEmails(db, log);
       log.info(result, "scheduled statement emails run complete");
+      return result;
+    }
+    if (job.name === "flag-stale-cheques") {
+      const result = await runStaleChequeFlagging(db, log);
+      log.info(result, "stale-cheque flagging run complete");
       return result;
     }
     log.warn({ name: job.name }, "unknown scheduled job");
