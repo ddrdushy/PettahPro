@@ -1,4 +1,5 @@
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
+import { and, eq } from "drizzle-orm";
 import { schema } from "@pettahpro/db";
 
 export interface EmitNotificationInput {
@@ -17,12 +18,36 @@ export interface EmitNotificationInput {
  * the core posting primitives so an emit failure never rolls back a journal
  * entry — we log + swallow. Callers pass their own tx so the notification
  * lands in the same commit as the triggering event when that's desirable.
+ *
+ * Per-user opt-out (roadmap #25): before inserting a directed notification
+ * (userId set) we check notification_preferences for an explicit
+ * { enabled: false } row for this (user, kind). No row = default-enabled,
+ * so existing users keep receiving everything until they opt out. Broadcasts
+ * (userId null) bypass the check — tenant-wide announcements aren't
+ * user-level opt-out material.
  */
 export async function emitNotification(
   tx: PostgresJsDatabase<typeof schema>,
   input: EmitNotificationInput,
 ): Promise<void> {
   try {
+    if (input.userId) {
+      const [pref] = await tx
+        .select({ enabled: schema.notificationPreferences.enabled })
+        .from(schema.notificationPreferences)
+        .where(
+          and(
+            eq(schema.notificationPreferences.tenantId, input.tenantId),
+            eq(schema.notificationPreferences.userId, input.userId),
+            eq(schema.notificationPreferences.kind, input.kind),
+          ),
+        )
+        .limit(1);
+      if (pref && !pref.enabled) {
+        // User has opted out of this kind — silently drop.
+        return;
+      }
+    }
     await tx.insert(schema.notifications).values({
       tenantId: input.tenantId,
       userId: input.userId ?? null,

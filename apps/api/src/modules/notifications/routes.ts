@@ -1,7 +1,33 @@
 import type { FastifyPluginAsync } from "fastify";
-import { sql } from "drizzle-orm";
-import { withTenant } from "@pettahpro/db";
+import { sql, and, eq } from "drizzle-orm";
+import { z } from "zod";
+import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
+
+// Canonical list of event kinds the emit() callers pass today. UI renders
+// one toggle per kind; anything emitted outside this list is still deliverable
+// but won't appear as a configurable switch (degrades gracefully — the
+// row is just "never toggled", i.e. enabled).
+//
+// Keep this aligned with actual emitNotification() call sites. The source
+// of truth is the emitter, not this list — new kinds added to the app
+// become enabled-by-default until someone adds them to the UI dictionary.
+const NOTIFICATION_KIND_CATALOG: ReadonlyArray<{
+  kind: string;
+  label: string;
+  description: string;
+}> = [
+  { kind: "invoice.posted",         label: "Invoice posted",       description: "An invoice was posted to the ledger." },
+  { kind: "invoice.voided",         label: "Invoice voided",       description: "A posted invoice was reversed." },
+  { kind: "bill.posted",            label: "Bill posted",          description: "A supplier bill was posted." },
+  { kind: "bill.voided",            label: "Bill voided",          description: "A posted bill was reversed." },
+  { kind: "payment.received",       label: "Payment received",     description: "A customer payment was recorded." },
+  { kind: "payment.sent",           label: "Payment sent",         description: "A supplier payment was recorded." },
+  { kind: "journal.pending_review", label: "Journal pending review", description: "A journal entry needs your approval." },
+  { kind: "journal.posted",         label: "Journal posted",       description: "A journal entry was posted." },
+  { kind: "period.closed",          label: "Period closed",        description: "An accounting period was closed." },
+  { kind: "stock.low",              label: "Low stock",            description: "An item dropped below its reorder level." },
+];
 
 /**
  * Notifications are scoped per (tenant, user). A row with user_id = NULL is
@@ -122,4 +148,84 @@ export const notificationsRoutes: FastifyPluginAsync = async (fastify) => {
 
     return reply.send({ ok: true, markedRead: rowCount });
   });
+
+  // GET /notifications/preferences — the catalog plus the caller's overrides.
+  //
+  // Shape: { preferences: [{ kind, label, description, enabled }] }. If no
+  // row exists for a kind, we return enabled=true (default-on). Kinds emitted
+  // in the wild but not in the catalog still get a row if the user has
+  // explicitly toggled them — the UI renders those under an "Other" section.
+  fastify.get("/preferences", async (req, reply) => {
+    const ctx = requireAuth(req, reply);
+    if (!ctx) return;
+
+    const overrides = await withTenant(ctx.tenantId, async (tx) => {
+      return tx
+        .select({
+          kind: schema.notificationPreferences.kind,
+          enabled: schema.notificationPreferences.enabled,
+        })
+        .from(schema.notificationPreferences)
+        .where(
+          and(
+            eq(schema.notificationPreferences.tenantId, ctx.tenantId),
+            eq(schema.notificationPreferences.userId, ctx.userId),
+          ),
+        );
+    });
+    const byKind = new Map(overrides.map((o) => [o.kind, o.enabled]));
+
+    const preferences = [
+      ...NOTIFICATION_KIND_CATALOG.map((c) => ({
+        kind: c.kind,
+        label: c.label,
+        description: c.description,
+        enabled: byKind.get(c.kind) ?? true,
+        known: true as const,
+      })),
+      ...overrides
+        .filter((o) => !NOTIFICATION_KIND_CATALOG.some((c) => c.kind === o.kind))
+        .map((o) => ({
+          kind: o.kind,
+          label: o.kind,
+          description: "",
+          enabled: o.enabled,
+          known: false as const,
+        })),
+    ];
+
+    return reply.send({ preferences });
+  });
+
+  // PATCH /notifications/preferences/:kind — toggle one kind on/off.
+  fastify.patch<{ Params: { kind: string }; Body: { enabled: boolean } }>(
+    "/preferences/:kind",
+    async (req, reply) => {
+      const ctx = requireAuth(req, reply);
+      if (!ctx) return;
+
+      const parsed = z.object({ enabled: z.boolean() }).safeParse(req.body);
+      if (!parsed.success) {
+        return reply
+          .status(400)
+          .send({ error: { code: "INVALID_INPUT", issues: parsed.error.issues } });
+      }
+      const kind = req.params.kind.trim();
+      if (!kind || kind.length > 64) {
+        return reply.status(400).send({ error: { code: "INVALID_KIND" } });
+      }
+
+      await withTenant(ctx.tenantId, async (tx) => {
+        // Upsert on (tenant_id, user_id, kind) — unique index enforces.
+        await tx.execute(sql`
+          INSERT INTO notification_preferences (tenant_id, user_id, kind, enabled)
+          VALUES (${ctx.tenantId}::uuid, ${ctx.userId}::uuid, ${kind}, ${parsed.data.enabled})
+          ON CONFLICT (tenant_id, user_id, kind)
+          DO UPDATE SET enabled = EXCLUDED.enabled, updated_at = now()
+        `);
+      });
+
+      return reply.send({ ok: true, kind, enabled: parsed.data.enabled });
+    },
+  );
 };

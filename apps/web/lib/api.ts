@@ -626,6 +626,39 @@ export const api = {
     request<{ ok: true }>(`/notifications/${id}/read`, { method: "POST" }),
   readAllNotifications: () =>
     request<{ ok: true; markedRead: number }>("/notifications/read-all", { method: "POST" }),
+  listNotificationPreferences: () =>
+    request<{ preferences: NotificationPreference[] }>("/notifications/preferences"),
+  updateNotificationPreference: (kind: string, enabled: boolean) =>
+    request<{ ok: true; kind: string; enabled: boolean }>(
+      `/notifications/preferences/${encodeURIComponent(kind)}`,
+      { method: "PATCH", json: { enabled } },
+    ),
+
+  // Approval policies (roadmap #26)
+  listApprovalPolicies: () =>
+    request<{ policies: ApprovalPolicy[] }>("/approval-policies"),
+  createApprovalPolicy: (body: CreateApprovalPolicy) =>
+    request<{ policy: ApprovalPolicy }>("/approval-policies", { method: "POST", json: body }),
+  updateApprovalPolicy: (id: string, body: Partial<CreateApprovalPolicy>) =>
+    request<{ policy: ApprovalPolicy }>(`/approval-policies/${id}`, { method: "PATCH", json: body }),
+  deleteApprovalPolicy: (id: string) =>
+    request<{ ok: true }>(`/approval-policies/${id}`, { method: "DELETE" }),
+
+  // Roles + user-role assignment (roadmap #27)
+  listRoles: () => request<{ roles: AppRole[] }>("/roles"),
+  createRole: (body: CreateAppRole) =>
+    request<{ role: AppRole }>("/roles", { method: "POST", json: body }),
+  updateRole: (id: string, body: Partial<CreateAppRole>) =>
+    request<{ role: AppRole }>(`/roles/${id}`, { method: "PATCH", json: body }),
+  deleteRole: (id: string) => request<{ ok: true }>(`/roles/${id}`, { method: "DELETE" }),
+  listUsersWithRoles: () => request<{ users: UserWithRoles[] }>("/roles/users"),
+  assignRole: (userId: string, roleId: string) =>
+    request<{ ok: true }>(`/roles/users/${userId}/roles`, {
+      method: "POST",
+      json: { roleId },
+    }),
+  unassignRole: (userId: string, roleId: string) =>
+    request<{ ok: true }>(`/roles/users/${userId}/roles/${roleId}`, { method: "DELETE" }),
 
   // Audit log viewer (read-only).
   listAuditEvents: (filters: AuditLogFilters = {}) => {
@@ -3816,6 +3849,87 @@ export interface AppNotification {
   readAt: string | null;
   createdAt: string;
   isBroadcast: boolean;
+}
+
+// Notification prefs (roadmap #25)
+export interface NotificationPreference {
+  kind: string;
+  label: string;
+  description: string;
+  enabled: boolean;
+  known: boolean;
+}
+
+// Approval policies (roadmap #26)
+export type ApprovalDocumentType =
+  | "journal_entry"
+  | "expense_claim"
+  | "leave_request"
+  | "bill"
+  | "purchase_order"
+  | "invoice";
+
+export interface ApprovalStepApprover {
+  kind: "role" | "user";
+  id: string;
+  label?: string;
+}
+
+export interface ApprovalStep {
+  approvers: ApprovalStepApprover[];
+  anyOf: boolean;
+}
+
+export interface ApprovalTriggerRule {
+  minAmountCents?: number;
+  submitters?: string[];
+}
+
+export interface ApprovalPolicy {
+  id: string;
+  name: string;
+  description: string | null;
+  documentType: ApprovalDocumentType;
+  triggerRule: ApprovalTriggerRule;
+  steps: ApprovalStep[];
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateApprovalPolicy {
+  name: string;
+  description?: string;
+  documentType: ApprovalDocumentType;
+  triggerRule?: ApprovalTriggerRule;
+  steps: ApprovalStep[];
+  isActive?: boolean;
+}
+
+// Custom roles (roadmap #27)
+export interface AppRole {
+  id: string;
+  name: string;
+  description: string | null;
+  permissions: Record<string, boolean>;
+  isSystem: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateAppRole {
+  name: string;
+  description?: string;
+  permissions: Record<string, boolean>;
+}
+
+export interface UserWithRoles {
+  id: string;
+  email: string;
+  fullName: string | null;
+  isOwner: boolean;
+  isActive: boolean;
+  roles: Array<{ id: string; name: string }>;
 }
 
 export type BankImportStatus = "pending" | "reconciled";

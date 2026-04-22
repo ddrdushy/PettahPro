@@ -38,3 +38,6 @@ export * from "./customer-statement-emails.js";
 export * from "./audit-events.js";
 export * from "./final-settlements.js";
 export * from "./expense-claims.js";
+export * from "./notification-preferences.js";
+export * from "./approval-policies.js";
+export * from "./roles.js";
