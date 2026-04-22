@@ -41,3 +41,4 @@ export * from "./expense-claims.js";
 export * from "./notification-preferences.js";
 export * from "./approval-policies.js";
 export * from "./roles.js";
+export * from "./fx-rates.js";

@@ -9,8 +9,10 @@ import { customerStatementRoutes } from "./modules/operations/customer-statement
 import { customerStatementEmailRoutes } from "./modules/operations/customer-statement-email.js";
 import { suppliersRoutes } from "./modules/operations/suppliers.js";
 import { supplierStatementRoutes } from "./modules/operations/supplier-statement.js";
+import { supplierReconcileRoutes } from "./modules/buy/supplier-reconcile.js";
 import { itemsRoutes } from "./modules/operations/items.js";
 import { coaRoutes, taxCodesRoutes } from "./modules/accounting/coa.js";
+import { fxRatesRoutes } from "./modules/accounting/fx-rates.js";
 import { journalEntriesRoutes } from "./modules/accounting/journal-entries.js";
 import { recurringJournalsRoutes } from "./modules/accounting/recurring-journals.js";
 import { fixedAssetsRoutes } from "./modules/accounting/fixed-assets.js";
@@ -115,6 +117,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await server.register(customerStatementEmailRoutes, { prefix: "/customers" });
   await server.register(suppliersRoutes, { prefix: "/suppliers" });
   await server.register(supplierStatementRoutes, { prefix: "/suppliers" });
+  await server.register(supplierReconcileRoutes, { prefix: "/suppliers" });
   await server.register(itemsRoutes, { prefix: "/items" });
   await server.register(coaRoutes, { prefix: "/coa" });
   await server.register(taxCodesRoutes, { prefix: "/tax-codes" });
@@ -125,6 +128,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await server.register(whtRoutes, { prefix: "/wht" });
   await server.register(openingBalanceRoutes, { prefix: "/opening-balance" });
   await server.register(bankReconciliationRoutes, { prefix: "/bank-reconciliation" });
+  await server.register(fxRatesRoutes, { prefix: "/fx-rates" });
   await server.register(invoicesRoutes, { prefix: "/invoices" });
   await server.register(recurringInvoicesRoutes, { prefix: "/recurring-invoices" });
   await server.register(creditNotesRoutes, { prefix: "/credit-notes" });

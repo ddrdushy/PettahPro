@@ -1,5 +1,5 @@
 import type { FastifyPluginAsync } from "fastify";
-import { and, eq, isNull, desc, sql, asc } from "drizzle-orm";
+import { and, eq, isNull, desc, sql, asc, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { withTenant, schema, nextDocumentNumber } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
@@ -31,6 +31,12 @@ const CreateSchema = z.object({
   customerId: z.string().uuid(),
   issueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  // Multi-currency: `currency` + `fxRate` are display metadata; header
+  // `total_cents` stays in LKR. If caller sends non-LKR currency without
+  // a rate we default to 1.0 — the UI is expected to source the rate
+  // from the fx_rates table or let the user override it.
+  currency: z.string().length(3).optional(),
+  fxRate: z.number().positive().optional(),
   reference: z.string().max(64).optional().or(z.literal("")),
   poNumber: z.string().max(64).optional().or(z.literal("")),
   notes: z.string().optional().or(z.literal("")),
@@ -273,6 +279,16 @@ export const invoicesRoutes: FastifyPluginAsync = async (fastify) => {
       const { lines, subtotalCents, discountCents, taxCents, totalCents } =
         await computeInvoice(tx, ctx.tenantId, input.lines);
 
+      const currency = (input.currency ?? customer.currency ?? "LKR").toUpperCase();
+      const fxRate = input.fxRate ?? 1.0;
+      // foreign_total_cents mirrors total_cents when LKR, otherwise it's
+      // the explicit amount the PDF should show in the foreign currency.
+      // Stored alongside rather than re-derived so the rate rounding is
+      // locked at issue time.
+      const foreignTotalCents = currency === "LKR"
+        ? totalCents
+        : Math.round(totalCents / fxRate);
+
       const [inv] = await tx
         .insert(schema.invoices)
         .values({
@@ -281,11 +297,13 @@ export const invoicesRoutes: FastifyPluginAsync = async (fastify) => {
           status: "draft",
           issueDate,
           dueDate,
-          currency: customer.currency ?? "LKR",
+          currency,
+          fxRate: fxRate.toString(),
           subtotalCents,
           discountCents,
           taxCents,
           totalCents,
+          foreignTotalCents,
           balanceDueCents: totalCents,
           reference: input.reference || null,
           poNumber: input.poNumber || null,
@@ -327,6 +345,216 @@ export const invoicesRoutes: FastifyPluginAsync = async (fastify) => {
 
     if (!invoice) return;
     return reply.status(201).send({ invoice });
+  });
+
+  // POST /invoices/batch-from-delivery-notes — roadmap #16 (sell §2.5).
+  //
+  // Roll one invoice out of N already-delivered delivery notes for the
+  // same customer. Common when a distributor delivers to a retailer
+  // multiple times in a month and raises one consolidated month-end
+  // invoice. Each picked DN gets its `invoice_id` pointed at the new
+  // draft so list screens show "invoiced" state and the same DN can't be
+  // rolled into a second invoice.
+  //
+  // v1 pricing policy: we take unit price from `items.sellPriceCents` at
+  // invoice-time (DN lines carry only qty + item). For custom-description
+  // DN lines (no item), unitPriceCents is 0 and the user edits the draft
+  // before posting. We do not infer from a linked SO in v1 — too many
+  // edge cases when DNs mix SO-backed and ad-hoc stock.
+  fastify.post("/batch-from-delivery-notes", async (req, reply) => {
+    const ctx = requireAuth(req, reply);
+    if (!ctx) return;
+
+    const schemaBatch = z.object({
+      deliveryNoteIds: z.array(z.string().uuid()).min(1).max(50),
+      issueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      notes: z.string().optional().or(z.literal("")),
+    });
+    const parsed = schemaBatch.safeParse(req.body);
+    if (!parsed.success) {
+      return reply
+        .status(400)
+        .send({ error: { code: "INVALID_INPUT", issues: parsed.error.issues } });
+    }
+    const input = parsed.data;
+    const issueDate = input.issueDate ?? new Date().toISOString().slice(0, 10);
+
+    const result = await withTenant(ctx.tenantId, async (tx) => {
+      const dns = await tx
+        .select()
+        .from(schema.deliveryNotes)
+        .where(
+          and(
+            eq(schema.deliveryNotes.tenantId, ctx.tenantId),
+            inArray(schema.deliveryNotes.id, input.deliveryNoteIds),
+            isNull(schema.deliveryNotes.deletedAt),
+          ),
+        );
+      if (dns.length !== input.deliveryNoteIds.length) {
+        throw new Error("DN_NOT_FOUND");
+      }
+      const customerId = dns[0]!.customerId;
+      if (dns.some((d) => d.customerId !== customerId)) {
+        throw new Error("DN_MIXED_CUSTOMERS");
+      }
+      if (dns.some((d) => d.invoiceId)) {
+        throw new Error("DN_ALREADY_INVOICED");
+      }
+      if (dns.some((d) => d.status !== "delivered")) {
+        throw new Error("DN_NOT_DELIVERED");
+      }
+
+      const customerRows = await tx
+        .select()
+        .from(schema.customers)
+        .where(
+          and(
+            eq(schema.customers.tenantId, ctx.tenantId),
+            eq(schema.customers.id, customerId),
+            isNull(schema.customers.deletedAt),
+          ),
+        )
+        .limit(1);
+      const customer = customerRows[0];
+      if (!customer) throw new Error("CUSTOMER_NOT_FOUND");
+
+      const dnLines = await tx
+        .select()
+        .from(schema.deliveryNoteLines)
+        .where(
+          and(
+            eq(schema.deliveryNoteLines.tenantId, ctx.tenantId),
+            inArray(schema.deliveryNoteLines.deliveryNoteId, input.deliveryNoteIds),
+          ),
+        )
+        .orderBy(asc(schema.deliveryNoteLines.lineNo));
+      if (dnLines.length === 0) throw new Error("DN_NO_LINES");
+
+      // Resolve item prices in one query instead of N+1.
+      const itemIds = Array.from(
+        new Set(dnLines.map((l) => l.itemId).filter((v): v is string => !!v)),
+      );
+      const itemRows = itemIds.length
+        ? await tx
+            .select()
+            .from(schema.items)
+            .where(
+              and(
+                eq(schema.items.tenantId, ctx.tenantId),
+                isNull(schema.items.deletedAt),
+              ),
+            )
+        : [];
+      const itemById = new Map(itemRows.map((i) => [i.id, i]));
+
+      // Build invoice line inputs — one per DN line, prefixing the DN
+      // number into the description so the customer can see which
+      // delivery each line came from.
+      const dnById = new Map(dns.map((d) => [d.id, d]));
+      const lineInputs: LineInput[] = dnLines.map((l) => {
+        const dn = dnById.get(l.deliveryNoteId);
+        const dnTag = dn?.dnNumber ? `[${dn.dnNumber}] ` : "";
+        const item = l.itemId ? itemById.get(l.itemId) : undefined;
+        return {
+          itemId: l.itemId ?? undefined,
+          description: `${dnTag}${l.description}`,
+          quantity: Number(l.quantity),
+          unitPriceCents: item?.sellPriceCents ?? 0,
+          taxCodeId: item?.taxCodeId ?? undefined,
+        };
+      });
+
+      const dueDate =
+        input.dueDate ??
+        new Date(new Date(issueDate).getTime() + customer.paymentTermsDays * 86_400_000)
+          .toISOString()
+          .slice(0, 10);
+
+      const {
+        lines: computed,
+        subtotalCents,
+        discountCents,
+        taxCents,
+        totalCents,
+      } = await computeInvoice(tx, ctx.tenantId, lineInputs);
+
+      const currency = customer.currency ?? "LKR";
+
+      const [inv] = await tx
+        .insert(schema.invoices)
+        .values({
+          tenantId: ctx.tenantId,
+          customerId,
+          status: "draft",
+          issueDate,
+          dueDate,
+          currency,
+          subtotalCents,
+          discountCents,
+          taxCents,
+          totalCents,
+          balanceDueCents: totalCents,
+          notes:
+            input.notes ||
+            `Consolidated invoice for delivery notes: ${dns
+              .map((d) => d.dnNumber ?? d.id.slice(0, 8))
+              .join(", ")}`,
+          createdByUserId: ctx.userId,
+        })
+        .returning();
+      if (!inv) throw new Error("Invoice insert failed");
+
+      await tx.insert(schema.invoiceLines).values(
+        computed.map((l) => ({
+          tenantId: ctx.tenantId,
+          invoiceId: inv.id,
+          lineNo: l.lineNo,
+          itemId: l.itemId,
+          description: l.description,
+          quantity: l.quantity.toString(),
+          unitPriceCents: l.unitPriceCents,
+          lineSubtotalCents: l.lineSubtotalCents,
+          discountPctBps: l.discountPctBps,
+          discountCents: l.discountCents,
+          taxCodeId: l.taxCodeId,
+          taxRateBps: l.taxRateBps,
+          taxCents: l.taxCents,
+          lineTotalCents: l.lineTotalCents,
+          incomeAccountId: l.incomeAccountId,
+        })),
+      );
+
+      // Link each DN back to the new invoice so re-rolling is blocked.
+      await tx
+        .update(schema.deliveryNotes)
+        .set({ invoiceId: inv.id, updatedAt: new Date() })
+        .where(
+          and(
+            eq(schema.deliveryNotes.tenantId, ctx.tenantId),
+            inArray(schema.deliveryNotes.id, input.deliveryNoteIds),
+          ),
+        );
+
+      return { invoice: inv, dnCount: dns.length };
+    }).catch((err: Error) => {
+      const code = err.message;
+      if (
+        code === "DN_NOT_FOUND" ||
+        code === "DN_MIXED_CUSTOMERS" ||
+        code === "DN_ALREADY_INVOICED" ||
+        code === "DN_NOT_DELIVERED" ||
+        code === "DN_NO_LINES" ||
+        code === "CUSTOMER_NOT_FOUND"
+      ) {
+        reply.status(400).send({ error: { code } });
+        return null;
+      }
+      throw err;
+    });
+
+    if (!result) return;
+    return reply.status(201).send(result);
   });
 
   // POST /invoices/:id/duplicate — recurring-invoice helper. Copies

@@ -141,6 +141,11 @@ export const api = {
   },
   createSupplier: (body: CreateSupplier) =>
     request<{ supplier: Supplier }>("/suppliers", { method: "POST", json: body }),
+  reconcileSupplier: (id: string, rows: SupplierReconcileRow[]) =>
+    request<SupplierReconcileResult>(`/suppliers/${id}/reconcile`, {
+      method: "POST",
+      json: { rows },
+    }),
 
   listItems: (q?: string) =>
     request<{ items: Item[] }>(`/items${q ? `?q=${encodeURIComponent(q)}` : ""}`),
@@ -223,6 +228,16 @@ export const api = {
     }),
   duplicateInvoice: (id: string) =>
     request<{ invoice: InvoiceDetail }>(`/invoices/${id}/duplicate`, { method: "POST" }),
+  batchInvoiceFromDeliveryNotes: (body: {
+    deliveryNoteIds: string[];
+    issueDate?: string;
+    dueDate?: string;
+    notes?: string;
+  }) =>
+    request<{ invoice: InvoiceDetail; dnCount: number }>(
+      "/invoices/batch-from-delivery-notes",
+      { method: "POST", json: body },
+    ),
   writeOffInvoice: (id: string, body: { reason: string; claimVatRelief?: boolean }) =>
     request<{
       ok: true;
@@ -607,6 +622,18 @@ export const api = {
   getSettings: () => request<TenantSettingsResponse>("/settings"),
   updateSettings: (body: Partial<TenantSettings>) =>
     request<TenantSettingsResponse>("/settings", { method: "PATCH", json: body }),
+
+  listFxRates: (filter?: { from?: string; to?: string }) => {
+    const qs = new URLSearchParams();
+    if (filter?.from) qs.set("from", filter.from);
+    if (filter?.to) qs.set("to", filter.to);
+    const s = qs.toString();
+    return request<{ rates: FxRate[] }>(`/fx-rates${s ? `?${s}` : ""}`);
+  },
+  createFxRate: (body: CreateFxRate) =>
+    request<{ rate: FxRate }>("/fx-rates", { method: "POST", json: body }),
+  deleteFxRate: (id: string) =>
+    request<void>(`/fx-rates/${id}`, { method: "DELETE" }),
 
   listNumberSeries: () => request<{ series: NumberSeries[] }>("/number-series"),
   getNumberSeries: (name: string) =>
@@ -1340,6 +1367,44 @@ export interface SupplierStatement {
   aging: PartyAgingBucket[];
 }
 
+export interface SupplierReconcileRow {
+  reference: string;
+  amount: number;
+  date?: string;
+}
+
+export type SupplierReconcileStatus =
+  | "matched"
+  | "amount_mismatch"
+  | "only_in_ours"
+  | "only_in_theirs";
+
+export interface SupplierReconcileMatch {
+  status: SupplierReconcileStatus;
+  reference: string;
+  theirAmountCents: number | null;
+  theirDate: string | null;
+  ourBillId: string | null;
+  ourBillNumber: string | null;
+  ourInternalReference: string | null;
+  ourBalanceCents: number | null;
+  diffCents: number | null;
+}
+
+export interface SupplierReconcileResult {
+  supplier: { id: string; name: string };
+  summary: {
+    theirTotalCents: number;
+    ourTotalCents: number;
+    diffCents: number;
+    matched: number;
+    amountMismatch: number;
+    onlyInOurs: number;
+    onlyInTheirs: number;
+  };
+  results: SupplierReconcileMatch[];
+}
+
 export interface SupplierDetail {
   supplier: Supplier;
   kpis: PartyKpis;
@@ -1474,6 +1539,9 @@ export interface Account {
   normalSide: "dr" | "cr";
   isSystem: boolean;
   isActive: boolean;
+  // Currency of the account. Non-LKR only meaningful for bank/cash
+  // accounts in v1 — every other account type posts in LKR.
+  currency: string;
 }
 
 export interface Branch {
@@ -1766,6 +1834,8 @@ export interface CreateBill {
   supplierBillNumber?: string;
   billDate?: string;
   dueDate?: string;
+  currency?: string;
+  fxRate?: number;
   notes?: string;
   lines: CreateBillLine[];
   charges?: CreateBillCharge[];
@@ -1932,6 +2002,8 @@ export interface CreateInvoice {
   customerId: string;
   issueDate?: string;
   dueDate?: string;
+  currency?: string;
+  fxRate?: number;
   reference?: string;
   poNumber?: string;
   notes?: string;
@@ -3805,6 +3877,27 @@ export interface FiscalPeriod {
 export interface TenantSettingsResponse {
   settings: TenantSettings;
   defaults: TenantSettings;
+}
+
+export interface FxRate {
+  id: string;
+  fromCurrency: string;
+  toCurrency: string;
+  rateDate: string;
+  rate: string;
+  source: string;
+  note: string | null;
+  createdAt: string;
+  createdByUserId: string | null;
+}
+
+export interface CreateFxRate {
+  fromCurrency: string;
+  toCurrency: string;
+  rateDate: string;
+  rate: number;
+  source?: string;
+  note?: string;
 }
 
 export type NumberSeriesScope = "year" | "month" | "global";

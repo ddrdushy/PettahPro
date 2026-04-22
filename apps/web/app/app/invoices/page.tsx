@@ -78,10 +78,15 @@ export default async function InvoicesPage() {
         title="Invoices"
         description="Every invoice raised, posted, paid, and voided. Drafts don't hit the ledger — post to record."
         action={
-          <Link href="/app/invoices/new" className="btn-primary">
-            <Plus className="h-4 w-4" aria-hidden />
-            New invoice
-          </Link>
+          <div className="flex gap-2">
+            <Link href="/app/invoices/batch" className="btn-secondary">
+              From delivery notes
+            </Link>
+            <Link href="/app/invoices/new" className="btn-primary">
+              <Plus className="h-4 w-4" aria-hidden />
+              New invoice
+            </Link>
+          </div>
         }
       />
 
