@@ -4,7 +4,7 @@ Living counterweight to [`_roadmap.md`](./_roadmap.md). The roadmap says what's 
 
 Every PR should end with a check: does anything here need to be added, cleared, or bumped?
 
-Last updated: 2026-04-22 (PR #48 — RLS hardening: non-superuser app role + SECURITY DEFINER auth helpers)
+Last updated: 2026-04-22 (PR #57 — final settlement worksheet). Unchanged since #48 RLS hardening: no new bugs, typecheck baseline still 32, no regressions. Modules added to §5 below: stock counts (#50), proforma invoices + recurring bills (#51), recurring journals (#52), number series (#53), audit log viewer (#54), customer statement email (#55), final settlements (#57).
 
 ---
 
@@ -118,15 +118,19 @@ Quick read on which corners are stale. `Tests`: "unit" = unit tests exist, "rout
 | Recurring invoices | mid | — | 0 | Hourly BullMQ cron. Has never misfired in dev but untested in load. |
 | Credit notes | early + #46 (PDF) | — | 1 typecheck (new PDF route) | Stable. |
 | Customer payments | early + #36 (bad debt reverse) | — | 1 typecheck | Stable. |
+| Proforma invoices | #51 | — | 0 | Converts 1:1 to invoices, idempotent. PRO-series document numbers. |
+| Customer statement email | #55 | — | 0 | On-demand + day-1 monthly cron. SMTP retries on transient failure. |
 | Suppliers | early | — | 0 | Stable. |
 | Purchase orders | early | — | 0 | Stable. |
 | GRNs | early | — | 0 | Stable. |
 | Bills | early + #45 (PDF) | — | 5 typecheck (4 existing + 1 new PDF route) | Feeds WAVG — fragile. See fragile areas §3. |
+| Recurring bills | #51 | — | 0 | Same hourly cron as recurring invoices. Auto-post vs review-queue toggle. |
 | Debit notes | early + #46 (PDF) | — | 1 typecheck (new PDF route) | Stable. |
 | Supplier payments | early + #33 (WHT) | — | 1 typecheck | WHT integration here is non-obvious. |
 | Items | early | — | 0 | Stable. |
 | Stock on-hand / ledger | #43 (in-transit) | — | 0 | Just touched. |
 | Stock transfers | #43 | — | 0 | Just shipped. |
+| Stock counts | #50 | — | 0 | Blind count + tiered approval. Feeds WAVG on post. |
 | Low-stock report | mid | — | 0 | Stable. |
 | Chart of accounts | early | — | 0 | Stable. |
 | Tax codes | early | — | 0 | Schema field rename drift (see `bills/[id]/page.tsx:36`). |
@@ -140,6 +144,9 @@ Quick read on which corners are stale. `Tests`: "unit" = unit tests exist, "rout
 | Credit enforcement | #35 | — | 0 | Stable. |
 | Bad debt write-off | #36 | — | 0 | VAT-relief math is load-bearing. |
 | JE approval workflow | #37 | — | 0 | SOD enforced. |
+| Recurring journals | #52 | — | 0 | Hourly cron. Auto-post vs review-queue toggle. Variable-amount prompts per cycle. |
+| Number series config | #53 | — | 0 | Tenant-level template override per doc kind. All allocations funnelled through `nextDocumentNumber()`. |
+| Audit log viewer | #54 | — | 0 | `recordAuditEvent` never throws — a failed audit write doesn't break the primary action. |
 | Employees | early + #41 (exit) | — | 0 | Stable. |
 | Salary components | early | — | 3 typecheck | Sprouted debt but functional. |
 | Payroll runs | early + #41 (pro-rata) + #42 (bonus integration) | — | 4 typecheck | Compute engine = load-bearing. See fragile areas. |
@@ -149,6 +156,7 @@ Quick read on which corners are stale. `Tests`: "unit" = unit tests exist, "rout
 | Staff loans | late | — | 0 | Atomically claimed at draft. |
 | Mid-period payroll events | #41 | — | 0 | Pro-rata engine. |
 | Bonus schemes | #42 | — | 0 | Just shipped. |
+| Final settlements | #57 | — | 0 | Gross-to-net exit calc. Waives pending loan schedules on post. FS-series numbers. Partial unique index enforces one active settlement per employee. |
 | Reports (TB, P&L, BS, GL, VAT, cash flow) | mid | — | 0 | Read-only, low risk. |
 | Reports (dashboard) | mid | — | 4 typecheck | Aging bucket label union mismatch. |
 | AR aging / AP aging / 3-way match | mid | — | 0 | Stable. |
