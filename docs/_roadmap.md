@@ -4,11 +4,11 @@ Live tracker of what's shipped, what's next, and what's backlog — cross-checke
 
 **Roadmap says what's shipped. [`_status.md`](./_status.md) says what's broken, fragile, or at-risk right now.** Read both before picking up work.
 
-Last updated: 2026-04-22 after PR #45. **All must-haves shipped.**
+Last updated: 2026-04-22 after PR #46. **All must-haves shipped.**
 
 ---
 
-## ✅ Shipped (PRs #1 – #45)
+## ✅ Shipped (PRs #1 – #46)
 
 ### Platform foundation
 - Multi-tenant Postgres with RLS (`current_tenant_id()` + `SET LOCAL app.tenant_id`)
@@ -28,7 +28,7 @@ Last updated: 2026-04-22 after PR #45. **All must-haves shipped.**
 - Delivery notes (CRUD, deliver, cancel, **PDF** with signature block, optional stock relief at deliver time)
 - Invoices (CRUD, post, void, duplicate, **PDF**, stock relief at post by default)
 - Recurring invoices (monthly templates, hourly BullMQ cron → draft invoices, pause/resume/generate-now)
-- Credit notes (CRUD, post)
+- Credit notes (CRUD, post, **PDF** with draft banner — PR #46)
 - Customer payments (cash/cheque/bank-transfer, cheque lifecycle linkage)
 
 ### Buy
@@ -36,7 +36,7 @@ Last updated: 2026-04-22 after PR #45. **All must-haves shipped.**
 - Purchase orders (CRUD, send/acknowledge/cancel/convert-to-bill, **PDF**)
 - Goods received notes / GRNs (CRUD, receive, cancel, links to PO and bill)
 - Bills (CRUD, post, void, **PDF** — draft banner on unposted bills so AP approvers can preview before posting)
-- Debit notes (CRUD, post)
+- Debit notes (CRUD, post, **PDF** with draft banner — PR #46)
 - Supplier payments (cash/cheque/bank-transfer, cheque lifecycle)
 
 ### Inventory
@@ -133,7 +133,7 @@ Each item has a spec reference, one-sentence description, and rough sizing (**S*
 | 38 | Petty cash float | business-tenant-layer2 §7 | Per-branch ceiling, top-up workflow, EOD reconciliation. | M |
 | 39 | Attendance capture | business-tenant-layer2 §5 | QR / biometric file import / geofence+photo / manual muster. | M |
 | 40 | Dual depreciation (book vs tax) | accounting §8 | Parallel schedules for tax filing alongside management books. | M |
-| 41 | Credit note PDF + debit note PDF | — | Round out the document PDF set. Bill PDF shipped in PR #45. | S each |
+| 41 | ~~Credit note PDF + debit note PDF~~ | — | **Shipped in PR #46.** Bill PDF shipped in PR #45. Document PDF set is now complete: invoice / bill / credit note / debit note / delivery note / GRN / PO / quotation / stock transfer / payslip. | ~~S each~~ |
 
 ---
 

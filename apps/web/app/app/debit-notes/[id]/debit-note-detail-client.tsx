@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { ArrowLeft, CheckCircle2, Loader2 } from "lucide-react";
+import { ArrowLeft, CheckCircle2, Download, Loader2 } from "lucide-react";
 import {
   api,
   ApiError,
@@ -93,6 +93,16 @@ export function DebitNoteDetailClient({
             <span className={`rounded-full px-2.5 py-0.5 text-caption font-medium ${statusStyles[debitNote.status]}`}>
               {statusLabels[debitNote.status]}
             </span>
+            <a
+              href={`/app/debit-notes/${debitNote.id}/pdf`}
+              target="_blank"
+              rel="noopener"
+              className="btn-secondary inline-flex items-center gap-1 text-small"
+              title={debitNote.status === "draft" ? "Printable preview — watermarked as draft" : "Printable debit note"}
+            >
+              <Download className="h-3.5 w-3.5" aria-hidden />
+              PDF
+            </a>
             {debitNote.status === "draft" && (
               <button
                 type="button"
