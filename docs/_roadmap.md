@@ -129,7 +129,7 @@ Each item has a spec reference, one-sentence description, and rough sizing (**S*
 
 | # | Feature | Spec | What it does | Size |
 |---|---|---|---|---|
-| 28 | POS screen | sell §5 | Hardware-integrated cash-sale register, offline capable, shift Z-report. | L |
+| 28 | ~~POS screen~~ | sell §5 | **Shipped in PR #67.** Shift-based retail POS on top of the existing invoice + customer_payments plumbing. Cashier opens a shift with an opening float, runs sales through a one-screen terminal (item search + cart + tender tiles for cash/card/LankaQR/bank), closes with a denomination-breakdown count. Variance posts to 5190 Cash Over/Short. Walk-in customer seeded per tenant so cash sales don't need a customer picker. Z-report view aggregates tender + sales totals per shift. Invoice post logic extracted to shared `postDraftInvoice()` helper so POS and REST share the same code path. v1: single-cashier, in-store only, no offline mode. | ~~L~~ |
 | 29 | Commission engine | sell §10 | Tiered rules, on-collection variant, payroll integration. | L |
 | 30 | Purchase requisition | buy §3 | PR creation → approval → convert to PO (tenant-toggle). | M |
 | 31 | Customer portal | sell §14 | Email+OTP login, view invoices/statements, pay online. | L |
