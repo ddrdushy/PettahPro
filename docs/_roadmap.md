@@ -4,11 +4,11 @@ Live tracker of what's shipped, what's next, and what's backlog — cross-checke
 
 **Roadmap says what's shipped. [`_status.md`](./_status.md) says what's broken, fragile, or at-risk right now.** Read both before picking up work.
 
-Last updated: 2026-04-22 after PR #44. **All must-haves shipped.**
+Last updated: 2026-04-22 after PR #45. **All must-haves shipped.**
 
 ---
 
-## ✅ Shipped (PRs #1 – #44)
+## ✅ Shipped (PRs #1 – #45)
 
 ### Platform foundation
 - Multi-tenant Postgres with RLS (`current_tenant_id()` + `SET LOCAL app.tenant_id`)
@@ -35,7 +35,7 @@ Last updated: 2026-04-22 after PR #44. **All must-haves shipped.**
 - Suppliers (CRUD, statements)
 - Purchase orders (CRUD, send/acknowledge/cancel/convert-to-bill, **PDF**)
 - Goods received notes / GRNs (CRUD, receive, cancel, links to PO and bill)
-- Bills (CRUD, post, void)
+- Bills (CRUD, post, void, **PDF** — draft banner on unposted bills so AP approvers can preview before posting)
 - Debit notes (CRUD, post)
 - Supplier payments (cash/cheque/bank-transfer, cheque lifecycle)
 
@@ -133,7 +133,7 @@ Each item has a spec reference, one-sentence description, and rough sizing (**S*
 | 38 | Petty cash float | business-tenant-layer2 §7 | Per-branch ceiling, top-up workflow, EOD reconciliation. | M |
 | 39 | Attendance capture | business-tenant-layer2 §5 | QR / biometric file import / geofence+photo / manual muster. | M |
 | 40 | Dual depreciation (book vs tax) | accounting §8 | Parallel schedules for tax filing alongside management books. | M |
-| 41 | Bill PDF + credit note PDF + debit note PDF | — | Round out the document PDF set. | S each |
+| 41 | Credit note PDF + debit note PDF | — | Round out the document PDF set. Bill PDF shipped in PR #45. | S each |
 
 ---
 

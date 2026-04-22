@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { cookies } from "next/headers";
 import { notFound } from "next/navigation";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Download } from "lucide-react";
 import type { Account, BillDetail, BillLine, Supplier, TaxCode } from "@/lib/api";
 import { PageHeader } from "@/components/app/page-header";
 import { StatusBadge } from "@/components/app/status-badge";
@@ -72,6 +72,16 @@ export default async function BillDetailPage({ params }: { params: { id: string 
         action={
           <div className="flex items-center gap-3">
             <StatusBadge status={bill.status} />
+            <a
+              href={`/app/bills/${bill.id}/pdf`}
+              target="_blank"
+              rel="noopener"
+              className="btn-secondary inline-flex items-center gap-1 text-small"
+              title={bill.status === "draft" ? "Printable preview — watermarked as draft" : "Printable bill"}
+            >
+              <Download className="h-3.5 w-3.5" aria-hidden />
+              PDF
+            </a>
             {bill.status === "draft" && <PostBillButton id={bill.id} />}
             {isPayable && supplier && (
               <RecordPaymentOutButton
