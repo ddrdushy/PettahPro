@@ -8,12 +8,14 @@ import { formatLKR, formatDate } from "@/lib/format";
 
 const statusStyles: Record<BonusRunStatus, string> = {
   draft: "bg-surface-recessed text-text-secondary",
+  pending_approval: "bg-warning-bg text-warning",
   posted: "bg-mint-surface text-mint-dark",
   void: "bg-danger-bg/60 text-danger",
 };
 
 const statusLabels: Record<BonusRunStatus, string> = {
   draft: "Draft",
+  pending_approval: "Pending approval",
   posted: "Posted",
   void: "Void",
 };

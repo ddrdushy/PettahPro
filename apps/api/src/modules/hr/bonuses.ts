@@ -10,6 +10,183 @@ import {
   type ResolvedComponent,
 } from "./sl-tax.js";
 import { loadTenantSettings } from "../settings/routes.js";
+import {
+  createApprovalRequest,
+  resolveApplicablePolicy,
+} from "../admin/approval-engine.js";
+
+type Tx = Parameters<Parameters<typeof withTenant>[1]>[0];
+
+export type PostBonusRunError =
+  | "NOT_FOUND"
+  | "BAD_STATUS"
+  | "EMPTY"
+  | "SCHEME_NOT_FOUND"
+  | "NO_SALARY_EXPENSE_ACCOUNT"
+  | "NO_SALARIES_PAYABLE_ACCOUNT"
+  | "NO_EPF_ACCOUNTS"
+  | "NO_ETF_ACCOUNTS"
+  | "NO_PAYE_ACCOUNT";
+
+/**
+ * Shared core for flipping a bonus run draft → posted (roadmap #43d).
+ * Used by both the immediate /post path and by the approval-engine
+ * finaliser. `allowStatuses` is the only guard against double-posting:
+ * immediate passes `["draft"]`, the engine finaliser passes
+ * `["pending_approval"]`.
+ */
+export async function postBonusRunCore(
+  tx: Tx,
+  input: {
+    tenantId: string;
+    bonusRunId: string;
+    postedByUserId: string;
+    allowStatuses: readonly string[];
+  },
+): Promise<{ ok: true; runNumber: string } | { error: PostBonusRunError }> {
+  const { tenantId, bonusRunId, postedByUserId } = input;
+  const runs = await tx
+    .select()
+    .from(schema.bonusRuns)
+    .where(
+      and(
+        eq(schema.bonusRuns.tenantId, tenantId),
+        eq(schema.bonusRuns.id, bonusRunId),
+        isNull(schema.bonusRuns.deletedAt),
+      ),
+    )
+    .limit(1);
+  const run = runs[0];
+  if (!run) return { error: "NOT_FOUND" };
+  if (!input.allowStatuses.includes(run.status)) return { error: "BAD_STATUS" };
+  if (run.employeeCount === 0 || run.grossCents === 0) return { error: "EMPTY" };
+
+  const schemes = await tx
+    .select()
+    .from(schema.bonusSchemes)
+    .where(
+      and(
+        eq(schema.bonusSchemes.tenantId, tenantId),
+        eq(schema.bonusSchemes.id, run.schemeId),
+      ),
+    )
+    .limit(1);
+  const scheme = schemes[0];
+  if (!scheme) return { error: "SCHEME_NOT_FOUND" };
+
+  const coaRows = await tx
+    .select()
+    .from(schema.chartOfAccounts)
+    .where(
+      and(
+        eq(schema.chartOfAccounts.tenantId, tenantId),
+        isNull(schema.chartOfAccounts.deletedAt),
+      ),
+    );
+  const bySub = new Map(coaRows.map((r) => [`${r.accountType}:${r.accountSubtype}`, r]));
+  const defaultExpense = bySub.get("expense:payroll");
+  const epfExpense = bySub.get("expense:payroll_epf");
+  const etfExpense = bySub.get("expense:payroll_etf");
+  const epfPayable = bySub.get("liability:epf");
+  const etfPayable = bySub.get("liability:etf");
+  const payePayable = bySub.get("liability:paye");
+  const salariesPayable = bySub.get("liability:salaries");
+
+  if (!defaultExpense) return { error: "NO_SALARY_EXPENSE_ACCOUNT" };
+  if (!salariesPayable) return { error: "NO_SALARIES_PAYABLE_ACCOUNT" };
+  if (run.epfEmployeeCents + run.epfEmployerCents > 0 && (!epfPayable || !epfExpense)) {
+    return { error: "NO_EPF_ACCOUNTS" };
+  }
+  if (run.etfEmployerCents > 0 && (!etfPayable || !etfExpense)) {
+    return { error: "NO_ETF_ACCOUNTS" };
+  }
+  if (run.payeCents > 0 && !payePayable) return { error: "NO_PAYE_ACCOUNT" };
+
+  let expenseAccountId = defaultExpense.id;
+  if (scheme.expenseAccountId) {
+    const override = coaRows.find((r) => r.id === scheme.expenseAccountId);
+    if (override && !override.deletedAt) expenseAccountId = override.id;
+  }
+
+  const runNumber = run.runNumber ?? run.id.slice(0, 8);
+  const lines: Parameters<typeof postJournal>[1]["lines"] = [
+    {
+      accountId: expenseAccountId,
+      drCents: run.grossCents,
+      description: `Bonus ${runNumber} · ${scheme.name}`,
+    },
+  ];
+  if (run.epfEmployerCents > 0 && epfExpense) {
+    lines.push({
+      accountId: epfExpense.id,
+      drCents: run.epfEmployerCents,
+      description: `Bonus ${runNumber} · EPF employer`,
+    });
+  }
+  if (run.etfEmployerCents > 0 && etfExpense) {
+    lines.push({
+      accountId: etfExpense.id,
+      drCents: run.etfEmployerCents,
+      description: `Bonus ${runNumber} · ETF employer`,
+    });
+  }
+  const epfTotal = run.epfEmployeeCents + run.epfEmployerCents;
+  if (epfTotal > 0 && epfPayable) {
+    lines.push({
+      accountId: epfPayable.id,
+      crCents: epfTotal,
+      description: `EPF payable · ${runNumber}`,
+    });
+  }
+  if (run.etfEmployerCents > 0 && etfPayable) {
+    lines.push({
+      accountId: etfPayable.id,
+      crCents: run.etfEmployerCents,
+      description: `ETF payable · ${runNumber}`,
+    });
+  }
+  if (run.payeCents > 0 && payePayable) {
+    lines.push({
+      accountId: payePayable.id,
+      crCents: run.payeCents,
+      description: `PAYE payable · ${runNumber}`,
+    });
+  }
+  lines.push({
+    accountId: salariesPayable.id,
+    crCents: run.netPayCents,
+    description: `Net bonus · ${runNumber}`,
+  });
+
+  const { entryId } = await postJournal(tx, {
+    tenantId,
+    entryDate: run.payDate,
+    memo: `Bonus ${runNumber} · ${scheme.name} · ${run.label}`,
+    sourceType: "bonus_run",
+    sourceId: run.id,
+    postedByUserId,
+    lines,
+  });
+
+  await tx
+    .update(schema.bonusRuns)
+    .set({
+      status: "posted",
+      journalEntryId: entryId,
+      postedAt: new Date(),
+      postedByUserId,
+      approvalRequestId: null,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(schema.bonusRuns.tenantId, tenantId),
+        eq(schema.bonusRuns.id, run.id),
+      ),
+    );
+
+  return { ok: true, runNumber };
+}
 
 /**
  * Bonus schemes + off-cycle bonus runs (payroll-module-spec §7).
@@ -705,12 +882,18 @@ export const bonusRunsRoutes: FastifyPluginAsync = async (fastify) => {
     },
   );
 
-  // POST /bonus-runs/:id/post  — book JE, mark posted
+  // POST /bonus-runs/:id/post — book JE, mark posted.
+  //
+  // Roadmap #43d — consults resolveApplicablePolicy("bonus_run", …)
+  // first. A matching policy parks the run in `pending_approval` and
+  // the /approvals queue drives the actual flip to `posted` via
+  // finaliseApprovedDocument → postBonusRunCore. No policy → immediate
+  // `draft → posted` via the same helper (legacy flow preserved).
   fastify.post<{ Params: { id: string } }>("/:id/post", async (req, reply) => {
     const ctx = await requirePermission(req, reply, "payroll.manage");
     if (!ctx) return;
 
-    const result = await withTenant(ctx.tenantId, async (tx) => {
+    const outcome = await withTenant(ctx.tenantId, async (tx) => {
       const runs = await tx
         .select()
         .from(schema.bonusRuns)
@@ -724,151 +907,54 @@ export const bonusRunsRoutes: FastifyPluginAsync = async (fastify) => {
         .limit(1);
       const run = runs[0];
       if (!run) return { error: "NOT_FOUND" as const };
+      if (run.approvalRequestId) return { error: "ENGINE_OWNED" as const };
       if (run.status !== "draft") return { error: "NOT_DRAFT" as const };
       if (run.employeeCount === 0 || run.grossCents === 0) {
         return { error: "EMPTY" as const };
       }
 
-      // Resolve scheme for label + optional expense-account override
-      const schemes = await tx
-        .select()
-        .from(schema.bonusSchemes)
-        .where(
-          and(
-            eq(schema.bonusSchemes.tenantId, ctx.tenantId),
-            eq(schema.bonusSchemes.id, run.schemeId),
-          ),
-        )
-        .limit(1);
-      const scheme = schemes[0];
-      if (!scheme) return { error: "SCHEME_NOT_FOUND" as const };
-
-      // Resolve GL accounts by subtype (same approach as payroll-runs)
-      const coaRows = await tx
-        .select()
-        .from(schema.chartOfAccounts)
-        .where(
-          and(
-            eq(schema.chartOfAccounts.tenantId, ctx.tenantId),
-            isNull(schema.chartOfAccounts.deletedAt),
-          ),
-        );
-      const bySub = new Map(coaRows.map((r) => [`${r.accountType}:${r.accountSubtype}`, r]));
-      const defaultExpense = bySub.get("expense:payroll");
-      const epfExpense = bySub.get("expense:payroll_epf");
-      const etfExpense = bySub.get("expense:payroll_etf");
-      const epfPayable = bySub.get("liability:epf");
-      const etfPayable = bySub.get("liability:etf");
-      const payePayable = bySub.get("liability:paye");
-      const salariesPayable = bySub.get("liability:salaries");
-
-      if (!defaultExpense) return { error: "NO_SALARY_EXPENSE_ACCOUNT" as const };
-      if (!salariesPayable) return { error: "NO_SALARIES_PAYABLE_ACCOUNT" as const };
-      if (run.epfEmployeeCents + run.epfEmployerCents > 0 && (!epfPayable || !epfExpense)) {
-        return { error: "NO_EPF_ACCOUNTS" as const };
-      }
-      if (run.etfEmployerCents > 0 && (!etfPayable || !etfExpense)) {
-        return { error: "NO_ETF_ACCOUNTS" as const };
-      }
-      if (run.payeCents > 0 && !payePayable) {
-        return { error: "NO_PAYE_ACCOUNT" as const };
-      }
-
-      // Preferred expense account: scheme override → default 6000.
-      // We validated its existence above for the default; the override
-      // FK integrity was checked when the scheme was created, so here we
-      // just trust it if set.
-      let expenseAccountId = defaultExpense.id;
-      if (scheme.expenseAccountId) {
-        const override = coaRows.find((r) => r.id === scheme.expenseAccountId);
-        if (override && !override.deletedAt) {
-          expenseAccountId = override.id;
-        }
-      }
-
-      const runNumber = run.runNumber ?? run.id.slice(0, 8);
-      const lines: Parameters<typeof postJournal>[1]["lines"] = [
-        {
-          accountId: expenseAccountId,
-          drCents: run.grossCents,
-          description: `Bonus ${runNumber} · ${scheme.name}`,
-        },
-      ];
-      if (run.epfEmployerCents > 0 && epfExpense) {
-        lines.push({
-          accountId: epfExpense.id,
-          drCents: run.epfEmployerCents,
-          description: `Bonus ${runNumber} · EPF employer`,
-        });
-      }
-      if (run.etfEmployerCents > 0 && etfExpense) {
-        lines.push({
-          accountId: etfExpense.id,
-          drCents: run.etfEmployerCents,
-          description: `Bonus ${runNumber} · ETF employer`,
-        });
-      }
-      const epfTotal = run.epfEmployeeCents + run.epfEmployerCents;
-      if (epfTotal > 0 && epfPayable) {
-        lines.push({
-          accountId: epfPayable.id,
-          crCents: epfTotal,
-          description: `EPF payable · ${runNumber}`,
-        });
-      }
-      if (run.etfEmployerCents > 0 && etfPayable) {
-        lines.push({
-          accountId: etfPayable.id,
-          crCents: run.etfEmployerCents,
-          description: `ETF payable · ${runNumber}`,
-        });
-      }
-      if (run.payeCents > 0 && payePayable) {
-        lines.push({
-          accountId: payePayable.id,
-          crCents: run.payeCents,
-          description: `PAYE payable · ${runNumber}`,
-        });
-      }
-      lines.push({
-        accountId: salariesPayable.id,
-        crCents: run.netPayCents,
-        description: `Net bonus · ${runNumber}`,
+      const policy = await resolveApplicablePolicy(tx, {
+        documentType: "bonus_run",
+        amountCents: run.grossCents,
+        submitterUserId: ctx.userId,
       });
 
-      const { entryId } = await postJournal(tx, {
+      if (policy) {
+        const request = await createApprovalRequest(tx, {
+          tenantId: ctx.tenantId,
+          documentType: "bonus_run",
+          documentId: run.id,
+          amountCents: run.grossCents,
+          policyId: policy.policyId,
+          steps: policy.steps,
+          submitterUserId: ctx.userId,
+        });
+        await tx
+          .update(schema.bonusRuns)
+          .set({
+            status: "pending_approval",
+            approvalRequestId: request.id,
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.bonusRuns.id, run.id));
+        return { parked: true as const, requestId: request.id };
+      }
+
+      const posted = await postBonusRunCore(tx, {
         tenantId: ctx.tenantId,
-        entryDate: run.payDate,
-        memo: `Bonus ${runNumber} · ${scheme.name} · ${run.label}`,
-        sourceType: "bonus_run",
-        sourceId: run.id,
+        bonusRunId: run.id,
         postedByUserId: ctx.userId,
-        lines,
+        allowStatuses: ["draft"],
       });
-
-      await tx
-        .update(schema.bonusRuns)
-        .set({
-          status: "posted",
-          journalEntryId: entryId,
-          postedAt: new Date(),
-          postedByUserId: ctx.userId,
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(schema.bonusRuns.tenantId, ctx.tenantId),
-            eq(schema.bonusRuns.id, run.id),
-          ),
-        );
-
-      return { ok: true as const };
+      if ("error" in posted) return { error: posted.error };
+      return { parked: false as const, runNumber: posted.runNumber };
     });
 
-    if ("error" in result) {
-      const code = result.error;
+    if ("error" in outcome) {
+      const code = outcome.error;
       let http = 409;
       if (code === "NOT_FOUND") http = 404;
+      else if (code === "ENGINE_OWNED") http = 409;
       else if (
         code === "NO_SALARY_EXPENSE_ACCOUNT" ||
         code === "NO_SALARIES_PAYABLE_ACCOUNT" ||
@@ -878,12 +964,18 @@ export const bonusRunsRoutes: FastifyPluginAsync = async (fastify) => {
       ) {
         http = 400;
       }
-      return reply.status(http).send({ error: { code } });
+      const message =
+        code === "ENGINE_OWNED"
+          ? "This run is managed by the approval engine. Decide it from the Approvals queue."
+          : undefined;
+      return reply.status(http).send({ error: message ? { code, message } : { code } });
     }
-    return reply.send({ ok: true });
+    if (outcome.parked) {
+      return reply.send({ ok: true, parked: true, approvalRequestId: outcome.requestId });
+    }
+    return reply.send({ ok: true, runNumber: outcome.runNumber });
   });
 
-  // POST /bonus-runs/:id/void  — reverse a posted run
   fastify.post<{ Params: { id: string } }>("/:id/void", async (req, reply) => {
     const ctx = await requirePermission(req, reply, "payroll.manage");
     if (!ctx) return;

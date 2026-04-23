@@ -343,5 +343,15 @@ function deepLinkFor(request: ApprovalRequest): string | null {
     // the approver / submitter revisits from the queue.
     return `/app/purchase-orders/${request.documentId}`;
   }
+  if (request.documentType === "payroll_run") {
+    // roadmap #43d — documentId is payroll_runs.id. Detail page carries
+    // the per-employee breakdown + post/pay affordances that the
+    // approver needs context on.
+    return `/app/payroll/${request.documentId}`;
+  }
+  if (request.documentType === "bonus_run") {
+    // roadmap #43d — documentId is bonus_runs.id.
+    return `/app/bonus-runs/${request.documentId}`;
+  }
   return null;
 }

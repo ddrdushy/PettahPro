@@ -49,6 +49,11 @@ export const payrollRuns = pgTable("payroll_runs", {
   voidReason: text("void_reason"),
   voidAt: timestamp("void_at", { withTimezone: true }),
   voidByUserId: uuid("void_by_user_id"),
+  // Approval engine linkage (roadmap #43d). Non-null iff the run is
+  // owned by the generic engine (parked in `pending_approval`). Set
+  // at submit time when a `document_type='payroll_run'` policy
+  // matches; cleared on reject/withdraw via /approvals/:id/*.
+  approvalRequestId: uuid("approval_request_id"),
 });
 
 export type PayrollRun = typeof payrollRuns.$inferSelect;

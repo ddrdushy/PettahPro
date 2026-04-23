@@ -10,6 +10,325 @@ import {
   type ResolvedComponent,
 } from "./sl-tax.js";
 import { loadTenantSettings } from "../settings/routes.js";
+import {
+  cancelApprovalRequest,
+  createApprovalRequest,
+  resolveApplicablePolicy,
+} from "../admin/approval-engine.js";
+
+type Tx = Parameters<Parameters<typeof withTenant>[1]>[0];
+
+export type PostPayrollRunError =
+  | "NOT_FOUND"
+  | "BAD_STATUS"
+  | "EMPTY"
+  | "MISSING_ACCOUNT";
+
+/**
+ * Shared core for flipping a payroll run draft → posted. Used by the
+ * immediate /post path (no policy) AND by the approval-engine
+ * finaliser when an approved `payroll_run` request lands (roadmap
+ * #43d). The `allowStatuses` whitelist is the only guard against
+ * double-posting: immediate passes `["draft"]`; engine finaliser
+ * passes `["pending_approval"]`. Loosening this allows a race to
+ * post the same run twice and burn two payroll document numbers.
+ *
+ * Idempotent on crash recovery: if `runNumber` is already set (prior
+ * allocation survived the rollback) we reuse it rather than burn a
+ * fresh number.
+ */
+export async function postPayrollRunCore(
+  tx: Tx,
+  input: {
+    tenantId: string;
+    payrollRunId: string;
+    postedByUserId: string;
+    allowStatuses: readonly string[];
+  },
+): Promise<
+  | { ok: true; runNumber: string; entryNumber: string }
+  | { error: PostPayrollRunError; account?: string }
+> {
+  const { tenantId, payrollRunId, postedByUserId } = input;
+  const runRows = await tx
+    .select()
+    .from(schema.payrollRuns)
+    .where(
+      and(
+        eq(schema.payrollRuns.tenantId, tenantId),
+        eq(schema.payrollRuns.id, payrollRunId),
+        isNull(schema.payrollRuns.deletedAt),
+      ),
+    )
+    .limit(1);
+  const run = runRows[0];
+  if (!run) return { error: "NOT_FOUND" };
+  if (!input.allowStatuses.includes(run.status)) return { error: "BAD_STATUS" };
+  if (run.employeeCount === 0) return { error: "EMPTY" };
+
+  // Resolve GL accounts
+  const coaRows = await tx
+    .select()
+    .from(schema.chartOfAccounts)
+    .where(
+      and(
+        eq(schema.chartOfAccounts.tenantId, tenantId),
+        isNull(schema.chartOfAccounts.deletedAt),
+      ),
+    );
+  const bySub = new Map(coaRows.map((r) => [`${r.accountType}:${r.accountSubtype}`, r]));
+  const salaryExpense = bySub.get("expense:payroll");
+  const epfExpense = bySub.get("expense:payroll_epf");
+  const etfExpense = bySub.get("expense:payroll_etf");
+  const epfPayable = bySub.get("liability:epf");
+  const etfPayable = bySub.get("liability:etf");
+  const payePayable = bySub.get("liability:paye");
+  const salariesPayable = bySub.get("liability:salaries");
+  const employeeDeductions = bySub.get("liability:employee_deductions");
+  const loansReceivable = bySub.get("asset:loans_receivable");
+  const interestIncome = bySub.get("income:interest_income");
+
+  for (const [key, acc] of [
+    ["expense:payroll", salaryExpense],
+    ["expense:payroll_epf", epfExpense],
+    ["expense:payroll_etf", etfExpense],
+    ["liability:epf", epfPayable],
+    ["liability:etf", etfPayable],
+    ["liability:paye", payePayable],
+    ["liability:salaries", salariesPayable],
+    ["liability:employee_deductions", employeeDeductions],
+  ] as const) {
+    if (!acc) return { error: "MISSING_ACCOUNT", account: key };
+  }
+
+  const loanRecoveryRows = (await tx.execute(sql`
+    SELECT COALESCE(SUM(principal_cents), 0) AS principal_total,
+           COALESCE(SUM(interest_cents), 0)  AS interest_total,
+           COALESCE(SUM(total_cents), 0)     AS grand_total
+      FROM employee_loan_schedule
+     WHERE tenant_id = ${tenantId}::uuid
+       AND applied_in_run_id = ${run.id}::uuid
+  `)) as unknown as Array<{
+    principal_total: string | number;
+    interest_total: string | number;
+    grand_total: string | number;
+  }>;
+  const loanPrincipalTotal = Number(loanRecoveryRows[0]?.principal_total ?? 0);
+  const loanInterestTotal = Number(loanRecoveryRows[0]?.interest_total ?? 0);
+  const loanGrandTotal = loanPrincipalTotal + loanInterestTotal;
+  if (loanGrandTotal > 0 && (!loansReceivable || !interestIncome)) {
+    return { error: "MISSING_ACCOUNT", account: "asset:loans_receivable" };
+  }
+
+  // Idempotent number allocation — reuse an existing runNumber if a
+  // previous attempt burned it (e.g. engine finaliser retrying after a
+  // transient error).
+  const runNumber = run.runNumber ?? (await nextDocumentNumber(tx, "payroll"));
+
+  const runLines = await tx
+    .select({
+      earningsCents: schema.payrollRunLines.earningsCents,
+      nonStatutoryDeductionsCents: schema.payrollRunLines.nonStatutoryDeductionsCents,
+      netPayCents: schema.payrollRunLines.netPayCents,
+      epfEmployeeCents: schema.payrollRunLines.epfEmployeeCents,
+      payeCents: schema.payrollRunLines.payeCents,
+    })
+    .from(schema.payrollRunLines)
+    .where(
+      and(
+        eq(schema.payrollRunLines.tenantId, tenantId),
+        eq(schema.payrollRunLines.runId, run.id),
+      ),
+    );
+  const sumEarnings = runLines.reduce((s, l) => s + l.earningsCents, 0);
+  const sumNonStat = runLines.reduce((s, l) => s + l.nonStatutoryDeductionsCents, 0);
+  const sumNet = runLines.reduce((s, l) => s + l.netPayCents, 0);
+  const sumEpfEmp = runLines.reduce((s, l) => s + l.epfEmployeeCents, 0);
+  const sumPaye = runLines.reduce((s, l) => s + l.payeCents, 0);
+  const preTaxDed = Math.max(
+    0,
+    sumEarnings - sumNet - sumEpfEmp - sumPaye - sumNonStat,
+  );
+
+  const claimRows = await tx
+    .select({
+      amountCents: schema.expenseClaims.amountCents,
+      expenseAccountId: schema.expenseClaims.expenseAccountId,
+    })
+    .from(schema.expenseClaims)
+    .where(
+      and(
+        eq(schema.expenseClaims.tenantId, tenantId),
+        eq(schema.expenseClaims.appliedInRunId, run.id),
+      ),
+    );
+  const reimburseByAccount = new Map<string | null, number>();
+  let reimburseTotal = 0;
+  for (const r of claimRows) {
+    const k = r.expenseAccountId;
+    reimburseByAccount.set(k, (reimburseByAccount.get(k) ?? 0) + r.amountCents);
+    reimburseTotal += r.amountCents;
+  }
+  const wagesExpense = sumEarnings - preTaxDed - reimburseTotal;
+
+  const journalLines: Parameters<typeof postJournal>[1]["lines"] = [
+    {
+      accountId: salaryExpense!.id,
+      drCents: wagesExpense,
+      description: `Payroll ${runNumber} · wages`,
+    },
+  ];
+  for (const [accountId, amount] of reimburseByAccount.entries()) {
+    if (amount <= 0) continue;
+    if (accountId) {
+      journalLines.push({
+        accountId,
+        drCents: amount,
+        description: `Payroll ${runNumber} · reimbursement`,
+      });
+    } else {
+      const wagesLine = journalLines[0];
+      if (wagesLine) wagesLine.drCents = (wagesLine.drCents ?? 0) + amount;
+    }
+  }
+  if (run.epfEmployerCents > 0) {
+    journalLines.push({
+      accountId: epfExpense!.id,
+      drCents: run.epfEmployerCents,
+      description: `Payroll ${runNumber} · EPF employer`,
+    });
+  }
+  if (run.etfEmployerCents > 0) {
+    journalLines.push({
+      accountId: etfExpense!.id,
+      drCents: run.etfEmployerCents,
+      description: `Payroll ${runNumber} · ETF employer`,
+    });
+  }
+  const epfTotal = run.epfEmployeeCents + run.epfEmployerCents;
+  if (epfTotal > 0) {
+    journalLines.push({
+      accountId: epfPayable!.id,
+      crCents: epfTotal,
+      description: `EPF payable · ${runNumber}`,
+    });
+  }
+  if (run.etfEmployerCents > 0) {
+    journalLines.push({
+      accountId: etfPayable!.id,
+      crCents: run.etfEmployerCents,
+      description: `ETF payable · ${runNumber}`,
+    });
+  }
+  if (run.payeCents > 0) {
+    journalLines.push({
+      accountId: payePayable!.id,
+      crCents: run.payeCents,
+      description: `PAYE payable · ${runNumber}`,
+    });
+  }
+  journalLines.push({
+    accountId: salariesPayable!.id,
+    crCents: run.netPayCents,
+    description: `Net salaries · ${runNumber}`,
+  });
+  const otherDeductions = Math.max(0, sumNonStat - loanGrandTotal);
+  if (loanPrincipalTotal > 0) {
+    journalLines.push({
+      accountId: loansReceivable!.id,
+      crCents: loanPrincipalTotal,
+      description: `Loan recoveries · ${runNumber}`,
+    });
+  }
+  if (loanInterestTotal > 0) {
+    journalLines.push({
+      accountId: interestIncome!.id,
+      crCents: loanInterestTotal,
+      description: `Loan interest · ${runNumber}`,
+    });
+  }
+  if (otherDeductions > 0) {
+    journalLines.push({
+      accountId: employeeDeductions!.id,
+      crCents: otherDeductions,
+      description: `Employee deductions withheld · ${runNumber}`,
+    });
+  }
+
+  const { entryId, entryNumber } = await postJournal(tx, {
+    tenantId,
+    entryDate: run.payDate,
+    memo: `Payroll ${runNumber} · ${run.periodYear}-${String(run.periodMonth).padStart(2, "0")}`,
+    sourceType: "payroll_run",
+    sourceId: run.id,
+    postedByUserId,
+    lines: journalLines,
+  });
+
+  await tx
+    .update(schema.payrollRuns)
+    .set({
+      status: "posted",
+      runNumber,
+      journalEntryId: entryId,
+      postedAt: new Date(),
+      postedByUserId,
+      approvalRequestId: null,
+      updatedAt: new Date(),
+    })
+    .where(eq(schema.payrollRuns.id, run.id));
+
+  if (loanGrandTotal > 0) {
+    const claimedRows = await tx
+      .select()
+      .from(schema.employeeLoanSchedule)
+      .where(
+        and(
+          eq(schema.employeeLoanSchedule.tenantId, tenantId),
+          eq(schema.employeeLoanSchedule.appliedInRunId, run.id),
+        ),
+      );
+    const effects = new Map<string, { principal: number; interest: number }>();
+    for (const r of claimedRows) {
+      await tx
+        .update(schema.employeeLoanSchedule)
+        .set({ status: "paid" })
+        .where(eq(schema.employeeLoanSchedule.id, r.id));
+      const p = effects.get(r.loanId) ?? { principal: 0, interest: 0 };
+      p.principal += r.principalCents;
+      p.interest += r.interestCents;
+      effects.set(r.loanId, p);
+    }
+    for (const [loanId, eff] of effects) {
+      const [lr] = await tx
+        .select()
+        .from(schema.employeeLoans)
+        .where(eq(schema.employeeLoans.id, loanId))
+        .limit(1);
+      if (!lr) continue;
+      const newPrincipalOut = Math.max(0, lr.principalOutstandingCents - eff.principal);
+      const newInterestOut = Math.max(0, lr.interestOutstandingCents - eff.interest);
+      const fullyPaid = newPrincipalOut === 0 && newInterestOut === 0;
+      await tx
+        .update(schema.employeeLoans)
+        .set({
+          principalOutstandingCents: newPrincipalOut,
+          interestOutstandingCents: newInterestOut,
+          principalRepaidCents: lr.principalRepaidCents + eff.principal,
+          interestRepaidCents: lr.interestRepaidCents + eff.interest,
+          ...(fullyPaid && {
+            status: "closed",
+            closedAt: new Date(),
+            closedReason: "fully_paid",
+          }),
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.employeeLoans.id, loanId));
+    }
+  }
+
+  return { ok: true, runNumber, entryNumber };
+}
 
 const CreateSchema = z.object({
   periodYear: z.number().int().min(2020).max(2099),
@@ -1103,12 +1422,25 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
     return reply.status(201).send(result);
   });
 
-  // POST /payroll-runs/:id/post — finalize draft: allocate number, post GL
+  // POST /payroll-runs/:id/post — finalize draft: allocate number, post GL.
+  //
+  // Roadmap #43d — if a `document_type='payroll_run'` approval policy
+  // matches at submit time, the run is parked in `pending_approval`
+  // and an approval_request snapshot is created; the /approvals queue
+  // drives the actual posting via finaliseApprovedDocument →
+  // postPayrollRunCore. Without a matching policy, /post runs the core
+  // helper immediately with allowStatuses=["draft"] (legacy flow).
+  //
+  // Tenant-admin-ux-spec §7.1 flags payroll runs as "always → Owner".
+  // That's a tenant choice in practice — admins configure a policy
+  // with a zero-threshold trigger rule (or no rule at all). If no
+  // policy exists the immediate path still works — same backward-
+  // compatible shape as #43b (bills).
   fastify.post<{ Params: { id: string } }>("/:id/post", async (req, reply) => {
     const ctx = await requirePermission(req, reply, "payroll.manage");
     if (!ctx) return;
 
-    const result = await withTenant(ctx.tenantId, async (tx) => {
+    const outcome = await withTenant(ctx.tenantId, async (tx) => {
       const runRows = await tx
         .select()
         .from(schema.payrollRuns)
@@ -1122,327 +1454,100 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
         .limit(1);
       const run = runRows[0];
       if (!run) return { error: "NOT_FOUND" as const };
+      if (run.approvalRequestId) return { error: "ENGINE_OWNED" as const };
       if (run.status !== "draft") return { error: "NOT_DRAFT" as const };
       if (run.employeeCount === 0) return { error: "EMPTY" as const };
 
-      // Resolve GL accounts
-      const coaRows = await tx
-        .select()
-        .from(schema.chartOfAccounts)
-        .where(
-          and(
-            eq(schema.chartOfAccounts.tenantId, ctx.tenantId),
-            isNull(schema.chartOfAccounts.deletedAt),
-          ),
-        );
-      const bySub = new Map(coaRows.map((r) => [`${r.accountType}:${r.accountSubtype}`, r]));
-      const salaryExpense = bySub.get("expense:payroll");
-      const epfExpense = bySub.get("expense:payroll_epf");
-      const etfExpense = bySub.get("expense:payroll_etf");
-      const epfPayable = bySub.get("liability:epf");
-      const etfPayable = bySub.get("liability:etf");
-      const payePayable = bySub.get("liability:paye");
-      const salariesPayable = bySub.get("liability:salaries");
-      const employeeDeductions = bySub.get("liability:employee_deductions");
-      // Loan recovery books against the receivable / interest income. These
-      // are optional at post — only required if there are loan EMIs on this
-      // run. If missing in the CoA we surface a clear error instead of
-      // silently dropping the posting.
-      const loansReceivable = bySub.get("asset:loans_receivable");
-      const interestIncome = bySub.get("income:interest_income");
-
-      for (const [key, acc] of [
-        ["expense:payroll", salaryExpense],
-        ["expense:payroll_epf", epfExpense],
-        ["expense:payroll_etf", etfExpense],
-        ["liability:epf", epfPayable],
-        ["liability:etf", etfPayable],
-        ["liability:paye", payePayable],
-        ["liability:salaries", salariesPayable],
-        ["liability:employee_deductions", employeeDeductions],
-      ] as const) {
-        if (!acc) return { error: "MISSING_ACCOUNT" as const, account: key };
-      }
-
-      // Sum loan EMIs claimed on this run's lines. They were picked up at
-      // draft-creation time (applied_in_run_id stamped); at post we split
-      // them into principal (goes to CR Loans receivable — reduces the
-      // asset) and interest (goes to CR Interest income).
-      const loanRecoveryRows = (await tx.execute(sql`
-        SELECT COALESCE(SUM(principal_cents), 0) AS principal_total,
-               COALESCE(SUM(interest_cents), 0)  AS interest_total,
-               COALESCE(SUM(total_cents), 0)     AS grand_total
-          FROM employee_loan_schedule
-         WHERE tenant_id = ${ctx.tenantId}::uuid
-           AND applied_in_run_id = ${run.id}::uuid
-      `)) as unknown as Array<{
-        principal_total: string | number;
-        interest_total: string | number;
-        grand_total: string | number;
-      }>;
-      const loanPrincipalTotal = Number(loanRecoveryRows[0]?.principal_total ?? 0);
-      const loanInterestTotal = Number(loanRecoveryRows[0]?.interest_total ?? 0);
-      const loanGrandTotal = loanPrincipalTotal + loanInterestTotal;
-      if (loanGrandTotal > 0 && (!loansReceivable || !interestIncome)) {
-        return { error: "MISSING_ACCOUNT" as const, account: "asset:loans_receivable" };
-      }
-
-      const runNumber = await nextDocumentNumber(tx, "payroll");
-
-      // Aggregate line-level figures needed to split gross into wages expense
-      // (what we truly owe for work done) vs. amounts withheld from pay for
-      // non-statutory recoveries (advance repayment, etc.) that land in a
-      // clearing liability until reconciled against the original advance asset.
-      const runLines = await tx
-        .select({
-          earningsCents: schema.payrollRunLines.earningsCents,
-          nonStatutoryDeductionsCents: schema.payrollRunLines.nonStatutoryDeductionsCents,
-          netPayCents: schema.payrollRunLines.netPayCents,
-          epfEmployeeCents: schema.payrollRunLines.epfEmployeeCents,
-          payeCents: schema.payrollRunLines.payeCents,
-        })
-        .from(schema.payrollRunLines)
-        .where(
-          and(
-            eq(schema.payrollRunLines.tenantId, ctx.tenantId),
-            eq(schema.payrollRunLines.runId, run.id),
-          ),
-        );
-      const sumEarnings = runLines.reduce((s, l) => s + l.earningsCents, 0);
-      const sumNonStat = runLines.reduce((s, l) => s + l.nonStatutoryDeductionsCents, 0);
-      const sumNet = runLines.reduce((s, l) => s + l.netPayCents, 0);
-      const sumEpfEmp = runLines.reduce((s, l) => s + l.epfEmployeeCents, 0);
-      const sumPaye = runLines.reduce((s, l) => s + l.payeCents, 0);
-      // Pre-tax basis-reducing deductions (e.g. no-pay leave) — those genuinely
-      // reduce the employer's wages cost. Derived from the net identity:
-      //   earnings = net + epfEmp + paye + preTax + nonStat
-      const preTaxDed = Math.max(
-        0,
-        sumEarnings - sumNet - sumEpfEmp - sumPaye - sumNonStat,
-      );
-
-      // Expense reimbursement split (P1-9). The draft stamped
-      // applied_in_run_id on each claim; sum them per expense_account_id
-      // so we can DR the right category account instead of conflating them
-      // with wages. Rows lacking an expense_account_id fall back to
-      // Salaries & wages (equivalent to the legacy non-bundled behaviour).
-      const claimRows = await tx
-        .select({
-          amountCents: schema.expenseClaims.amountCents,
-          expenseAccountId: schema.expenseClaims.expenseAccountId,
-        })
-        .from(schema.expenseClaims)
-        .where(
-          and(
-            eq(schema.expenseClaims.tenantId, ctx.tenantId),
-            eq(schema.expenseClaims.appliedInRunId, run.id),
-          ),
-        );
-      const reimburseByAccount = new Map<string | null, number>();
-      let reimburseTotal = 0;
-      for (const r of claimRows) {
-        const k = r.expenseAccountId;
-        reimburseByAccount.set(k, (reimburseByAccount.get(k) ?? 0) + r.amountCents);
-        reimburseTotal += r.amountCents;
-      }
-      // Wages expense = total earnings − pre-tax deductions − reimbursements
-      // (reimbursements are booked separately to their expense accounts).
-      const wagesExpense = sumEarnings - preTaxDed - reimburseTotal;
-
-      // Build balanced journal:
-      //   DR Salaries & wages               earnings − pre-tax deductions
-      //   DR EPF employer contribution      epf_employer
-      //   DR ETF employer contribution      etf_employer
-      //     CR EPF payable                  epf_employee + epf_employer
-      //     CR ETF payable                  etf_employer
-      //     CR PAYE payable                 paye
-      //     CR Salaries payable             net
-      //     CR Employee deductions payable  non-statutory recoveries
-      const journalLines: Parameters<typeof postJournal>[1]["lines"] = [
-        {
-          accountId: salaryExpense!.id,
-          drCents: wagesExpense,
-          description: `Payroll ${runNumber} · wages`,
-        },
-      ];
-      // DR per-category expense accounts for bundled reimbursements. Rows
-      // without an expense_account_id collapse onto Salaries & wages.
-      for (const [accountId, amount] of reimburseByAccount.entries()) {
-        if (amount <= 0) continue;
-        if (accountId) {
-          journalLines.push({
-            accountId,
-            drCents: amount,
-            description: `Payroll ${runNumber} · reimbursement`,
-          });
-        } else {
-          // No category account — add to the wages DR line rather than
-          // silently dropping. Find the existing wages line and top it up.
-          const wagesLine = journalLines[0];
-          if (wagesLine) wagesLine.drCents = (wagesLine.drCents ?? 0) + amount;
-        }
-      }
-      if (run.epfEmployerCents > 0) {
-        journalLines.push({
-          accountId: epfExpense!.id,
-          drCents: run.epfEmployerCents,
-          description: `Payroll ${runNumber} · EPF employer`,
-        });
-      }
-      if (run.etfEmployerCents > 0) {
-        journalLines.push({
-          accountId: etfExpense!.id,
-          drCents: run.etfEmployerCents,
-          description: `Payroll ${runNumber} · ETF employer`,
-        });
-      }
-      const epfTotal = run.epfEmployeeCents + run.epfEmployerCents;
-      if (epfTotal > 0) {
-        journalLines.push({
-          accountId: epfPayable!.id,
-          crCents: epfTotal,
-          description: `EPF payable · ${runNumber}`,
-        });
-      }
-      if (run.etfEmployerCents > 0) {
-        journalLines.push({
-          accountId: etfPayable!.id,
-          crCents: run.etfEmployerCents,
-          description: `ETF payable · ${runNumber}`,
-        });
-      }
-      if (run.payeCents > 0) {
-        journalLines.push({
-          accountId: payePayable!.id,
-          crCents: run.payeCents,
-          description: `PAYE payable · ${runNumber}`,
-        });
-      }
-      journalLines.push({
-        accountId: salariesPayable!.id,
-        crCents: run.netPayCents,
-        description: `Net salaries · ${runNumber}`,
+      const policy = await resolveApplicablePolicy(tx, {
+        documentType: "payroll_run",
+        amountCents: run.grossCents,
+        submitterUserId: ctx.userId,
       });
-      // Split non-statutory deductions: loan recovery credits the
-      // receivable (asset reduction) + interest income; remainder lands
-      // in the employee deductions clearing liability.
-      const otherDeductions = Math.max(0, sumNonStat - loanGrandTotal);
-      if (loanPrincipalTotal > 0) {
-        journalLines.push({
-          accountId: loansReceivable!.id,
-          crCents: loanPrincipalTotal,
-          description: `Loan recoveries · ${runNumber}`,
+
+      if (policy) {
+        const request = await createApprovalRequest(tx, {
+          tenantId: ctx.tenantId,
+          documentType: "payroll_run",
+          documentId: run.id,
+          amountCents: run.grossCents,
+          policyId: policy.policyId,
+          steps: policy.steps,
+          submitterUserId: ctx.userId,
         });
-      }
-      if (loanInterestTotal > 0) {
-        journalLines.push({
-          accountId: interestIncome!.id,
-          crCents: loanInterestTotal,
-          description: `Loan interest · ${runNumber}`,
-        });
-      }
-      if (otherDeductions > 0) {
-        journalLines.push({
-          accountId: employeeDeductions!.id,
-          crCents: otherDeductions,
-          description: `Employee deductions withheld · ${runNumber}`,
-        });
+        await tx
+          .update(schema.payrollRuns)
+          .set({
+            status: "pending_approval",
+            approvalRequestId: request.id,
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.payrollRuns.id, run.id));
+        return { parked: true as const, requestId: request.id };
       }
 
-      const { entryId, entryNumber } = await postJournal(tx, {
+      const posted = await postPayrollRunCore(tx, {
         tenantId: ctx.tenantId,
-        entryDate: run.payDate,
-        memo: `Payroll ${runNumber} · ${run.periodYear}-${String(run.periodMonth).padStart(2, "0")}`,
-        sourceType: "payroll_run",
-        sourceId: run.id,
+        payrollRunId: run.id,
         postedByUserId: ctx.userId,
-        lines: journalLines,
+        allowStatuses: ["draft"],
       });
-
-      await tx
-        .update(schema.payrollRuns)
-        .set({
-          status: "posted",
-          runNumber,
-          journalEntryId: entryId,
-          postedAt: new Date(),
-          postedByUserId: ctx.userId,
-          updatedAt: new Date(),
-        })
-        .where(eq(schema.payrollRuns.id, run.id));
-
-      // Flip claimed EMI schedule rows to 'paid' and decrement the loan
-      // header's outstanding totals. Close any loan whose outstanding has
-      // hit zero. We do this at POST (not at draft creation) so that
-      // rolling back a draft doesn't leave half-paid loans behind.
-      if (loanGrandTotal > 0) {
-        const claimedRows = await tx
-          .select()
-          .from(schema.employeeLoanSchedule)
-          .where(
-            and(
-              eq(schema.employeeLoanSchedule.tenantId, ctx.tenantId),
-              eq(schema.employeeLoanSchedule.appliedInRunId, run.id),
-            ),
-          );
-        const effects = new Map<
-          string,
-          { principal: number; interest: number }
-        >();
-        for (const r of claimedRows) {
-          await tx
-            .update(schema.employeeLoanSchedule)
-            .set({ status: "paid" })
-            .where(eq(schema.employeeLoanSchedule.id, r.id));
-          const p = effects.get(r.loanId) ?? { principal: 0, interest: 0 };
-          p.principal += r.principalCents;
-          p.interest += r.interestCents;
-          effects.set(r.loanId, p);
+      if ("error" in posted) {
+        if (posted.error === "MISSING_ACCOUNT") {
+          return { error: "MISSING_ACCOUNT" as const, account: posted.account };
         }
-        for (const [loanId, eff] of effects) {
-          const [lr] = await tx
-            .select()
-            .from(schema.employeeLoans)
-            .where(eq(schema.employeeLoans.id, loanId))
-            .limit(1);
-          if (!lr) continue;
-          const newPrincipalOut = Math.max(0, lr.principalOutstandingCents - eff.principal);
-          const newInterestOut = Math.max(0, lr.interestOutstandingCents - eff.interest);
-          const fullyPaid = newPrincipalOut === 0 && newInterestOut === 0;
-          await tx
-            .update(schema.employeeLoans)
-            .set({
-              principalOutstandingCents: newPrincipalOut,
-              interestOutstandingCents: newInterestOut,
-              principalRepaidCents: lr.principalRepaidCents + eff.principal,
-              interestRepaidCents: lr.interestRepaidCents + eff.interest,
-              ...(fullyPaid && {
-                status: "closed",
-                closedAt: new Date(),
-                closedReason: "fully_paid",
-              }),
-              updatedAt: new Date(),
-            })
-            .where(eq(schema.employeeLoans.id, loanId));
-        }
+        return { error: posted.error };
       }
-
-      return { ok: true as const, runNumber, entryNumber };
+      return {
+        parked: false as const,
+        runNumber: posted.runNumber,
+        entryNumber: posted.entryNumber,
+      };
     });
 
-    if ("error" in result) {
-      const map: Record<string, number> = {
-        NOT_FOUND: 404,
-        NOT_DRAFT: 409,
-        EMPTY: 400,
-        MISSING_ACCOUNT: 500,
-      };
-      return reply.status(map[result.error] ?? 500).send({
-        error: { code: result.error, account: "account" in result ? result.account : undefined },
+    if ("error" in outcome) {
+      const code = outcome.error;
+      const status =
+        code === "NOT_FOUND"
+          ? 404
+          : code === "ENGINE_OWNED"
+            ? 409
+            : code === "MISSING_ACCOUNT"
+              ? 500
+              : code === "BAD_STATUS" || code === "NOT_DRAFT"
+                ? 409
+                : 400;
+      const message =
+        code === "NOT_FOUND"
+          ? "Payroll run not found."
+          : code === "ENGINE_OWNED"
+            ? "This run is managed by the approval engine. Decide it from the Approvals queue."
+            : code === "NOT_DRAFT" || code === "BAD_STATUS"
+              ? "Only draft payroll runs can be posted."
+              : code === "EMPTY"
+                ? "This run has no employees."
+                : code === "MISSING_ACCOUNT"
+                  ? `Missing chart-of-accounts entry: ${"account" in outcome ? outcome.account : "unknown"}`
+                  : code;
+      const body: Record<string, unknown> = { error: { code, message } };
+      if (code === "MISSING_ACCOUNT" && "account" in outcome) {
+        (body.error as Record<string, unknown>).account = outcome.account;
+      }
+      return reply.status(status).send(body);
+    }
+    if (outcome.parked) {
+      return reply.send({
+        ok: true,
+        parked: true,
+        approvalRequestId: outcome.requestId,
       });
     }
-    return reply.send(result);
+    return reply.send({
+      ok: true,
+      runNumber: outcome.runNumber,
+      entryNumber: outcome.entryNumber,
+    });
   });
+
 
   // POST /payroll-runs/:id/pay — disburse net pay, clearing Salaries payable
   const PaySchema = z.object({

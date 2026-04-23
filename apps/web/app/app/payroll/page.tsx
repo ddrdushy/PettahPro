@@ -12,6 +12,7 @@ export const metadata: Metadata = { title: "Payroll runs" };
 
 const statusTone: Record<PayrollRunStatus, string> = {
   draft: "bg-surface-recessed text-text-secondary",
+  pending_approval: "bg-warning-bg text-warning",
   posted: "bg-mint-surface text-mint-dark",
   paid: "bg-mint text-mint-dark",
   void: "bg-danger-bg/60 text-danger",
@@ -19,6 +20,7 @@ const statusTone: Record<PayrollRunStatus, string> = {
 
 const statusLabel: Record<PayrollRunStatus, string> = {
   draft: "Draft",
+  pending_approval: "Pending approval",
   posted: "Posted",
   paid: "Paid",
   void: "Void",
