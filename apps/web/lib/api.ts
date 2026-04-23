@@ -1328,6 +1328,39 @@ export const api = {
   },
   getCommissionLedger: () =>
     request<{ ledger: CommissionLedgerRow[] }>("/commissions/ledger"),
+
+  // ---- Customer portal (sell-module-spec §14, roadmap #31) -----------------
+  // Portal is a separate auth realm — different cookie (pp_portal_session),
+  // different session store, different routes. All /portal/* calls share
+  // the same credentials:include pattern.
+  portalRequestOtp: (body: { email: string }) =>
+    request<PortalRequestOtpResult>("/portal/auth/request-otp", {
+      method: "POST",
+      json: body,
+    }),
+  portalVerify: (body: { email: string; code: string; tenantSlug?: string }) =>
+    request<PortalVerifyResult>("/portal/auth/verify", {
+      method: "POST",
+      json: body,
+    }),
+  portalLogout: () =>
+    request<{ ok: true }>("/portal/auth/logout", { method: "POST" }),
+  portalMe: () => request<PortalMeResult>("/portal/auth/me"),
+  portalListInvoices: () =>
+    request<{ invoices: PortalInvoice[] }>("/portal/invoices"),
+  portalGetInvoice: (id: string) =>
+    request<PortalInvoiceDetail>(`/portal/invoices/${id}`),
+  portalStatement: (from?: string, to?: string) => {
+    const params = new URLSearchParams();
+    if (from) params.set("from", from);
+    if (to) params.set("to", to);
+    const q = params.toString();
+    return request<CustomerStatement>(`/portal/statement${q ? `?${q}` : ""}`);
+  },
+  portalListPayments: () =>
+    request<{ payments: PortalPayment[] }>("/portal/payments"),
+  portalListRecurring: () =>
+    request<{ recurring: PortalRecurringTemplate[] }>("/portal/recurring"),
 };
 
 export interface User {
@@ -5056,4 +5089,97 @@ export interface CommissionLedgerRow {
   clawedBackCents: number;
   totalCents: number;
   rowCount: number;
+}
+
+// -------------------------------------------------------------------------
+// Customer portal (sell-module-spec §14, roadmap #31)
+// -------------------------------------------------------------------------
+
+export interface PortalRequestOtpResult {
+  ok: true;
+  sent: boolean;
+  tenants: { slug: string; businessName: string }[];
+}
+
+export interface PortalTenant {
+  id: string;
+  slug: string;
+  businessName: string;
+}
+
+export interface PortalTenantAmbiguityCandidate {
+  tenantSlug: string;
+  businessName: string;
+}
+
+export interface PortalCustomer {
+  id: string;
+  name: string;
+  email: string | null;
+  phone: string | null;
+}
+
+export interface PortalVerifyResult {
+  ok: true;
+  tenant: PortalTenant | null;
+  customer: PortalCustomer | null;
+}
+
+export interface PortalMeResult {
+  tenant: PortalTenant & { timezone: string };
+  customer: PortalCustomer;
+}
+
+export type PortalInvoiceStatus = "posted" | "partially_paid" | "paid" | "void";
+
+export interface PortalInvoice {
+  id: string;
+  invoiceNumber: string | null;
+  status: PortalInvoiceStatus;
+  issueDate: string;
+  dueDate: string;
+  currency: string;
+  totalCents: number;
+  amountPaidCents: number;
+  balanceDueCents: number;
+  foreignTotalCents: number | null;
+  poNumber: string | null;
+  reference: string | null;
+  channel: string;
+}
+
+export interface PortalInvoiceDetail {
+  invoice: InvoiceDetail;
+  lines: InvoiceLine[];
+  customer: Customer | null;
+}
+
+export interface PortalPaymentAllocation {
+  invoiceId: string;
+  invoiceNumber: string | null;
+  allocatedCents: number;
+}
+
+export interface PortalPayment {
+  id: string;
+  paymentNumber: string | null;
+  paymentDate: string;
+  method: string;
+  amountCents: number;
+  currency: string;
+  reference: string | null;
+  memo: string | null;
+  allocations: PortalPaymentAllocation[];
+}
+
+export interface PortalRecurringTemplate {
+  id: string;
+  scheduleName: string;
+  status: "active" | "paused";
+  frequency: string;
+  nextRunDate: string | null;
+  lastRunDate: string | null;
+  endDate: string | null;
+  currency: string;
+  reference: string | null;
 }
