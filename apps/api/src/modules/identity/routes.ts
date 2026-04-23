@@ -3,7 +3,18 @@ import { eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db, schema, withTenant } from "@pettahpro/db";
 import { hashPassword, verifyPassword } from "./password.js";
-import { createSession, destroySession, readSession } from "./sessions.js";
+import {
+  PASSWORD_MIN_LENGTH,
+  PASSWORD_MAX_LENGTH,
+  checkPasswordBreached,
+  validatePasswordPolicy,
+} from "./password-policy.js";
+import {
+  createSession,
+  destroyAllSessionsForUser,
+  destroySession,
+  readSession,
+} from "./sessions.js";
 import { SESSION_COOKIE, clearSessionCookie, setSessionCookie } from "./cookies.js";
 import { recordAuditEvent } from "../../lib/audit.js";
 import { getCallerPermissions } from "../../lib/permissions.js";
@@ -31,12 +42,20 @@ const SignupSchema = z.object({
   businessName: z.string().min(2).max(255),
   ownerName: z.string().min(2).max(255),
   email: z.string().email().max(255).toLowerCase(),
-  password: z.string().min(8).max(128),
+  // Let the policy module return the specific reason to the user.
+  // Zod only gates the raw length envelope so we can't be smuggled a
+  // 10 MB string through before we've hashed it.
+  password: z.string().min(1).max(PASSWORD_MAX_LENGTH),
 });
 
 const LoginSchema = z.object({
   email: z.string().email().toLowerCase(),
   password: z.string().min(1),
+});
+
+const ChangePasswordSchema = z.object({
+  currentPassword: z.string().min(1),
+  newPassword: z.string().min(1).max(PASSWORD_MAX_LENGTH),
 });
 
 function slugify(input: string): string {
@@ -69,6 +88,10 @@ async function uniqueSlug(base: string): Promise<string> {
 // See apps/api/src/plugins/rate-limit.ts for the global fallback (#47).
 const SIGNUP_RATE_LIMIT = { max: 5, timeWindow: "10 minutes" };
 const LOGIN_RATE_LIMIT = { max: 10, timeWindow: "1 minute" };
+// Change-password is session-gated so the blast radius is already narrow.
+// Limit exists purely to stop a compromised session from brute-forcing the
+// current-password prompt to pivot into "I own this account now."
+const CHANGE_PASSWORD_RATE_LIMIT = { max: 5, timeWindow: "10 minutes" };
 
 export const authRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post("/signup", { config: { rateLimit: SIGNUP_RATE_LIMIT } }, async (req, reply) => {
@@ -77,6 +100,29 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.status(400).send({ error: { code: "INVALID_INPUT", issues: parsed.error.issues } });
     }
     const { businessName, ownerName, email, password } = parsed.data;
+
+    // Policy gate (#49). Local checks first (fast, deterministic), then
+    // HIBP breach check (fails OPEN on network issues — see
+    // password-policy.ts). Both layer on top of the Zod max-length
+    // envelope above.
+    const policy = validatePasswordPolicy(password, { email, name: ownerName });
+    if (!policy.ok) {
+      return reply.status(400).send({
+        error: { code: "WEAK_PASSWORD", message: "Password doesn't meet policy.", reasons: policy.reasons },
+      });
+    }
+    const breach = await checkPasswordBreached(password);
+    if (breach.breached) {
+      return reply.status(400).send({
+        error: {
+          code: "WEAK_PASSWORD",
+          message: "This password has appeared in known data breaches — pick a different one.",
+          reasons: [
+            `Seen in public breach corpora${breach.count ? ` (${breach.count.toLocaleString()} times)` : ""}. Please choose a different password.`,
+          ],
+        },
+      });
+    }
 
     const emailTaken = (await db.execute(
       sql`SELECT auth_email_in_use(${email}) AS in_use`,
@@ -186,6 +232,112 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
         isOwner: user.is_owner,
       },
     });
+  });
+
+  // Change password. Session-gated (needs a current session) + current-password
+  // confirmation. On success we invalidate EVERY session for this user and
+  // mint a new one for the caller — an attacker with a parallel session gets
+  // booted; the user stays signed in on the tab they're operating from. #49.
+  fastify.post("/change-password", { config: { rateLimit: CHANGE_PASSWORD_RATE_LIMIT } }, async (req, reply) => {
+    const cookie = req.cookies[SESSION_COOKIE];
+    if (!cookie) return reply.status(401).send({ error: { code: "UNAUTHENTICATED" } });
+    const unsigned = req.unsignCookie(cookie);
+    if (!unsigned.valid || !unsigned.value) {
+      return reply.status(401).send({ error: { code: "UNAUTHENTICATED" } });
+    }
+    const session = await readSession(unsigned.value);
+    if (!session) return reply.status(401).send({ error: { code: "UNAUTHENTICATED" } });
+
+    const parsed = ChangePasswordSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: { code: "INVALID_INPUT", issues: parsed.error.issues } });
+    }
+    const { currentPassword, newPassword } = parsed.data;
+
+    // Read the hash + canonical user row under the tenant's RLS context.
+    const userRow = await withTenant(session.tenantId, async (tx) => {
+      const rows = await tx
+        .select({
+          id: schema.users.id,
+          email: schema.users.email,
+          fullName: schema.users.fullName,
+          passwordHash: schema.users.passwordHash,
+          isActive: schema.users.isActive,
+        })
+        .from(schema.users)
+        .where(eq(schema.users.id, session.userId))
+        .limit(1);
+      return rows[0] ?? null;
+    });
+    if (!userRow || !userRow.isActive || !userRow.passwordHash) {
+      return reply.status(401).send({ error: { code: "UNAUTHENTICATED" } });
+    }
+
+    const currentOk = await verifyPassword(userRow.passwordHash, currentPassword);
+    if (!currentOk) {
+      return reply.status(400).send({
+        error: { code: "WRONG_CURRENT_PASSWORD", message: "Current password didn't match." },
+      });
+    }
+
+    // Policy gate on the NEW password. Same shape as signup.
+    const policy = validatePasswordPolicy(newPassword, {
+      email: userRow.email,
+      name: userRow.fullName,
+    });
+    if (!policy.ok) {
+      return reply.status(400).send({
+        error: { code: "WEAK_PASSWORD", message: "New password doesn't meet policy.", reasons: policy.reasons },
+      });
+    }
+    // Reject no-op ("change" to the same password) early so the user
+    // sees a clear message instead of silently succeeding with no effect.
+    if (newPassword === currentPassword) {
+      return reply.status(400).send({
+        error: { code: "WEAK_PASSWORD", message: "New password must differ from the current one.", reasons: ["Pick a password you haven't used here before."] },
+      });
+    }
+    const breach = await checkPasswordBreached(newPassword);
+    if (breach.breached) {
+      return reply.status(400).send({
+        error: {
+          code: "WEAK_PASSWORD",
+          message: "This password has appeared in known data breaches — pick a different one.",
+          reasons: [
+            `Seen in public breach corpora${breach.count ? ` (${breach.count.toLocaleString()} times)` : ""}. Please choose a different password.`,
+          ],
+        },
+      });
+    }
+
+    const newHash = await hashPassword(newPassword);
+    await withTenant(session.tenantId, async (tx) => {
+      await tx
+        .update(schema.users)
+        .set({ passwordHash: newHash })
+        .where(eq(schema.users.id, userRow.id));
+      await recordAuditEvent(tx, {
+        kind: "user.password_changed",
+        summary: `Changed own password (${userRow.email})`,
+        actorUserId: userRow.id,
+        ipAddress: req.ip ?? null,
+        userAgent: req.headers["user-agent"] ?? null,
+      });
+    });
+
+    // Invalidate every session for this user (including the current one —
+    // the attacker's hypothetical parallel session is now dead too) and
+    // mint a fresh session so the caller stays signed in on this tab.
+    await destroyAllSessionsForUser(userRow.id);
+    const fresh = await createSession({
+      userId: userRow.id,
+      tenantId: session.tenantId,
+      email: userRow.email,
+      ttlSeconds: SESSION_TTL,
+    });
+    setSessionCookie(reply, fresh.id, SESSION_TTL);
+
+    return reply.send({ ok: true });
   });
 
   fastify.post("/logout", async (req, reply) => {

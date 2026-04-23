@@ -15,7 +15,6 @@ Real risk surface for a system holding payroll, bank, and tax data.
 | # | Gap | Why it matters | Rough size |
 |---|---|---|---|
 | A1 | **MFA / 2FA** (TOTP minimum, WebAuthn ideal) — zero code exists today; session cookie + password is the whole auth story. | Payroll + bank data sensitivity. Compliance audit checkbox. First question from any enterprise-shaped prospect. | M |
-| A2 | **Password policy** — no complexity, no rotation, no breach check, no reuse prevention. | Weakest-link user becomes the tenant's whole exposure. | S |
 | A3 | **Session management UI** — users can't see their active sessions or sign-out-elsewhere. | After A1 lands, this closes the loop. | S |
 | A4 | **IP allow-listing per tenant** — admins can't lock app access to office IPs. | Nice-to-have until we have a tenant requesting it; then urgent. | S |
 | A5 | **CSRF belt-and-braces** — we rely on SameSite=Lax + same-origin, which is fine but not double-layered. | Low-probability but easy to add once we have time. | S |

@@ -7,12 +7,24 @@ export class ApiError extends Error {
   code: string;
   status: number;
   issues?: unknown;
+  /**
+   * Human-readable reasons returned by policy-style validation errors (e.g.
+   * WEAK_PASSWORD from #49). UI surfaces these verbatim as a bullet list.
+   */
+  reasons?: string[];
 
-  constructor(status: number, code: string, message: string, issues?: unknown) {
+  constructor(
+    status: number,
+    code: string,
+    message: string,
+    issues?: unknown,
+    reasons?: string[],
+  ) {
     super(message);
     this.status = status;
     this.code = code;
     this.issues = issues;
+    this.reasons = reasons;
   }
 }
 
@@ -46,6 +58,7 @@ async function request<T>(
       err?.code ?? "UNKNOWN",
       err?.message ?? res.statusText,
       err?.issues,
+      Array.isArray(err?.reasons) ? err.reasons : undefined,
     );
   }
 
@@ -62,6 +75,9 @@ export const api = {
 
   login: (body: { email: string; password: string }) =>
     request<{ user: User }>("/auth/login", { method: "POST", json: body }),
+
+  changePassword: (body: { currentPassword: string; newPassword: string }) =>
+    request<{ ok: true }>("/auth/change-password", { method: "POST", json: body }),
 
   logout: () => request<{ ok: true }>("/auth/logout", { method: "POST" }),
 
