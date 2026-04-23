@@ -11,6 +11,7 @@ import { postBillCore } from "../buy/bills.js";
 import { sendPurchaseOrderCore } from "../buy/purchase-orders.js";
 import { postPayrollRunCore } from "../hr/payroll-runs.js";
 import { postBonusRunCore } from "../hr/bonuses.js";
+import { approveFinalSettlementCore } from "../hr/final-settlement.js";
 import {
   ApprovalEngineError,
   cancelApprovalRequest,
@@ -467,6 +468,40 @@ export const approvalsRoutes: FastifyPluginAsync = async (fastify) => {
                 eq(schema.bonusRuns.id, decision.request.documentId),
               ),
             );
+        } else if (decision.request.documentType === "final_settlement") {
+          // Final settlements (roadmap #43e). Flip back to draft so HR
+          // can adjust the worksheet before re-approving. Stamp reason
+          // into notes for context.
+          const reason = parsed.data.reason?.trim();
+          const [existing] = await tx
+            .select({ notes: schema.finalSettlements.notes })
+            .from(schema.finalSettlements)
+            .where(
+              and(
+                eq(schema.finalSettlements.tenantId, ctx.tenantId),
+                eq(schema.finalSettlements.id, decision.request.documentId),
+              ),
+            )
+            .limit(1);
+          const stampedNotes = reason
+            ? existing?.notes
+              ? `${existing.notes}\n\n[Rejected] ${reason}`
+              : `[Rejected] ${reason}`
+            : existing?.notes;
+          await tx
+            .update(schema.finalSettlements)
+            .set({
+              status: "draft",
+              approvalRequestId: null,
+              notes: stampedNotes ?? null,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(schema.finalSettlements.tenantId, ctx.tenantId),
+                eq(schema.finalSettlements.id, decision.request.documentId),
+              ),
+            );
         }
 
         await recordAuditEvent(tx, {
@@ -699,6 +734,40 @@ export const approvalsRoutes: FastifyPluginAsync = async (fastify) => {
             and(
               eq(schema.bonusRuns.tenantId, ctx.tenantId),
               eq(schema.bonusRuns.id, request.documentId),
+            ),
+          );
+      } else if (request.documentType === "final_settlement") {
+        // Final settlements (roadmap #43e). Same cancel shape as
+        // payroll/bonus: pending_approval → draft, detach engine handle,
+        // stamp reason into notes. The settlement's own `/cancel` is
+        // terminal (draft|approved → cancelled); this approvals-queue
+        // cancel means "withdraw the request and return it to draft".
+        const reason = parsed.data.reason?.trim() || "Withdrawn by submitter";
+        const [existing] = await tx
+          .select({ notes: schema.finalSettlements.notes })
+          .from(schema.finalSettlements)
+          .where(
+            and(
+              eq(schema.finalSettlements.tenantId, ctx.tenantId),
+              eq(schema.finalSettlements.id, request.documentId),
+            ),
+          )
+          .limit(1);
+        const stampedNotes = existing?.notes
+          ? `${existing.notes}\n\n[Withdrawn] ${reason}`
+          : `[Withdrawn] ${reason}`;
+        await tx
+          .update(schema.finalSettlements)
+          .set({
+            status: "draft",
+            approvalRequestId: null,
+            notes: stampedNotes,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(schema.finalSettlements.tenantId, ctx.tenantId),
+              eq(schema.finalSettlements.id, request.documentId),
             ),
           );
       }
@@ -957,6 +1026,30 @@ async function finaliseApprovedDocument(
       }
       throw new Error(
         `finaliseApprovedDocument(bonus_run): postBonusRunCore failed — ${result.error}`,
+      );
+    }
+    return;
+  }
+
+  if (request.documentType === "final_settlement") {
+    // Final settlements (roadmap #43e, tenant-admin-ux-spec §7.1
+    // "always → Owner"). Engine path: draft → pending_approval →
+    // approved. Flips status + stamps approvedAt/approvedByUserId;
+    // does NOT book the GL — the subsequent /post call allocates
+    // the FS-xxxx number and books the journal entry, mirroring the
+    // pre-engine two-step lifecycle.
+    const result = await approveFinalSettlementCore(tx, {
+      tenantId: request.tenantId,
+      settlementId: request.documentId,
+      approverUserId: input.deciderUserId,
+      allowStatuses: ["pending_approval"],
+    });
+    if ("error" in result) {
+      if (result.error === "BAD_STATUS" || result.error === "NOT_FOUND") {
+        return;
+      }
+      throw new Error(
+        `finaliseApprovedDocument(final_settlement): approveFinalSettlementCore failed — ${result.error}`,
       );
     }
     return;

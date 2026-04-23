@@ -141,6 +141,11 @@ export const finalSettlements = pgTable("final_settlements", {
   cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
   cancelledReason: text("cancelled_reason"),
 
+  // Approval engine linkage (roadmap #43e). Non-null iff the
+  // settlement is owned by the generic engine (parked in
+  // `pending_approval`). Cleared on reject / cancel back to draft.
+  approvalRequestId: uuid("approval_request_id"),
+
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

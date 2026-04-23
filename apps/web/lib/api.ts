@@ -2995,6 +2995,7 @@ export interface PayrollRun {
 // Final settlement (payroll-module-spec §9) ----------------------------------
 export type FinalSettlementStatus =
   | "draft"
+  | "pending_approval"
   | "approved"
   | "posted"
   | "paid"
@@ -4330,7 +4331,10 @@ export type ApprovalDocumentType =
   // Roadmap #43d — payroll runs (always-approve per spec §7.1) and
   // bonus runs (threshold-gated, same shape as bills).
   | "payroll_run"
-  | "bonus_run";
+  | "bonus_run"
+  // Roadmap #43e — final settlements (always-approve per spec §7.1,
+  // sensitive exit calc).
+  | "final_settlement";
 
 export interface ApprovalStepApprover {
   kind: "role" | "user";

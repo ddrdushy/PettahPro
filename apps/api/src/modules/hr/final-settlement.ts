@@ -9,6 +9,11 @@ import { recordAuditEvent } from "../../lib/audit.js";
 import { postJournal } from "../accounting/journal-posting.js";
 import { loadTenantSettings } from "../settings/routes.js";
 import {
+  cancelApprovalRequest,
+  createApprovalRequest,
+  resolveApplicablePolicy,
+} from "../admin/approval-engine.js";
+import {
   computePayrollFromComponents,
   type ResolvedComponent,
 } from "./sl-tax.js";
@@ -23,6 +28,76 @@ type FinalSettlementLine = {
 };
 
 type Tx = PostgresJsDatabase<typeof schema>;
+
+export type ApproveFinalSettlementError = "NOT_FOUND" | "BAD_STATUS";
+
+/**
+ * Shared core for flipping a final-settlement draft → approved. Used
+ * by the immediate /approve path (no policy) AND by the approval-
+ * engine finaliser when an approved `final_settlement` request lands
+ * (roadmap #43e). `allowStatuses` is the only guard against double-
+ * approving: immediate path passes `["draft"]`; engine finaliser
+ * passes `["pending_approval"]`. Loosening it would let a race stamp
+ * approvedAt twice.
+ *
+ * Does NOT book the JE. The subsequent /post call is what allocates
+ * the FS-xxxx number and posts the GL entry — keeps approve/post as
+ * two separate steps, mirroring the pre-engine lifecycle.
+ */
+export async function approveFinalSettlementCore(
+  tx: Tx,
+  input: {
+    tenantId: string;
+    settlementId: string;
+    approverUserId: string;
+    allowStatuses: readonly string[];
+  },
+): Promise<
+  | { ok: true; settlement: typeof schema.finalSettlements.$inferSelect }
+  | { error: ApproveFinalSettlementError }
+> {
+  const { tenantId, settlementId, approverUserId } = input;
+  const [s] = await tx
+    .select()
+    .from(schema.finalSettlements)
+    .where(
+      and(
+        eq(schema.finalSettlements.tenantId, tenantId),
+        eq(schema.finalSettlements.id, settlementId),
+      ),
+    )
+    .limit(1);
+  if (!s) return { error: "NOT_FOUND" };
+  if (!input.allowStatuses.includes(s.status)) return { error: "BAD_STATUS" };
+
+  const [updated] = await tx
+    .update(schema.finalSettlements)
+    .set({
+      status: "approved",
+      approvedAt: new Date(),
+      approvedByUserId: approverUserId,
+      // Clear the engine handle so subsequent /post / /cancel don't
+      // read it as still-engine-owned. The approval_request row itself
+      // stays in status='approved' as the audit trail.
+      approvalRequestId: null,
+      updatedAt: new Date(),
+    })
+    .where(eq(schema.finalSettlements.id, s.id))
+    .returning();
+
+  await recordAuditEvent(tx, {
+    kind: "final_settlement.approved",
+    summary: `Approved settlement for ${s.employeeFullName}`,
+    refType: "final_settlement",
+    refId: s.id,
+    diff: { netPayableCents: s.netPayableCents, priorStatus: s.status },
+    actorUserId: approverUserId,
+    ipAddress: null,
+    userAgent: null,
+  });
+
+  return { ok: true, settlement: updated! };
+}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Compute: turn an exiting employee into a gross-to-net worksheet.
@@ -956,12 +1031,25 @@ export const finalSettlementByIdRoutes: FastifyPluginAsync = async (fastify) => 
     return reply.send(result);
   });
 
-  // POST /final-settlements/:id/approve — draft → approved (locks editing)
+  // POST /final-settlements/:id/approve — draft → approved (locks editing).
+  //
+  // Roadmap #43e — if a `document_type='final_settlement'` approval
+  // policy matches at call time, the settlement is parked in
+  // `pending_approval` and an approval_request snapshot is created;
+  // the /approvals queue drives the flip to `approved` via
+  // finaliseApprovedDocument → approveFinalSettlementCore. Without a
+  // matching policy, /approve runs the core helper immediately with
+  // allowStatuses=["draft"] (legacy flow).
+  //
+  // Tenant-admin-ux-spec §7.1 flags final settlements as "always →
+  // Owner" — the admin configures a policy with an empty triggerRule
+  // so every submission matches. If no policy exists the immediate
+  // path still works.
   fastify.post<{ Params: { id: string } }>("/:id/approve", async (req, reply) => {
     const ctx = requireAuth(req, reply);
     if (!ctx) return;
 
-    const result = await withTenant(ctx.tenantId, async (tx) => {
+    const outcome = await withTenant(ctx.tenantId, async (tx) => {
       const [s] = await tx
         .select()
         .from(schema.finalSettlements)
@@ -973,40 +1061,70 @@ export const finalSettlementByIdRoutes: FastifyPluginAsync = async (fastify) => 
         )
         .limit(1);
       if (!s) return { error: "NOT_FOUND" as const };
+      if (s.approvalRequestId) return { error: "ENGINE_OWNED" as const };
       if (s.status !== "draft") return { error: "NOT_DRAFT" as const };
 
-      const [updated] = await tx
-        .update(schema.finalSettlements)
-        .set({
-          status: "approved",
-          approvedAt: new Date(),
-          approvedByUserId: ctx.userId,
-          updatedAt: new Date(),
-        })
-        .where(eq(schema.finalSettlements.id, s.id))
-        .returning();
-
-      await recordAuditEvent(tx, {
-        kind: "final_settlement.approved",
-        summary: `Approved settlement for ${s.employeeFullName}`,
-        refType: "final_settlement",
-        refId: s.id,
-        diff: { netPayableCents: s.netPayableCents },
-        actorUserId: ctx.userId,
-        ipAddress: req.ip ?? null,
-        userAgent: req.headers["user-agent"] ?? null,
+      const policy = await resolveApplicablePolicy(tx, {
+        documentType: "final_settlement",
+        amountCents: s.netPayableCents,
+        submitterUserId: ctx.userId,
       });
 
-      return { ok: true as const, settlement: updated };
+      if (policy) {
+        const request = await createApprovalRequest(tx, {
+          tenantId: ctx.tenantId,
+          documentType: "final_settlement",
+          documentId: s.id,
+          amountCents: s.netPayableCents,
+          policyId: policy.policyId,
+          steps: policy.steps,
+          submitterUserId: ctx.userId,
+        });
+        await tx
+          .update(schema.finalSettlements)
+          .set({
+            status: "pending_approval",
+            approvalRequestId: request.id,
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.finalSettlements.id, s.id));
+        return { parked: true as const, requestId: request.id };
+      }
+
+      const applied = await approveFinalSettlementCore(tx, {
+        tenantId: ctx.tenantId,
+        settlementId: s.id,
+        approverUserId: ctx.userId,
+        allowStatuses: ["draft"],
+      });
+      if ("error" in applied) return { error: applied.error };
+      return { parked: false as const, settlement: applied.settlement };
     });
 
-    if ("error" in result) {
-      const map: Record<string, number> = { NOT_FOUND: 404, NOT_DRAFT: 409 };
-      return reply
-        .status((result.error && map[result.error]) ?? 500)
-        .send({ error: { code: result.error } });
+    if ("error" in outcome) {
+      const code = outcome.error;
+      const status =
+        code === "NOT_FOUND"
+          ? 404
+          : code === "ENGINE_OWNED"
+            ? 409
+            : 409;
+      const message =
+        code === "NOT_FOUND"
+          ? "Settlement not found."
+          : code === "ENGINE_OWNED"
+            ? "This settlement is managed by the approval engine. Decide it from the Approvals queue."
+            : "Only draft settlements can be approved.";
+      return reply.status(status).send({ error: { code, message } });
     }
-    return reply.send(result);
+    if (outcome.parked) {
+      return reply.send({
+        ok: true,
+        parked: true,
+        approvalRequestId: outcome.requestId,
+      });
+    }
+    return reply.send({ ok: true, settlement: outcome.settlement });
   });
 
   // POST /final-settlements/:id/post — approved → posted. Allocates FS-xxxx
@@ -1318,8 +1436,20 @@ export const finalSettlementByIdRoutes: FastifyPluginAsync = async (fastify) => 
         )
         .limit(1);
       if (!s) return { error: "NOT_FOUND" as const };
-      if (!["draft", "approved"].includes(s.status)) {
+      if (!["draft", "pending_approval", "approved"].includes(s.status)) {
         return { error: "NOT_CANCELLABLE" as const };
+      }
+
+      // Engine-owned pending row: cancel the underlying approval_request
+      // first so the /approvals queue drops it. Mirrors the PO / expense-
+      // claim pattern where the domain row is authoritative over the
+      // engine row.
+      if (s.status === "pending_approval" && s.approvalRequestId) {
+        await cancelApprovalRequest(tx, {
+          tenantId: ctx.tenantId,
+          requestId: s.approvalRequestId,
+          reason: parsed.data.reason || "Settlement cancelled",
+        });
       }
 
       const [updated] = await tx
@@ -1328,6 +1458,7 @@ export const finalSettlementByIdRoutes: FastifyPluginAsync = async (fastify) => 
           status: "cancelled",
           cancelledAt: new Date(),
           cancelledReason: parsed.data.reason || null,
+          approvalRequestId: null,
           updatedAt: new Date(),
         })
         .where(eq(schema.finalSettlements.id, s.id))

@@ -353,5 +353,11 @@ function deepLinkFor(request: ApprovalRequest): string | null {
     // roadmap #43d — documentId is bonus_runs.id.
     return `/app/bonus-runs/${request.documentId}`;
   }
+  if (request.documentType === "final_settlement") {
+    // roadmap #43e — documentId is final_settlements.id. Detail page
+    // shows the settlement worksheet + the "Awaiting approval" banner
+    // so an approver can see the full exit calc before signing off.
+    return `/app/final-settlements/${request.documentId}`;
+  }
   return null;
 }
