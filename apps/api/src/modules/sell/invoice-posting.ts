@@ -8,7 +8,7 @@
 // REST, POS composite) decides how to map error codes onto HTTP status.
 
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
-import { and, asc, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { nextDocumentNumber, schema } from "@pettahpro/db";
 
 import { postJournal } from "../accounting/journal-posting.js";
@@ -33,6 +33,7 @@ export type InvoicePostError =
   | { error: "NO_DEFAULT_WAREHOUSE" }
   | { error: "NO_STOCK_ACCOUNTS" }
   | { error: "NEGATIVE_STOCK"; item: typeof schema.items.$inferSelect }
+  | { error: "BUNDLE_COMPONENT_MISSING"; bundleId: string }
   | { error: "CREDIT_HOLD"; reason: string | null }
   | {
       error: "CREDIT_LIMIT_EXCEEDED";
@@ -190,12 +191,26 @@ export async function postDraftInvoice(
     });
   }
 
-  // Stock relief + COGS (WAVG, single default warehouse v1)
+  // Stock relief + COGS (WAVG, single default warehouse v1).
+  //
+  // Bundle explosion (roadmap #35): a line whose item is a bundle
+  // doesn't issue stock for the bundle itself — the bundle is virtual
+  // and has no balance. Instead, each component is issued for
+  // (lineQty × componentQty) and its WAVG cost rolls into the
+  // invoice's totalCogsCents. The invoice line stays as-is — we don't
+  // disaggregate on the document, per spec §9. Each component
+  // movement gets its own stock_ledger row + lines-up against the
+  // same JE entryId, so the audit trail shows exactly which items
+  // left which warehouse.
   const settings = await loadTenantSettings(tx);
   const trackedLines: Array<{
     line: (typeof lines)[number];
     item: typeof schema.items.$inferSelect;
+    // Quantity to issue — for non-bundle lines this is the line qty,
+    // for an exploded bundle line this is bundleLineQty × componentQty.
+    issueQuantity: number;
     cogsCents: number;
+    memoSuffix?: string;
   }> = [];
   let totalCogsCents = 0;
 
@@ -214,16 +229,111 @@ export async function postDraftInvoice(
       );
     const itemById = new Map(linkedItems.map((i) => [i.id, i]));
 
+    // Preload every bundle's component list in one query keyed by
+    // bundle id. Avoids N+1 across lines that reference different
+    // bundles (e.g. a POS ring-up with three different kits).
+    const bundleLineItemIds = Array.from(
+      new Set(
+        lines
+          .map((l) => l.itemId)
+          .filter((id): id is string => !!id)
+          .filter((id) => itemById.get(id)?.itemType === "bundle"),
+      ),
+    );
+    const componentsByBundle = new Map<
+      string,
+      Array<{
+        componentItemId: string;
+        quantity: number;
+      }>
+    >();
+    if (bundleLineItemIds.length > 0) {
+      const bundleRows = await tx
+        .select({
+          bundleItemId: schema.itemBundleComponents.bundleItemId,
+          componentItemId: schema.itemBundleComponents.componentItemId,
+          quantity: schema.itemBundleComponents.quantity,
+        })
+        .from(schema.itemBundleComponents)
+        .where(
+          and(
+            eq(schema.itemBundleComponents.tenantId, tenantId),
+            inArray(schema.itemBundleComponents.bundleItemId, bundleLineItemIds),
+          ),
+        );
+      for (const r of bundleRows) {
+        const arr = componentsByBundle.get(r.bundleItemId) ?? [];
+        arr.push({
+          componentItemId: r.componentItemId,
+          quantity: Number(r.quantity),
+        });
+        componentsByBundle.set(r.bundleItemId, arr);
+      }
+    }
+
     for (const l of lines) {
       if (!l.itemId) continue;
       const item = itemById.get(l.itemId);
-      if (!item || !item.trackInventory) continue;
-      if (!defaultWarehouse) return { error: "NO_DEFAULT_WAREHOUSE" };
-      if (!inventoryAccountId || !cogsAccountId) return { error: "NO_STOCK_ACCOUNTS" };
+      if (!item) continue;
 
       const qty = Number(l.quantity);
       if (qty <= 0) continue;
 
+      // Non-bundle, non-tracked items: skip (services, virtual items)
+      // using the same guard as before.
+      if (item.itemType !== "bundle" && !item.trackInventory) continue;
+
+      if (!defaultWarehouse) return { error: "NO_DEFAULT_WAREHOUSE" };
+      if (!inventoryAccountId || !cogsAccountId)
+        return { error: "NO_STOCK_ACCOUNTS" };
+
+      if (item.itemType === "bundle") {
+        // Empty-component bundle = revenue-only, zero COGS. Legal &
+        // intentional (service-like placeholder; see spec §9). Silent
+        // no-op at the stock level.
+        const components = componentsByBundle.get(item.id) ?? [];
+        for (const c of components) {
+          const componentItem = itemById.get(c.componentItemId);
+          if (!componentItem) {
+            // Shouldn't happen given the FK + soft-delete filtering,
+            // but defensive — better to abort posting than silently
+            // relieve nothing.
+            return { error: "BUNDLE_COMPONENT_MISSING", bundleId: item.id };
+          }
+          // Components can be non-stock (service rolled into a kit).
+          // They contribute zero COGS but stay legal.
+          if (!componentItem.trackInventory) continue;
+
+          const issueQty = qty * c.quantity;
+          try {
+            const { cogsCents } = await peekStockIssue(tx, {
+              tenantId,
+              itemId: componentItem.id,
+              warehouseId: defaultWarehouse.id,
+              quantity: issueQty,
+            });
+            trackedLines.push({
+              line: l,
+              item: componentItem,
+              issueQuantity: issueQty,
+              cogsCents,
+              memoSuffix: `bundle ${item.name} component ${componentItem.name}`,
+            });
+            totalCogsCents += cogsCents;
+          } catch (err) {
+            const e = err as Error & { code?: string };
+            if (e.code === "NEGATIVE_STOCK") {
+              // Surface the component item, not the bundle — user
+              // needs to know which SKU to replenish.
+              return { error: "NEGATIVE_STOCK", item: componentItem };
+            }
+            throw err;
+          }
+        }
+        continue;
+      }
+
+      // Non-bundle tracked item — original path.
       try {
         const { cogsCents } = await peekStockIssue(tx, {
           tenantId,
@@ -231,7 +341,12 @@ export async function postDraftInvoice(
           warehouseId: defaultWarehouse.id,
           quantity: qty,
         });
-        trackedLines.push({ line: l, item, cogsCents });
+        trackedLines.push({
+          line: l,
+          item,
+          issueQuantity: qty,
+          cogsCents,
+        });
         totalCogsCents += cogsCents;
       } catch (err) {
         const e = err as Error & { code?: string };
@@ -268,19 +383,23 @@ export async function postDraftInvoice(
     lines: journalLines,
   });
 
-  // Commit stock movements now that entryId exists
+  // Commit stock movements now that entryId exists. For exploded
+  // bundle lines the `issueQuantity` is already scaled by the
+  // component qty and the memo carries the bundle→component breadcrumb.
   for (const t of trackedLines) {
     await applyStockIssue(tx, {
       tenantId,
       itemId: t.item.id,
       warehouseId: defaultWarehouse!.id,
-      quantity: Number(t.line.quantity),
+      quantity: t.issueQuantity,
       sourceDocumentType: "invoice",
       sourceDocumentId: invoice.id,
       sourceLineId: t.line.id,
       journalEntryId: entryId,
       postedByUserId: userId,
-      memo: `Invoice ${invoiceNumber}`,
+      memo: t.memoSuffix
+        ? `Invoice ${invoiceNumber} — ${t.memoSuffix}`
+        : `Invoice ${invoiceNumber}`,
     });
   }
 
@@ -355,6 +474,7 @@ export const INVOICE_POST_ERROR_STATUS: Record<string, number> = {
   NO_DEFAULT_WAREHOUSE: 500,
   NO_STOCK_ACCOUNTS: 500,
   NEGATIVE_STOCK: 409,
+  BUNDLE_COMPONENT_MISSING: 500,
   CREDIT_HOLD: 409,
   CREDIT_LIMIT_EXCEEDED: 409,
 };
@@ -373,6 +493,9 @@ export function buildInvoicePostErrorBody(result: InvoicePostError): {
   if (result.error === "NEGATIVE_STOCK") {
     body.message = `Not enough stock on hand for ${result.item.name}. Receive stock via a bill before invoicing.`;
     body.itemName = result.item.name;
+  } else if (result.error === "BUNDLE_COMPONENT_MISSING") {
+    body.message =
+      "A bundle on this invoice references a component that is missing or deleted. Edit the bundle's component list and try again.";
   } else if (result.error === "CREDIT_HOLD") {
     body.message = result.reason
       ? `Customer is on credit hold — ${result.reason}. Clear the hold before posting.`

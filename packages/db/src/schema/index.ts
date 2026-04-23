@@ -51,3 +51,4 @@ export * from "./commissions.js";
 export * from "./portal-otps.js";
 export * from "./item-categories.js";
 export * from "./document-attachments.js";
+export * from "./item-bundle-components.js";

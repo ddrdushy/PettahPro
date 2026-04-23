@@ -56,6 +56,8 @@ export type AuditEventKind =
   // Document attachments (roadmap #32)
   | "attachment.uploaded"
   | "attachment.deleted"
+  // Kit / bundle items (roadmap #35)
+  | "item_bundle.updated"
   // Settings
   | "settings.update"
   | "number_series.update"

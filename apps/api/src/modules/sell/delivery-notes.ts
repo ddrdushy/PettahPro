@@ -1,5 +1,5 @@
 import type { FastifyPluginAsync } from "fastify";
-import { and, eq, isNull, desc, asc, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, desc, asc, sql } from "drizzle-orm";
 import { z } from "zod";
 import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
@@ -307,24 +307,105 @@ export const deliveryNotesRoutes: FastifyPluginAsync = async (fastify) => {
             ctx.tenantId,
           );
 
+          // Bundle explosion mirrors `invoice-posting.ts` — when the
+          // tenant relieves on DN, a bundle line on the DN issues
+          // stock per component at (lineQty × componentQty). Single
+          // JE per DN, one ledger row per component.
+          const bundleLineItemIds = Array.from(
+            new Set(
+              dnLines
+                .map((l) => l.itemId)
+                .filter((id): id is string => !!id)
+                .filter((id) => itemById.get(id)?.itemType === "bundle"),
+            ),
+          );
+          const componentsByBundle = new Map<
+            string,
+            Array<{ componentItemId: string; quantity: number }>
+          >();
+          if (bundleLineItemIds.length > 0) {
+            const bundleRows = await tx
+              .select({
+                bundleItemId: schema.itemBundleComponents.bundleItemId,
+                componentItemId: schema.itemBundleComponents.componentItemId,
+                quantity: schema.itemBundleComponents.quantity,
+              })
+              .from(schema.itemBundleComponents)
+              .where(
+                and(
+                  eq(schema.itemBundleComponents.tenantId, ctx.tenantId),
+                  inArray(
+                    schema.itemBundleComponents.bundleItemId,
+                    bundleLineItemIds,
+                  ),
+                ),
+              );
+            for (const r of bundleRows) {
+              const arr = componentsByBundle.get(r.bundleItemId) ?? [];
+              arr.push({
+                componentItemId: r.componentItemId,
+                quantity: Number(r.quantity),
+              });
+              componentsByBundle.set(r.bundleItemId, arr);
+            }
+          }
+
           const trackedLines: Array<{
             line: (typeof dnLines)[number];
             item: typeof schema.items.$inferSelect;
+            issueQuantity: number;
             cogsCents: number;
+            memoSuffix?: string;
           }> = [];
           let totalCogsCents = 0;
 
           for (const l of dnLines) {
             if (!l.itemId) continue;
             const item = itemById.get(l.itemId);
-            if (!item || !item.trackInventory) continue;
+            if (!item) continue;
+
+            const qty = Number(l.quantity);
+            if (qty <= 0) continue;
+
+            if (item.itemType !== "bundle" && !item.trackInventory) continue;
             if (!defaultWarehouse) return { error: "NO_DEFAULT_WAREHOUSE" as const };
             if (!inventoryAccountId || !cogsAccountId) {
               return { error: "NO_STOCK_ACCOUNTS" as const };
             }
 
-            const qty = Number(l.quantity);
-            if (qty <= 0) continue;
+            if (item.itemType === "bundle") {
+              const components = componentsByBundle.get(item.id) ?? [];
+              for (const c of components) {
+                const componentItem = itemById.get(c.componentItemId);
+                if (!componentItem) continue;
+                if (!componentItem.trackInventory) continue;
+
+                const issueQty = qty * c.quantity;
+                try {
+                  const { cogsCents } = await peekStockIssue(tx, {
+                    tenantId: ctx.tenantId,
+                    itemId: componentItem.id,
+                    warehouseId: defaultWarehouse.id,
+                    quantity: issueQty,
+                  });
+                  trackedLines.push({
+                    line: l,
+                    item: componentItem,
+                    issueQuantity: issueQty,
+                    cogsCents,
+                    memoSuffix: `bundle ${item.name} component ${componentItem.name}`,
+                  });
+                  totalCogsCents += cogsCents;
+                } catch (err) {
+                  const e = err as Error & { code?: string };
+                  if (e.code === "NEGATIVE_STOCK") {
+                    return { error: "NEGATIVE_STOCK" as const };
+                  }
+                  throw err;
+                }
+              }
+              continue;
+            }
 
             try {
               const { cogsCents } = await peekStockIssue(tx, {
@@ -333,7 +414,12 @@ export const deliveryNotesRoutes: FastifyPluginAsync = async (fastify) => {
                 warehouseId: defaultWarehouse.id,
                 quantity: qty,
               });
-              trackedLines.push({ line: l, item, cogsCents });
+              trackedLines.push({
+                line: l,
+                item,
+                issueQuantity: qty,
+                cogsCents,
+              });
               totalCogsCents += cogsCents;
             } catch (err) {
               const e = err as Error & { code?: string };
@@ -371,13 +457,15 @@ export const deliveryNotesRoutes: FastifyPluginAsync = async (fastify) => {
                 tenantId: ctx.tenantId,
                 itemId: t.item.id,
                 warehouseId: defaultWarehouse!.id,
-                quantity: Number(t.line.quantity),
+                quantity: t.issueQuantity,
                 sourceDocumentType: "delivery_note",
                 sourceDocumentId: dn.id,
                 sourceLineId: t.line.id,
                 journalEntryId: entryId,
                 postedByUserId: ctx.userId,
-                memo: `Delivery ${dnNumber}`,
+                memo: t.memoSuffix
+                  ? `Delivery ${dnNumber} — ${t.memoSuffix}`
+                  : `Delivery ${dnNumber}`,
               });
             }
           }

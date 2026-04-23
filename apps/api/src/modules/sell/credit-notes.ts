@@ -505,6 +505,15 @@ export const creditNotesRoutes: FastifyPluginAsync = async (fastify) => {
         lines: journalLines,
       });
 
+      // NOTE (roadmap #35 — kit/bundle items): credit-note posting
+      // currently does not reverse stock movements. This is a
+      // pre-existing limitation that predates bundles — any future
+      // "credit notes re-add stock" feature will need to mirror the
+      // bundle explosion from `invoice-posting.ts` so a CN against an
+      // invoice that included a bundle re-adds each component (not
+      // the bundle itself). Deferred to its own PR so the scope of
+      // this one stays on bundle support.
+
       // Mark credit note as posted
       await tx
         .update(schema.creditNotes)
