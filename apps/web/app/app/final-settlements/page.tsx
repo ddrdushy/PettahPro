@@ -11,6 +11,7 @@ export const metadata: Metadata = { title: "Final settlements" };
 
 const statusTone: Record<FinalSettlementStatus, string> = {
   draft: "bg-surface-recessed text-text-secondary",
+  pending_approval: "bg-warning-bg text-warning",
   approved: "bg-mint-surface text-mint-dark",
   posted: "bg-mint text-mint-dark",
   paid: "bg-mint text-mint-dark",
@@ -19,6 +20,7 @@ const statusTone: Record<FinalSettlementStatus, string> = {
 
 const statusLabel: Record<FinalSettlementStatus, string> = {
   draft: "Draft",
+  pending_approval: "Pending approval",
   approved: "Approved",
   posted: "Posted",
   paid: "Paid",

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import {
@@ -24,6 +25,7 @@ import { SettlementWorksheet } from "../worksheet";
 
 const statusTone: Record<FinalSettlementStatus, string> = {
   draft: "bg-surface-recessed text-text-secondary",
+  pending_approval: "bg-warning-bg text-warning",
   approved: "bg-mint-surface text-mint-dark",
   posted: "bg-mint text-mint-dark",
   paid: "bg-mint text-mint-dark",
@@ -32,6 +34,7 @@ const statusTone: Record<FinalSettlementStatus, string> = {
 
 const statusLabel: Record<FinalSettlementStatus, string> = {
   draft: "Draft",
+  pending_approval: "Pending approval",
   approved: "Approved",
   posted: "Posted",
   paid: "Paid",
@@ -148,6 +151,25 @@ export function SettlementDetailClient({
           )}
         </div>
       </div>
+
+      {settlement.status === "pending_approval" && (
+        <section className="rounded-card border-hairline border-warning/40 bg-warning-bg p-5">
+          <p className="text-caption uppercase tracking-wide text-warning">
+            Awaiting approval
+          </p>
+          <p className="mt-1 text-small text-charcoal">
+            A final-settlement approval policy matched this exit. Amounts are
+            locked — the settlement flips to approved once the designated
+            approver signs off, after which you can post to the ledger.
+          </p>
+          <Link
+            href="/app/approvals"
+            className="btn-link mt-2 inline-flex text-small"
+          >
+            Open approvals queue →
+          </Link>
+        </section>
+      )}
 
       {editing && isDraft ? (
         <OverridesEditor

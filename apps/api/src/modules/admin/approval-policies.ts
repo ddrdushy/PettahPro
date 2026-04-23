@@ -25,6 +25,11 @@ const DOCUMENT_TYPES = [
   // and bonus runs (threshold-gated, same shape as bills).
   "payroll_run",
   "bonus_run",
+  // Roadmap #43e — final settlements (tenant-admin §7.1 "always →
+  // Owner"; sensitive exit calc). Same always-approve shape as
+  // payroll: configure a policy with an empty triggerRule and it
+  // matches every submission.
+  "final_settlement",
 ] as const;
 
 const ApproverSchema = z.object({
