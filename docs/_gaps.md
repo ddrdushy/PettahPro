@@ -31,7 +31,6 @@ Things a real multi-branch or multi-project SME will ask for on day one.
 | B1 | **Cost centers / projects / dimension tags on journal lines** — today every journal line is flat CoA. `branchId` is on document headers but doesn't flow into GL lines for reporting. | Any tenant with multiple branches who wants "P&L by branch" or "P&L by project" can't get it. Real ask from anyone beyond 1-location businesses. | L — `dimensions jsonb` on `journal_lines` + dimension-catalog table + reporting-layer updates + every post site needs to propagate. |
 | B2 | **Budget / forecast tables + budget-vs-actual report** — no budgets table exists. | Any finance team past the sole-proprietor tier wants this. | M |
 | B3 | **Inter-company / tenant-group consolidation** — each tenant is an island. | Group companies with 2+ subsidiaries need consolidated reporting. Niche but real. | L |
-| B4 | **Drill-down from P&L → underlying transactions** — TB and GL exist, but the viewer doesn't link them. | UX polish, but real productivity gain for accountants. | S |
 | B5 | **Rolling 12-month trend views, sparkline dashboards** — P&L-compare shipped but no trend view. | Dashboard credibility. | M |
 
 ---
@@ -159,6 +158,6 @@ Already flagged on the roadmap as separate; putting here for completeness so the
 
 When any of the above gets promoted to `_roadmap.md`:
 
-1. Give it a number continuing the roadmap sequence (the next free number as of this writing is **#46**).
+1. Give it a number continuing the roadmap sequence (the next free number as of this writing is **#49**).
 2. Lift the description into the roadmap table under the right section (Must-have if compliance, Should-have if convenience, Nice-to-have otherwise).
 3. Delete the row from this file in the same PR. This file should shrink over time.

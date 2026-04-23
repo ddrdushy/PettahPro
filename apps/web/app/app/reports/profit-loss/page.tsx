@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { cookies } from "next/headers";
+import Link from "next/link";
 import { TrendingUp, TrendingDown } from "lucide-react";
 import type { ProfitLoss } from "@/lib/api";
 import { PageHeader } from "@/components/app/page-header";
@@ -166,12 +167,35 @@ export default async function ProfitLossPage({
                     </td>
                   </tr>
                 ) : (
-                  section.accounts.map((a) => (
-                    <tr key={a.accountId}>
-                      <td className="px-4 py-3 tabular-nums text-text-secondary">{a.code}</td>
-                      <td className="px-4 py-3 text-charcoal">{a.name}</td>
+                  section.accounts.map((a) => {
+                    // Drill-down: clicking any account line jumps to the GL
+                    // filtered to that account for the same period the P&L
+                    // is currently showing. #48.
+                    const glHref = `/app/reports/general-ledger?accountId=${a.accountId}&from=${data.asOfFrom}&to=${data.asOfTo}`;
+                    return (
+                    <tr key={a.accountId} className="group hover:bg-mint-surface/30">
+                      <td className="px-4 py-3 tabular-nums text-text-secondary">
+                        <Link
+                          href={glHref}
+                          className="block text-text-secondary hover:text-mint-dark"
+                          title="Open this account in the general ledger"
+                        >
+                          {a.code}
+                        </Link>
+                      </td>
+                      <td className="px-4 py-3 text-charcoal">
+                        <Link
+                          href={glHref}
+                          className="block text-charcoal group-hover:text-mint-dark group-hover:underline underline-offset-2"
+                          title="Open this account in the general ledger"
+                        >
+                          {a.name}
+                        </Link>
+                      </td>
                       <td className="px-4 py-3 text-right tabular-nums text-charcoal">
-                        {formatLKR(a.amountCents)}
+                        <Link href={glHref} className="block text-charcoal">
+                          {formatLKR(a.amountCents)}
+                        </Link>
                       </td>
                       {hasCompare && (
                         <td className="px-4 py-3 text-right tabular-nums text-text-secondary">
@@ -184,7 +208,8 @@ export default async function ProfitLossPage({
                         </td>
                       )}
                     </tr>
-                  ))
+                    );
+                  })
                 )}
                 <tr key={`t-${section.label}`} className="bg-surface-recessed/30">
                   <td className="px-4 py-2" />

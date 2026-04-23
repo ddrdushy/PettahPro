@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { cookies } from "next/headers";
-import { AlertTriangle } from "lucide-react";
+import Link from "next/link";
+import { AlertTriangle, ExternalLink } from "lucide-react";
 import type { Account, GeneralLedger } from "@/lib/api";
 import { PageHeader } from "@/components/app/page-header";
 import { formatLKR, formatDate } from "@/lib/format";
@@ -250,9 +251,24 @@ function LedgerView({ ledger }: { ledger: GeneralLedger }) {
                   </td>
                   <td className="px-4 py-3">
                     <p className="tabular-nums text-charcoal">{l.entryNumber}</p>
-                    {l.sourceType && (
-                      <p className="text-caption text-text-tertiary">{sourceLabel(l.sourceType)}</p>
-                    )}
+                    {l.sourceType && (() => {
+                      // Deep-link to the source document when we have one
+                      // registered for this sourceType. Roadmap #48.
+                      const href = deepLinkForSource(l.sourceType, l.sourceId);
+                      const label = sourceLabel(l.sourceType);
+                      return href ? (
+                        <Link
+                          href={href}
+                          className="mt-0.5 inline-flex items-center gap-1 text-caption text-mint-dark underline-offset-2 hover:underline"
+                          title={`Open source ${label.toLowerCase()}`}
+                        >
+                          {label}
+                          <ExternalLink className="h-3 w-3" aria-hidden />
+                        </Link>
+                      ) : (
+                        <p className="text-caption text-text-tertiary">{label}</p>
+                      );
+                    })()}
                   </td>
                   <td className="px-4 py-3">
                     <p className="text-text-primary">{l.description ?? <span className="text-text-tertiary">—</span>}</p>
@@ -323,18 +339,95 @@ function SummaryCard({
 function sourceLabel(s: string): string {
   const map: Record<string, string> = {
     invoice: "Sales invoice",
+    invoice_void: "Invoice void",
+    bad_debt_writeoff: "Bad-debt writeoff",
+    bad_debt_writeoff_reversal: "Bad-debt reversal",
     bill: "Supplier bill",
+    bill_void: "Bill void",
+    credit_note: "Credit note",
+    debit_note: "Debit note",
     customer_payment: "Customer payment",
     supplier_payment: "Supplier payment",
     payroll_run: "Payroll run",
+    payroll_disbursement: "Payroll disbursement",
     payroll_payment: "Payroll disbursement",
+    payroll_void: "Payroll void",
+    final_settlement: "Final settlement",
+    bonus_run: "Bonus run",
+    bonus_run_void: "Bonus void",
+    expense_claim: "Expense claim",
+    employee_loan: "Employee loan",
     statutory_remittance: "EPF/ETF/PAYE payment",
-    invoice_void: "Invoice void",
-    bill_void: "Bill void",
+    wht_remit: "WHT remittance",
     manual: "Manual journal",
+    recurring_journal: "Recurring journal",
     opening_balance: "Opening balance",
+    year_close: "Year-end close",
+    fx_revaluation: "FX revaluation",
+    fx_revaluation_void: "FX reval void",
+    delivery_note: "Delivery note",
+    pos_shift: "POS shift",
+    petty_cash_float: "Petty cash float",
+    petty_cash_transaction: "Petty cash txn",
+    petty_cash_top_up_request: "Petty cash top-up",
+    petty_cash_reconciliation: "Petty cash recon",
+    depreciation_run: "Depreciation run",
+    stock_count: "Stock count",
     stock_movement: "Stock movement",
+    cheque: "Cheque",
     cheque_clear: "Cheque clearing",
+    cheque_bounce: "Cheque bounce",
   };
   return map[s] ?? s;
+}
+
+// Deep-link table for drill-through from a GL line to its source document.
+// Roadmap #48. Returns null when no sensible detail page exists (or when
+// the page is list-only and a detail route hasn't shipped yet); the UI
+// falls back to a plain label in that case.
+//
+// A couple of intentional gaps worth flagging:
+//
+//  * customer_payment / supplier_payment — today /app/payments and
+//    /app/supplier-payments are list-only, no `[id]` route. We return
+//    null rather than deep-link to the list and make the user hunt.
+//  * petty_cash_transaction — the source id is the transaction row, but
+//    our detail page is the *float* it lives on. We'd need a new route
+//    (or to resolve txn→float on the API side) to make this work.
+//  * depreciation_run / year_close / opening_balance — no detail UI
+//    exists today; these will always be labels, not links.
+function deepLinkForSource(
+  sourceType: string | null | undefined,
+  sourceId: string | null | undefined,
+): string | null {
+  if (!sourceType || !sourceId) return null;
+  const routes: Record<string, (id: string) => string> = {
+    invoice: (id) => `/app/invoices/${id}`,
+    invoice_void: (id) => `/app/invoices/${id}`,
+    bad_debt_writeoff: (id) => `/app/invoices/${id}`,
+    bad_debt_writeoff_reversal: (id) => `/app/invoices/${id}`,
+    bill: (id) => `/app/bills/${id}`,
+    bill_void: (id) => `/app/bills/${id}`,
+    credit_note: (id) => `/app/credit-notes/${id}`,
+    debit_note: (id) => `/app/debit-notes/${id}`,
+    delivery_note: (id) => `/app/delivery-notes/${id}`,
+    manual: (id) => `/app/journals/${id}`,
+    payroll_run: (id) => `/app/payroll/${id}`,
+    payroll_disbursement: (id) => `/app/payroll/${id}`,
+    payroll_payment: (id) => `/app/payroll/${id}`,
+    payroll_void: (id) => `/app/payroll/${id}`,
+    final_settlement: (id) => `/app/final-settlements/${id}`,
+    bonus_run: (id) => `/app/bonus-runs/${id}`,
+    bonus_run_void: (id) => `/app/bonus-runs/${id}`,
+    expense_claim: (id) => `/app/expense-claims/${id}`,
+    employee_loan: (id) => `/app/staff-loans/${id}`,
+    stock_count: (id) => `/app/stock/counts/${id}`,
+    pos_shift: (id) => `/app/pos/shifts/${id}`,
+    petty_cash_float: (id) => `/app/petty-cash/${id}`,
+    cheque: (id) => `/app/cheques/${id}`,
+    cheque_bounce: (id) => `/app/cheques/${id}`,
+    cheque_clear: (id) => `/app/cheques/${id}`,
+  };
+  const builder = routes[sourceType];
+  return builder ? builder(sourceId) : null;
 }
