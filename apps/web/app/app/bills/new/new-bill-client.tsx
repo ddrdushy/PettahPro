@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import { ArrowLeft, Loader2, Plus, Trash2 } from "lucide-react";
 import {
   api,
@@ -26,6 +26,15 @@ interface LineDraft {
   discountPct: string;
   taxCodeId: string;
   expenseAccountId: string;
+  // Tracking (roadmap #34). Populated only when the picked item has
+  // `trackBatches`/`trackExpiry` (batch block) or `trackSerials`
+  // (serials block) on. Server enforces required-ness at post; UI
+  // only guides.
+  batchNumber: string;
+  mfgDate: string;
+  expiryDate: string;
+  batchNotes: string;
+  serialNumbersText: string;
 }
 
 interface ChargeDraft {
@@ -54,7 +63,19 @@ function emptyLine(): LineDraft {
     discountPct: "0",
     taxCodeId: "",
     expenseAccountId: "",
+    batchNumber: "",
+    mfgDate: "",
+    expiryDate: "",
+    batchNotes: "",
+    serialNumbersText: "",
   };
+}
+
+function parseSerials(raw: string): string[] {
+  return raw
+    .split(/\r?\n|,/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
 }
 
 function emptyCharge(): ChargeDraft {
@@ -249,15 +270,39 @@ export function NewBillClient({
         currency: currency.toUpperCase(),
         fxRate: Number(fxRate) || 1,
         notes: notes.trim() || undefined,
-        lines: validLines.map((l) => ({
-          itemId: l.itemId || undefined,
-          description: l.description.trim(),
-          quantity: toNum(l.quantity),
-          unitPriceCents: toInt(l.unitPrice),
-          discountPctBps: Math.round(toNum(l.discountPct) * 100),
-          taxCodeId: l.taxCodeId || undefined,
-          expenseAccountId: l.expenseAccountId || undefined,
-        })),
+        lines: validLines.map((l) => {
+          const item = items.find((i) => i.id === l.itemId);
+          const wantsBatch = !!item && (item.trackBatches || item.trackExpiry);
+          const wantsSerials = !!item && item.trackSerials;
+          const tracking: {
+            batchNumber?: string;
+            mfgDate?: string;
+            expiryDate?: string;
+            batchNotes?: string;
+            serialNumbers?: string[];
+          } = {};
+          if (wantsBatch) {
+            if (l.batchNumber.trim()) tracking.batchNumber = l.batchNumber.trim();
+            if (l.mfgDate) tracking.mfgDate = l.mfgDate;
+            if (l.expiryDate) tracking.expiryDate = l.expiryDate;
+            if (l.batchNotes.trim()) tracking.batchNotes = l.batchNotes.trim();
+          }
+          if (wantsSerials) {
+            const serials = parseSerials(l.serialNumbersText);
+            if (serials.length > 0) tracking.serialNumbers = serials;
+          }
+          const hasTracking = Object.keys(tracking).length > 0;
+          return {
+            itemId: l.itemId || undefined,
+            description: l.description.trim(),
+            quantity: toNum(l.quantity),
+            unitPriceCents: toInt(l.unitPrice),
+            discountPctBps: Math.round(toNum(l.discountPct) * 100),
+            taxCodeId: l.taxCodeId || undefined,
+            expenseAccountId: l.expenseAccountId || undefined,
+            tracking: hasTracking ? tracking : undefined,
+          };
+        }),
         charges: validCharges.map((c) => ({
           kind: c.kind,
           description: c.description.trim() || undefined,
@@ -423,8 +468,15 @@ export function NewBillClient({
                 <tbody className="divide-y-hairline divide-border">
                   {lines.map((l, idx) => {
                     const c = computed.perLine[idx];
+                    const item = items.find((i) => i.id === l.itemId);
+                    const needsBatch = !!item && (item.trackBatches || item.trackExpiry);
+                    const needsSerials = !!item && item.trackSerials;
+                    const needsTracking = needsBatch || needsSerials;
+                    const serialCount = parseSerials(l.serialNumbersText).length;
+                    const expectedQty = toNum(l.quantity);
                     return (
-                      <tr key={l.id} className="align-top">
+                      <React.Fragment key={l.id}>
+                      <tr className="align-top">
                         <td className="px-3 py-3 text-center text-caption text-text-tertiary">{idx + 1}</td>
                         <td className="px-3 py-3">
                           <select
@@ -509,6 +561,83 @@ export function NewBillClient({
                           </button>
                         </td>
                       </tr>
+                      {needsTracking && (
+                        <tr className="bg-surface-recessed/40">
+                          <td />
+                          <td colSpan={7} className="px-3 pb-4">
+                            <div className="rounded-md border-hairline border-border bg-surface-elevated p-3">
+                              <p className="text-caption uppercase tracking-wide text-text-tertiary">
+                                Tracking
+                                {item?.trackBatches ? " · Batch" : ""}
+                                {item?.trackExpiry ? " · Expiry" : ""}
+                                {item?.trackSerials ? " · Serials" : ""}
+                              </p>
+                              {needsBatch && (
+                                <div className="mt-2 grid gap-3 sm:grid-cols-4">
+                                  <div>
+                                    <label className="block text-caption text-text-tertiary">Batch number</label>
+                                    <input
+                                      value={l.batchNumber}
+                                      onChange={(e) => patchLine(l.id, { batchNumber: e.target.value })}
+                                      placeholder="e.g. LOT-24A"
+                                      className="mt-1 w-full rounded-md border-hairline border-border bg-surface-elevated px-2 py-1.5 text-small text-charcoal focus:border-charcoal focus:outline-none"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="block text-caption text-text-tertiary">Mfg date</label>
+                                    <input
+                                      type="date"
+                                      value={l.mfgDate}
+                                      onChange={(e) => patchLine(l.id, { mfgDate: e.target.value })}
+                                      className="mt-1 w-full rounded-md border-hairline border-border bg-surface-elevated px-2 py-1.5 text-small text-charcoal focus:border-charcoal focus:outline-none"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="block text-caption text-text-tertiary">
+                                      Expiry date{item?.trackExpiry ? " *" : ""}
+                                    </label>
+                                    <input
+                                      type="date"
+                                      value={l.expiryDate}
+                                      onChange={(e) => patchLine(l.id, { expiryDate: e.target.value })}
+                                      className="mt-1 w-full rounded-md border-hairline border-border bg-surface-elevated px-2 py-1.5 text-small text-charcoal focus:border-charcoal focus:outline-none"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="block text-caption text-text-tertiary">Notes</label>
+                                    <input
+                                      value={l.batchNotes}
+                                      onChange={(e) => patchLine(l.id, { batchNotes: e.target.value })}
+                                      placeholder="Optional"
+                                      className="mt-1 w-full rounded-md border-hairline border-border bg-surface-elevated px-2 py-1.5 text-small text-charcoal focus:border-charcoal focus:outline-none"
+                                    />
+                                  </div>
+                                </div>
+                              )}
+                              {needsSerials && (
+                                <div className="mt-3">
+                                  <label className="block text-caption text-text-tertiary">
+                                    Serial numbers (one per line) — {serialCount} / {expectedQty || 0}
+                                  </label>
+                                  <textarea
+                                    rows={Math.min(6, Math.max(3, expectedQty || 3))}
+                                    value={l.serialNumbersText}
+                                    onChange={(e) => patchLine(l.id, { serialNumbersText: e.target.value })}
+                                    placeholder={"SN-0001\nSN-0002"}
+                                    className="mt-1 w-full rounded-md border-hairline border-border bg-surface-elevated px-2 py-1.5 font-mono text-small text-charcoal focus:border-charcoal focus:outline-none"
+                                  />
+                                  {expectedQty > 0 && serialCount !== expectedQty && (
+                                    <p className="mt-1 text-caption text-amber-700">
+                                      Posting needs exactly {expectedQty} serial{expectedQty === 1 ? "" : "s"}.
+                                    </p>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                      </React.Fragment>
                     );
                   })}
                 </tbody>

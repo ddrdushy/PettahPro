@@ -10,6 +10,7 @@ import {
   integer,
   text,
   numeric,
+  jsonb,
 } from "drizzle-orm/pg-core";
 import { tenants } from "./tenants.js";
 import { suppliers } from "./suppliers.js";
@@ -79,6 +80,16 @@ export const billLines = pgTable("bill_lines", {
   taxCents: bigint("tax_cents", { mode: "number" }).notNull().default(0),
   lineTotalCents: bigint("line_total_cents", { mode: "number" }).notNull().default(0),
   expenseAccountId: uuid("expense_account_id").references(() => chartOfAccounts.id, { onDelete: "set null" }),
+  // Batch / serial / expiry input captured at draft time and
+  // consumed at post (roadmap #34). Shape:
+  // { batchNumber, mfgDate, expiryDate, serialNumbers[], batchNotes }.
+  trackingInput: jsonb("tracking_input").$type<{
+    batchNumber?: string;
+    mfgDate?: string;
+    expiryDate?: string;
+    batchNotes?: string;
+    serialNumbers?: string[];
+  }>(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

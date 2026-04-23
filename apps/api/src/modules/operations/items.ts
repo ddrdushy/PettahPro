@@ -23,6 +23,15 @@ const CreateSchema = z.object({
   reorderPoint: z.number().int().min(0).optional(),
   taxCodeId: z.string().uuid().optional(),
   categoryId: z.string().uuid().nullable().optional(),
+  // Batch / serial / expiry tracking toggles (roadmap #34).
+  // Only meaningful for stocked products — services/bundles silently
+  // ignore them since neither carries stock movements.
+  trackBatches: z.boolean().default(false),
+  trackSerials: z.boolean().default(false),
+  trackExpiry: z.boolean().default(false),
+  // Warranty in calendar months; applied to serials at sale time to
+  // stamp `warranty_expires_at`. Only meaningful when trackSerials=true.
+  warrantyMonths: z.number().int().min(0).max(600).nullable().optional(),
 });
 
 // PATCH — every field optional, same validators as Create. `itemType`
@@ -45,6 +54,10 @@ const UpdateSchema = z.object({
   taxCodeId: z.string().uuid().nullable().optional(),
   categoryId: z.string().uuid().nullable().optional(),
   isActive: z.boolean().optional(),
+  trackBatches: z.boolean().optional(),
+  trackSerials: z.boolean().optional(),
+  trackExpiry: z.boolean().optional(),
+  warrantyMonths: z.number().int().min(0).max(600).nullable().optional(),
 });
 
 // PUT /items/:id/components — replace-all. Client collapses duplicate
@@ -140,6 +153,15 @@ export const itemsRoutes: FastifyPluginAsync = async (fastify) => {
         ? false
         : data.trackInventory;
 
+    // Tracking toggles only make sense when the item carries stock.
+    // Silently coerce to false for services/bundles so the stock-posting
+    // layer never has to second-guess. Same for warranty months.
+    const tracksStock = trackInventory;
+    const trackBatches = tracksStock ? data.trackBatches : false;
+    const trackSerials = tracksStock ? data.trackSerials : false;
+    const trackExpiry = tracksStock ? data.trackExpiry : false;
+    const warrantyMonths = trackSerials ? data.warrantyMonths ?? null : null;
+
     try {
       const item = await withTenant(ctx.tenantId, async (tx) => {
         const [i] = await tx
@@ -160,6 +182,10 @@ export const itemsRoutes: FastifyPluginAsync = async (fastify) => {
             reorderPoint: data.reorderPoint ?? null,
             taxCodeId: data.taxCodeId ?? null,
             categoryId: data.categoryId ?? null,
+            trackBatches,
+            trackSerials,
+            trackExpiry,
+            warrantyMonths,
           })
           .returning();
         return i;
@@ -230,6 +256,24 @@ export const itemsRoutes: FastifyPluginAsync = async (fastify) => {
           ? false
           : body.trackInventory ?? existing.trackInventory;
 
+      // Tracking toggles follow trackInventory — if stock is off, no
+      // batch/serial/expiry state is meaningful. Services/bundles
+      // always coerce to false.
+      const nextTrackBatches = trackInventory
+        ? body.trackBatches ?? existing.trackBatches
+        : false;
+      const nextTrackSerials = trackInventory
+        ? body.trackSerials ?? existing.trackSerials
+        : false;
+      const nextTrackExpiry = trackInventory
+        ? body.trackExpiry ?? existing.trackExpiry
+        : false;
+      const nextWarrantyMonths = nextTrackSerials
+        ? body.warrantyMonths !== undefined
+          ? body.warrantyMonths
+          : existing.warrantyMonths
+        : null;
+
       const [updated] = await tx
         .update(schema.items)
         .set({
@@ -260,6 +304,10 @@ export const itemsRoutes: FastifyPluginAsync = async (fastify) => {
             ? { categoryId: body.categoryId }
             : {}),
           ...(body.isActive !== undefined ? { isActive: body.isActive } : {}),
+          trackBatches: nextTrackBatches,
+          trackSerials: nextTrackSerials,
+          trackExpiry: nextTrackExpiry,
+          warrantyMonths: nextWarrantyMonths,
           updatedAt: new Date(),
         })
         .where(eq(schema.items.id, existing.id))

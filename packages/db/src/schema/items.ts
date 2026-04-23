@@ -34,6 +34,15 @@ export const items = pgTable("items", {
   assetAccountId: uuid("asset_account_id"),
   tags: jsonb("tags").$type<string[]>().notNull().default([]),
   isActive: boolean("is_active").notNull().default(true),
+  // Batch / serial / expiry tracking (roadmap #34). Any combination
+  // legal per inventory-spec §2.7. Defaulted false so existing items
+  // keep their current behaviour (untracked, single-pool WAVG).
+  trackBatches: boolean("track_batches").notNull().default(false),
+  trackSerials: boolean("track_serials").notNull().default(false),
+  trackExpiry: boolean("track_expiry").notNull().default(false),
+  // Months. Null = no warranty. Drives
+  // item_serials.warranty_expires_at at sale time.
+  warrantyMonths: integer("warranty_months"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   deletedAt: timestamp("deleted_at", { withTimezone: true }),

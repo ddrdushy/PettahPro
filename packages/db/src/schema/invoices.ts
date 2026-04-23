@@ -10,6 +10,7 @@ import {
   integer,
   text,
   numeric,
+  jsonb,
 } from "drizzle-orm/pg-core";
 import { tenants } from "./tenants.js";
 import { customers } from "./customers.js";
@@ -76,6 +77,13 @@ export const invoiceLines = pgTable("invoice_lines", {
   taxCents: bigint("tax_cents", { mode: "number" }).notNull().default(0),
   lineTotalCents: bigint("line_total_cents", { mode: "number" }).notNull().default(0),
   incomeAccountId: uuid("income_account_id").references(() => chartOfAccounts.id, { onDelete: "set null" }),
+  // Batch / serial outbound picks captured at draft time and
+  // consumed at post (roadmap #34). Shape:
+  // { serialNumbers[], batchPicks: [{batchId, quantity}] }.
+  trackingInput: jsonb("tracking_input").$type<{
+    serialNumbers?: string[];
+    batchPicks?: Array<{ batchId: string; quantity: number }>;
+  }>(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

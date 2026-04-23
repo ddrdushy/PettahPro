@@ -40,6 +40,46 @@ export type InvoicePostError =
       openCents: number;
       limitCents: number;
       newInvoiceCents: number;
+    }
+  // Batch / serial tracking failures (roadmap #34). Surfaced at post
+  // time because serial selection is captured on the line's
+  // tracking_input JSONB at draft time.
+  | {
+      error: "SERIAL_COUNT_MISMATCH";
+      item: typeof schema.items.$inferSelect;
+      expected: number;
+      actual: number;
+    }
+  | {
+      error: "SERIAL_NOT_FOUND";
+      item: typeof schema.items.$inferSelect;
+      serial: string;
+    }
+  | {
+      error: "SERIAL_NOT_AVAILABLE";
+      item: typeof schema.items.$inferSelect;
+      serial: string;
+      status: string;
+    }
+  | {
+      error: "SERIAL_DUPLICATE_IN_PAYLOAD";
+      item: typeof schema.items.$inferSelect;
+    }
+  | {
+      error: "BATCH_PICKS_SUM_MISMATCH";
+      item: typeof schema.items.$inferSelect;
+      expected: number;
+      actual: number;
+    }
+  | {
+      error: "BATCH_NOT_FOUND";
+      item: typeof schema.items.$inferSelect;
+      batchId: string;
+    }
+  | {
+      error: "BATCH_INSUFFICIENT";
+      item: typeof schema.items.$inferSelect;
+      batchId: string;
     };
 
 export type InvoicePostResult =
@@ -387,20 +427,79 @@ export async function postDraftInvoice(
   // bundle lines the `issueQuantity` is already scaled by the
   // component qty and the memo carries the bundle→component breadcrumb.
   for (const t of trackedLines) {
-    await applyStockIssue(tx, {
-      tenantId,
-      itemId: t.item.id,
-      warehouseId: defaultWarehouse!.id,
-      quantity: t.issueQuantity,
-      sourceDocumentType: "invoice",
-      sourceDocumentId: invoice.id,
-      sourceLineId: t.line.id,
-      journalEntryId: entryId,
-      postedByUserId: userId,
-      memo: t.memoSuffix
-        ? `Invoice ${invoiceNumber} — ${t.memoSuffix}`
-        : `Invoice ${invoiceNumber}`,
-    });
+    try {
+      await applyStockIssue(tx, {
+        tenantId,
+        itemId: t.item.id,
+        warehouseId: defaultWarehouse!.id,
+        quantity: t.issueQuantity,
+        sourceDocumentType: "invoice",
+        sourceDocumentId: invoice.id,
+        sourceLineId: t.line.id,
+        journalEntryId: entryId,
+        postedByUserId: userId,
+        customerId: invoice.customerId,
+        memo: t.memoSuffix
+          ? `Invoice ${invoiceNumber} — ${t.memoSuffix}`
+          : `Invoice ${invoiceNumber}`,
+        tracking: t.line.trackingInput ?? undefined,
+      });
+    } catch (err) {
+      const e = err as Error & {
+        code?: string;
+        expected?: number;
+        actual?: number;
+        serial?: string;
+        status?: string;
+        batchId?: string;
+      };
+      // The tx is already rolling back — we just need to surface the
+      // right tagged-union shape to the route handler.
+      if (e.code === "SERIAL_COUNT_MISMATCH") {
+        return {
+          error: "SERIAL_COUNT_MISMATCH",
+          item: t.item,
+          expected: e.expected ?? 0,
+          actual: e.actual ?? 0,
+        };
+      }
+      if (e.code === "SERIAL_NOT_FOUND") {
+        return { error: "SERIAL_NOT_FOUND", item: t.item, serial: e.serial ?? "" };
+      }
+      if (e.code === "SERIAL_NOT_AVAILABLE") {
+        return {
+          error: "SERIAL_NOT_AVAILABLE",
+          item: t.item,
+          serial: e.serial ?? "",
+          status: e.status ?? "",
+        };
+      }
+      if (e.code === "SERIAL_DUPLICATE_IN_PAYLOAD") {
+        return { error: "SERIAL_DUPLICATE_IN_PAYLOAD", item: t.item };
+      }
+      if (e.code === "BATCH_PICKS_SUM_MISMATCH") {
+        return {
+          error: "BATCH_PICKS_SUM_MISMATCH",
+          item: t.item,
+          expected: e.expected ?? 0,
+          actual: e.actual ?? 0,
+        };
+      }
+      if (e.code === "BATCH_NOT_FOUND") {
+        return { error: "BATCH_NOT_FOUND", item: t.item, batchId: e.batchId ?? "" };
+      }
+      if (e.code === "BATCH_INSUFFICIENT") {
+        return {
+          error: "BATCH_INSUFFICIENT",
+          item: t.item,
+          batchId: e.batchId ?? "",
+        };
+      }
+      if (e.code === "NEGATIVE_STOCK") {
+        return { error: "NEGATIVE_STOCK", item: t.item };
+      }
+      throw err;
+    }
   }
 
   await tx
@@ -477,6 +576,13 @@ export const INVOICE_POST_ERROR_STATUS: Record<string, number> = {
   BUNDLE_COMPONENT_MISSING: 500,
   CREDIT_HOLD: 409,
   CREDIT_LIMIT_EXCEEDED: 409,
+  SERIAL_COUNT_MISMATCH: 400,
+  SERIAL_NOT_FOUND: 400,
+  SERIAL_NOT_AVAILABLE: 409,
+  SERIAL_DUPLICATE_IN_PAYLOAD: 400,
+  BATCH_PICKS_SUM_MISMATCH: 400,
+  BATCH_NOT_FOUND: 404,
+  BATCH_INSUFFICIENT: 409,
 };
 
 /** Build the error response body for an InvoicePostError. */
@@ -488,6 +594,8 @@ export function buildInvoicePostErrorBody(result: InvoicePostError): {
   openCents?: number;
   limitCents?: number;
   newInvoiceCents?: number;
+  serial?: string;
+  batchId?: string;
 } {
   const body: ReturnType<typeof buildInvoicePostErrorBody> = { code: result.error };
   if (result.error === "NEGATIVE_STOCK") {
@@ -507,6 +615,31 @@ export function buildInvoicePostErrorBody(result: InvoicePostError): {
     body.openCents = openCents;
     body.limitCents = limitCents;
     body.newInvoiceCents = newInvoiceCents;
+  } else if (result.error === "SERIAL_COUNT_MISMATCH") {
+    body.message = `Serial tracking is on for ${result.item.name} — ${result.expected} serial number${result.expected === 1 ? "" : "s"} required, got ${result.actual}.`;
+    body.itemName = result.item.name;
+  } else if (result.error === "SERIAL_NOT_FOUND") {
+    body.message = `Serial "${result.serial}" wasn't found for ${result.item.name}. It may never have been received, or may belong to a different warehouse.`;
+    body.itemName = result.item.name;
+    body.serial = result.serial;
+  } else if (result.error === "SERIAL_NOT_AVAILABLE") {
+    body.message = `Serial "${result.serial}" is ${result.status}, not available to sell. Pick a different unit.`;
+    body.itemName = result.item.name;
+    body.serial = result.serial;
+  } else if (result.error === "SERIAL_DUPLICATE_IN_PAYLOAD") {
+    body.message = `Duplicate serial number on the same ${result.item.name} line. Each serial must be unique.`;
+    body.itemName = result.item.name;
+  } else if (result.error === "BATCH_PICKS_SUM_MISMATCH") {
+    body.message = `Selected batch quantities for ${result.item.name} sum to ${result.actual}, need ${result.expected}.`;
+    body.itemName = result.item.name;
+  } else if (result.error === "BATCH_NOT_FOUND") {
+    body.message = `Picked batch for ${result.item.name} wasn't found (may have been deleted). Remove it and let FIFO pick.`;
+    body.itemName = result.item.name;
+    body.batchId = result.batchId;
+  } else if (result.error === "BATCH_INSUFFICIENT") {
+    body.message = `Picked batch for ${result.item.name} doesn't have enough quantity remaining. Use FIFO auto-pick or split across batches.`;
+    body.itemName = result.item.name;
+    body.batchId = result.batchId;
   }
   return body;
 }

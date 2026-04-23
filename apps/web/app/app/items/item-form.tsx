@@ -41,6 +41,12 @@ export function ItemForm({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [components, setComponents] = useState<ComponentDraft[]>([]);
+  // Roadmap #34 toggles. All three default off; surface only for
+  // product items since services/bundles don't carry stock.
+  const [trackBatches, setTrackBatches] = useState(false);
+  const [trackSerials, setTrackSerials] = useState(false);
+  const [trackExpiry, setTrackExpiry] = useState(false);
+  const [warrantyMonths, setWarrantyMonths] = useState<string>("");
 
   // Non-bundle items are eligible components. Filter out soft-deleted
   // rows defensively even though the API list excludes them.
@@ -107,6 +113,7 @@ export function ItemForm({
     }
 
     try {
+      const warrantyMonthsNum = Number(warrantyMonths);
       const { item } = await api.createItem({
         sku: String(f.get("sku") ?? "").trim() || undefined,
         name: String(f.get("name") ?? "").trim(),
@@ -121,6 +128,16 @@ export function ItemForm({
         // Bundles don't carry stock. The API enforces this too, but
         // being explicit here keeps the wire payload matching the UI.
         trackInventory: itemType === "bundle" ? false : undefined,
+        // Tracking toggles — only meaningful for products. The API
+        // silently coerces them to false for services/bundles, but
+        // sending false here keeps the payload honest.
+        trackBatches: itemType === "product" ? trackBatches : false,
+        trackSerials: itemType === "product" ? trackSerials : false,
+        trackExpiry: itemType === "product" ? trackExpiry : false,
+        warrantyMonths:
+          itemType === "product" && trackSerials && warrantyMonthsNum > 0
+            ? Math.round(warrantyMonthsNum)
+            : null,
       });
 
       // Flush bundle components after the parent item exists. If this
@@ -277,6 +294,60 @@ export function ItemForm({
         </section>
       )}
 
+      {itemType === "product" && (
+        <section className="space-y-3">
+          <SectionTitle>Batch & Serial Tracking</SectionTitle>
+          <p className="text-caption text-text-tertiary">
+            Turning on batch or serial tracking forces the corresponding
+            input at bill post — you can&rsquo;t receive stock without a
+            batch number / serial numbers. Existing stock isn&rsquo;t
+            retroactively tracked.
+          </p>
+          <TrackingToggle
+            label="Track batches"
+            hint="Lot-number the stock so you can recall by batch. Cost flows through the batch at sale time."
+            checked={trackBatches}
+            onChange={setTrackBatches}
+          />
+          <TrackingToggle
+            label="Track expiry"
+            hint="Record manufacture + expiry dates per batch. Needed for the expiring-soon report and FIFO-by-expiry picking."
+            checked={trackExpiry}
+            onChange={setTrackExpiry}
+          />
+          <TrackingToggle
+            label="Track serial numbers"
+            hint="One serial per physical unit. Receiving 10 means listing 10 serials; selling requires picking specific serials."
+            checked={trackSerials}
+            onChange={setTrackSerials}
+          />
+          {trackSerials && (
+            <div>
+              <label
+                htmlFor="warrantyMonths"
+                className="block text-small font-medium text-charcoal"
+              >
+                Warranty (months)
+              </label>
+              <input
+                id="warrantyMonths"
+                type="number"
+                min={0}
+                step={1}
+                value={warrantyMonths}
+                onChange={(e) => setWarrantyMonths(e.target.value)}
+                placeholder="e.g. 12"
+                className="mt-1.5 block w-32 rounded-md border-hairline border-border-emphasis bg-surface-elevated px-3 py-2 text-small text-charcoal focus:border-charcoal focus:outline-none"
+              />
+              <p className="mt-1 text-caption text-text-tertiary">
+                Stamped onto each serial at sale time.
+                Leave blank for no warranty.
+              </p>
+            </div>
+          )}
+        </section>
+      )}
+
       {itemType === "bundle" && (
         <section className="space-y-4">
           <SectionTitle>Components</SectionTitle>
@@ -390,5 +461,37 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
     <h3 className="text-caption font-medium uppercase tracking-wide text-text-tertiary">
       {children}
     </h3>
+  );
+}
+
+// Controlled checkbox row with a hint line. Used for the batch/serial
+// /expiry toggles — uncommon enough that reaching for the generic
+// Field component would obscure their semantics.
+function TrackingToggle({
+  label,
+  hint,
+  checked,
+  onChange,
+}: {
+  label: string;
+  hint: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <label className="flex items-start gap-3 cursor-pointer">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="mt-1 h-4 w-4 rounded border-border-emphasis text-charcoal focus:ring-charcoal"
+      />
+      <span>
+        <span className="block text-small font-medium text-charcoal">
+          {label}
+        </span>
+        <span className="block text-caption text-text-tertiary">{hint}</span>
+      </span>
+    </label>
   );
 }
