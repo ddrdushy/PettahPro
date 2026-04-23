@@ -2040,7 +2040,10 @@ export interface CreateFixedAsset {
 }
 
 export type InvoiceStatus = "draft" | "posted" | "partially_paid" | "paid" | "void" | "written_off";
-export type BillStatus = InvoiceStatus;
+// Bills support a `pending_approval` state when a `document_type='bill'`
+// approval policy matches at post-time (roadmap #43b). Invoices don't
+// carry this state, so BillStatus is a proper superset, not an alias.
+export type BillStatus = InvoiceStatus | "pending_approval";
 
 export interface BillListRow {
   id: string;

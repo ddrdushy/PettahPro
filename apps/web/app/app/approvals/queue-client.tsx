@@ -331,5 +331,11 @@ function deepLinkFor(request: ApprovalRequest): string | null {
     // per-claim detail page.
     return `/app/expense-claims/${request.documentId}`;
   }
+  if (request.documentType === "bill") {
+    // roadmap #43b — documentId is the bills.id. The detail page shows
+    // lines/charges and a post button, which is what an approver or
+    // submitter needs when revisiting from the queue.
+    return `/app/bills/${request.documentId}`;
+  }
   return null;
 }
