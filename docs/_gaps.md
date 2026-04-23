@@ -19,7 +19,6 @@ Real risk surface for a system holding payroll, bank, and tax data.
 | A3 | **Session management UI** — users can't see their active sessions or sign-out-elsewhere. | After A1 lands, this closes the loop. | S |
 | A4 | **IP allow-listing per tenant** — admins can't lock app access to office IPs. | Nice-to-have until we have a tenant requesting it; then urgent. | S |
 | A5 | **CSRF belt-and-braces** — we rely on SameSite=Lax + same-origin, which is fine but not double-layered. | Low-probability but easy to add once we have time. | S |
-| A6 | **Rate limiting on API routes** — a compromised session can hammer any endpoint. | Real problem once we have any scale. | S |
 
 ---
 

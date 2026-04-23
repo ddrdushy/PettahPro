@@ -61,8 +61,17 @@ async function uniqueSlug(base: string): Promise<string> {
   throw new Error("Could not allocate a unique tenant slug");
 }
 
+// Rate-limit budgets tuned for human operators, not scripts:
+//   /signup     — 5 per 10 minutes per IP (tenants don't spin up that fast)
+//   /login      — 10 per minute per IP    (fat-fingered retries + locked-out
+//                                          users will push this; anything
+//                                          above is automation)
+// See apps/api/src/plugins/rate-limit.ts for the global fallback (#47).
+const SIGNUP_RATE_LIMIT = { max: 5, timeWindow: "10 minutes" };
+const LOGIN_RATE_LIMIT = { max: 10, timeWindow: "1 minute" };
+
 export const authRoutes: FastifyPluginAsync = async (fastify) => {
-  fastify.post("/signup", async (req, reply) => {
+  fastify.post("/signup", { config: { rateLimit: SIGNUP_RATE_LIMIT } }, async (req, reply) => {
     const parsed = SignupSchema.safeParse(req.body);
     if (!parsed.success) {
       return reply.status(400).send({ error: { code: "INVALID_INPUT", issues: parsed.error.issues } });
@@ -124,7 +133,7 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
     });
   });
 
-  fastify.post("/login", async (req, reply) => {
+  fastify.post("/login", { config: { rateLimit: LOGIN_RATE_LIMIT } }, async (req, reply) => {
     const parsed = LoginSchema.safeParse(req.body);
     if (!parsed.success) {
       return reply.status(400).send({ error: { code: "INVALID_INPUT" } });

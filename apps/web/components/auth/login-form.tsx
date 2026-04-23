@@ -28,7 +28,9 @@ export function LoginForm() {
         err instanceof ApiError
           ? err.code === "INVALID_CREDENTIALS"
             ? "Wrong email or password."
-            : err.message || "Something went wrong. Try again."
+            : err.code === "RATE_LIMITED"
+              ? "Too many sign-in attempts. Please wait a moment and try again."
+              : err.message || "Something went wrong. Try again."
           : "Can't reach the server. Check your connection.";
       setError(msg);
     } finally {
