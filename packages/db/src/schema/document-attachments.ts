@@ -61,6 +61,10 @@ export const DOCUMENT_ATTACHMENT_ENTITY_TYPES = [
   "receipt",
   "final_settlement",
   "journal_entry",
+  // Widened in migration 75 (roadmap #38 petty cash). Expense /
+  // advance / top-up rows attach receipts here via the shared
+  // <AttachmentsPanel />.
+  "petty_cash_transaction",
 ] as const;
 
 export type DocumentAttachmentEntityType =

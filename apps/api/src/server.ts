@@ -17,6 +17,7 @@ import { itemsRoutes } from "./modules/operations/items.js";
 import { coaRoutes, taxCodesRoutes } from "./modules/accounting/coa.js";
 import { fxRatesRoutes } from "./modules/accounting/fx-rates.js";
 import { fxRevaluationRoutes } from "./modules/accounting/fx-revaluation.js";
+import { pettyCashRoutes } from "./modules/accounting/petty-cash.js";
 import { journalEntriesRoutes } from "./modules/accounting/journal-entries.js";
 import { recurringJournalsRoutes } from "./modules/accounting/recurring-journals.js";
 import { fixedAssetsRoutes } from "./modules/accounting/fixed-assets.js";
@@ -149,6 +150,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await server.register(bankReconciliationRoutes, { prefix: "/bank-reconciliation" });
   await server.register(fxRatesRoutes, { prefix: "/fx-rates" });
   await server.register(fxRevaluationRoutes, { prefix: "/fx-revaluations" });
+  await server.register(pettyCashRoutes, { prefix: "/petty-cash" });
   await server.register(invoicesRoutes, { prefix: "/invoices" });
   await server.register(recurringInvoicesRoutes, { prefix: "/recurring-invoices" });
   await server.register(creditNotesRoutes, { prefix: "/credit-notes" });
