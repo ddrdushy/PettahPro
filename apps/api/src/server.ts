@@ -5,6 +5,7 @@ import { tenantContextPlugin } from "./plugins/tenant-context.js";
 import { telemetryPlugin } from "./plugins/telemetry.js";
 import { errorTrackingPlugin } from "./plugins/error-tracking.js";
 import { rateLimitPlugin } from "./plugins/rate-limit.js";
+import { csrfPlugin } from "./plugins/csrf.js";
 import { ensureBucket } from "./lib/object-storage.js";
 import { attachmentsRoutes } from "./modules/platform/attachments.js";
 import { identityPlugin } from "./modules/identity/plugin.js";
@@ -147,6 +148,15 @@ export async function buildServer(): Promise<FastifyInstance> {
   // are set via route config.
   await server.register(rateLimitPlugin);
   await server.register(identityPlugin);
+  // CSRF double-submit (#50 / gap A5). Must register AFTER identity so
+  // @fastify/cookie is already wired (we need req.unsignCookie + the
+  // parsed req.cookies map), and BEFORE business routes so the
+  // onRequest hook fires for all mutating calls. Portal-prefixed
+  // requests are covered too — the hook reads the session cookie pair
+  // directly without depending on the portalPlugin's req.portalSession
+  // decoration, so registration order against portalPlugin doesn't
+  // matter for correctness.
+  await server.register(csrfPlugin);
   await server.register(healthRoutes, { prefix: "/health" });
   await server.register(customersRoutes, { prefix: "/customers" });
   await server.register(branchesRoutes, { prefix: "/branches" });

@@ -14,7 +14,9 @@ import {
 } from "./sessions.js";
 import {
   PORTAL_SESSION_COOKIE,
+  clearPortalCsrfCookie,
   clearPortalSessionCookie,
+  setPortalCsrfCookie,
   setPortalSessionCookie,
 } from "./cookies.js";
 
@@ -347,6 +349,7 @@ export const portalAuthRoutes: FastifyPluginAsync = async (fastify) => {
       ttlSeconds: SESSION_TTL,
     });
     setPortalSessionCookie(reply, session.id, SESSION_TTL);
+    setPortalCsrfCookie(reply, session.csrfToken, SESSION_TTL);
 
     // Audit the successful login. Tenant-scoped because we now know which
     // (tenant, customer) the session resolves to. actor_user_id stays null
@@ -409,6 +412,7 @@ export const portalAuthRoutes: FastifyPluginAsync = async (fastify) => {
       }
     }
     clearPortalSessionCookie(reply);
+    clearPortalCsrfCookie(reply);
     return reply.send({ ok: true });
   });
 
@@ -426,6 +430,7 @@ export const portalAuthRoutes: FastifyPluginAsync = async (fastify) => {
       // Underlying customer was archived / tenant suspended — blow the session away.
       await destroyPortalSession(session.id);
       clearPortalSessionCookie(reply);
+      clearPortalCsrfCookie(reply);
       return reply.status(401).send({ error: { code: "UNAUTHENTICATED" } });
     }
     return reply.send({

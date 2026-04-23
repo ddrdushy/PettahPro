@@ -39,10 +39,19 @@ export interface PortalSession {
   createdAt: number;
   lastSeenAt: number;
   expiresAt: number;
+  // CSRF double-submit token (#50 / gap A5). Same pattern as admin
+  // sessions — minted once, stored in the session blob, matched via
+  // `pp_portal_csrf` cookie and `X-CSRF-Token` header. See
+  // apps/api/src/modules/identity/sessions.ts for the full rationale.
+  csrfToken: string;
 }
 
 function genSessionId(): string {
   return randomBytes(24).toString("base64url");
+}
+
+function genCsrfToken(): string {
+  return randomBytes(32).toString("base64url");
 }
 
 export async function createPortalSession(input: {
@@ -62,6 +71,7 @@ export async function createPortalSession(input: {
     createdAt: now,
     lastSeenAt: now,
     expiresAt: now + ttl,
+    csrfToken: genCsrfToken(),
   };
 
   const pipeline = redis.multi();
@@ -78,12 +88,22 @@ export async function readPortalSession(id: string): Promise<PortalSession | nul
   if (!raw) return null;
   try {
     const s = JSON.parse(raw) as PortalSession;
+    let mutated = false;
+    // Back-fill CSRF token for portal sessions minted before #50 —
+    // see identity/sessions.ts for the rationale.
+    if (!s.csrfToken) {
+      s.csrfToken = genCsrfToken();
+      mutated = true;
+    }
     const now = Math.floor(Date.now() / 1000);
     // Sliding refresh — touch if more than a minute old so an idle tab
     // doesn't expire on the customer mid-read.
     if (now - s.lastSeenAt > 60) {
       s.lastSeenAt = now;
       s.expiresAt = now + DEFAULT_TTL_SECONDS;
+      mutated = true;
+    }
+    if (mutated) {
       await redis.set(SESSION_PREFIX + id, JSON.stringify(s), "EX", DEFAULT_TTL_SECONDS);
     }
     return s;

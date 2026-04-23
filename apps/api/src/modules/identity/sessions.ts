@@ -15,10 +15,26 @@ export interface Session {
   createdAt: number;
   lastSeenAt: number;
   expiresAt: number;
+  // CSRF double-submit token (#50 / gap A5). Minted once per session, stored
+  // inside the session blob so it lives and dies with it — no separate Redis
+  // key to garbage-collect, no window where a destroyed session still has an
+  // orphaned CSRF record. The matching cookie `pp_csrf` is non-HttpOnly so
+  // JS can read it; the header `X-CSRF-Token` is compared against this
+  // server-side value in a constant-time check. Static for the lifetime of
+  // the session (no per-request rotation — the threat model is "cross-origin
+  // form post", not "predict-the-next-token"). Sessions are 30 days sliding,
+  // so the window is bounded by that.
+  csrfToken: string;
 }
 
 function genSessionId(): string {
   return randomBytes(24).toString("base64url");
+}
+
+function genCsrfToken(): string {
+  // 32 bytes = 256 bits of entropy, same shape as the session ID but
+  // kept distinct so a leak of one doesn't telegraph the other.
+  return randomBytes(32).toString("base64url");
 }
 
 export async function createSession(input: {
@@ -38,6 +54,7 @@ export async function createSession(input: {
     createdAt: now,
     lastSeenAt: now,
     expiresAt: now + ttl,
+    csrfToken: genCsrfToken(),
   };
 
   const pipeline = redis.multi();
@@ -54,11 +71,23 @@ export async function readSession(id: string): Promise<Session | null> {
   if (!raw) return null;
   try {
     const s = JSON.parse(raw) as Session;
+    // Back-fill CSRF token for sessions minted before #50. First read after
+    // the deploy mints the token and persists it — the very next mutating
+    // request from this tab can validate. Without this, every pre-#50
+    // session would have to log-in-again for mutations to work.
+    let mutated = false;
+    if (!s.csrfToken) {
+      s.csrfToken = genCsrfToken();
+      mutated = true;
+    }
     // Sliding-window refresh: touch if more than a minute old
     const now = Math.floor(Date.now() / 1000);
     if (now - s.lastSeenAt > 60) {
       s.lastSeenAt = now;
       s.expiresAt = now + DEFAULT_TTL_SECONDS;
+      mutated = true;
+    }
+    if (mutated) {
       await redis.set(SESSION_PREFIX + id, JSON.stringify(s), "EX", DEFAULT_TTL_SECONDS);
     }
     return s;
