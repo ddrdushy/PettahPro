@@ -61,6 +61,13 @@ export const expenseClaims = pgTable("expense_claims", {
 
   status: varchar("status", { length: 16 }).notNull().default("draft"),
 
+  // Approval engine linkage (roadmap #43a). Nullable: set when a policy
+  // matches at submit-time and the claim is owned by the engine; stays
+  // null for the legacy flat submit → approve path. When set, the
+  // domain-local approve/reject/approve-and-pay routes refuse with
+  // ENGINE_OWNED and the decision goes through /approvals.
+  approvalRequestId: uuid("approval_request_id"),
+
   submittedAt: timestamp("submitted_at", { withTimezone: true }),
   submittedByUserId: uuid("submitted_by_user_id"),
   approvedAt: timestamp("approved_at", { withTimezone: true }),

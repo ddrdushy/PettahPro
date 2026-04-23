@@ -4,6 +4,12 @@ import { z } from "zod";
 import { withTenant, schema, nextDocumentNumber } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
 import { postJournal } from "../accounting/journal-posting.js";
+import {
+  resolveApplicablePolicy,
+  createApprovalRequest,
+  cancelApprovalRequest,
+} from "../admin/approval-engine.js";
+import { emitNotification } from "../notifications/emit.js";
 
 /**
  * Employee expense claims — payroll-module-spec §8, roadmap #14.
@@ -454,6 +460,77 @@ export const expenseClaimsRoutes: FastifyPluginAsync = async (fastify) => {
         claimNumber = await nextDocumentNumber(tx, "expense_claim");
       }
 
+      // Approval engine hook (roadmap #43a). Two paths coexist:
+      //
+      //   · Engine path: if a `document_type='expense_claim'` policy
+      //     matches the submission's (amount, submitter), snapshot its
+      //     steps into an approval_request and park the claim with
+      //     `approval_request_id`. The claim stays `status='submitted'`;
+      //     the engine drives the decision via /approvals/:id/approve.
+      //     When the final step approves, finaliseApprovedDocument in
+      //     apps/api/src/modules/admin/approvals.ts flips this claim
+      //     to `status='approved'`.
+      //
+      //   · Legacy path: no policy matches → claim just transitions to
+      //     `submitted` and the existing /approve, /approve-and-pay,
+      //     /reject routes handle it with the submitter-≠-approver SOD
+      //     check.
+      const policy = await resolveApplicablePolicy(tx, {
+        documentType: "expense_claim",
+        amountCents: claim.amountCents,
+        submitterUserId: ctx.userId,
+      });
+
+      let approvalRequestId: string | null = null;
+      if (policy) {
+        const request = await createApprovalRequest(tx, {
+          tenantId: ctx.tenantId,
+          documentType: "expense_claim",
+          documentId: claim.id,
+          amountCents: claim.amountCents,
+          policyId: policy.policyId,
+          steps: policy.steps,
+          submitterUserId: ctx.userId,
+        });
+        approvalRequestId = request.id;
+
+        // Notify first-step approvers. Mirrors the JE pattern in
+        // accounting/journal-entries.ts — expand roles → user ids and
+        // emit one bell per approver, skipping the submitter.
+        const firstStep = policy.steps[0];
+        if (firstStep) {
+          const userIds = new Set<string>();
+          const roleIds: string[] = [];
+          for (const a of firstStep.approvers) {
+            if (a.kind === "user") userIds.add(a.id);
+            else roleIds.push(a.id);
+          }
+          if (roleIds.length > 0) {
+            const res = (await tx.execute(sql`
+              SELECT DISTINCT user_id
+              FROM user_roles
+              WHERE tenant_id = current_tenant_id()
+                AND role_id IN (${sql.raw(
+                  roleIds.map((id) => `'${id}'::uuid`).join(","),
+                )})
+            `)) as unknown as Array<{ user_id: string }>;
+            for (const r of res) userIds.add(r.user_id);
+          }
+          for (const userId of userIds) {
+            if (userId === ctx.userId) continue;
+            await emitNotification(tx, {
+              tenantId: ctx.tenantId,
+              userId,
+              kind: "approval_pending",
+              title: `Approval needed · expense claim · ${(claim.amountCents / 100).toFixed(2)}`,
+              body: claim.description ?? claim.categoryName ?? `Claim ${claimNumber}`,
+              refType: "approval_request",
+              refId: request.id,
+            });
+          }
+        }
+      }
+
       const [updated] = await tx
         .update(schema.expenseClaims)
         .set({
@@ -461,6 +538,7 @@ export const expenseClaimsRoutes: FastifyPluginAsync = async (fastify) => {
           claimNumber,
           submittedAt: new Date(),
           submittedByUserId: ctx.userId,
+          ...(approvalRequestId ? { approvalRequestId } : {}),
           updatedAt: new Date(),
         })
         .where(eq(schema.expenseClaims.id, claim.id))
@@ -502,6 +580,10 @@ export const expenseClaimsRoutes: FastifyPluginAsync = async (fastify) => {
       if (claim.disbursementMethod !== "payroll") {
         return { error: "USE_APPROVE_AND_PAY" as const };
       }
+      // Engine-owned claims must be decided via /approvals/:id/approve
+      // so the approval_request + step rows stay in lock-step with the
+      // claim. Mirrors the JE draft pattern in journal-entries.ts.
+      if (claim.approvalRequestId) return { error: "ENGINE_OWNED" as const };
       if (claim.submittedByUserId && claim.submittedByUserId === ctx.userId) {
         return { error: "SELF_APPROVAL" as const };
       }
@@ -528,6 +610,10 @@ export const expenseClaimsRoutes: FastifyPluginAsync = async (fastify) => {
         case "USE_APPROVE_AND_PAY":
           status = 409;
           message = "Direct-pay claims must use /approve-and-pay (needs a payment account).";
+          break;
+        case "ENGINE_OWNED":
+          status = 409;
+          message = "This claim is managed by the approval engine. Decide it from the Approvals queue instead.";
           break;
         case "SELF_APPROVAL":
           status = 403;
@@ -564,10 +650,26 @@ export const expenseClaimsRoutes: FastifyPluginAsync = async (fastify) => {
           )
           .limit(1);
         if (!claim) return { error: "NOT_FOUND" as const };
-        if (claim.status !== "submitted") return { error: "NOT_SUBMITTED" as const, status: claim.status };
+        // approve-and-pay handles two entry conditions:
+        //   · legacy (no approval engine in play): status='submitted' —
+        //     this call approves + pays in one step.
+        //   · engine-owned: status='approved' already, because the
+        //     engine drove the approval via /approvals/:id/approve. This
+        //     call then only executes the payment (no re-stamp of
+        //     approvedAt/approvedByUserId).
+        // Anything else is the wrong state for this route.
+        const isEnginePay = !!claim.approvalRequestId;
+        if (isEnginePay && claim.status !== "approved") {
+          return { error: "NOT_APPROVED" as const, status: claim.status };
+        }
+        if (!isEnginePay && claim.status !== "submitted") {
+          return { error: "NOT_SUBMITTED" as const, status: claim.status };
+        }
         if (claim.disbursementMethod !== "direct") {
           return { error: "NOT_DIRECT_METHOD" as const };
         }
+        // SOD: the submitter can never be the payer, regardless of
+        // whether the engine already handled the approve step.
         if (claim.submittedByUserId && claim.submittedByUserId === ctx.userId) {
           return { error: "SELF_APPROVAL" as const };
         }
@@ -617,8 +719,15 @@ export const expenseClaimsRoutes: FastifyPluginAsync = async (fastify) => {
           .update(schema.expenseClaims)
           .set({
             status: "paid",
-            approvedAt: now,
-            approvedByUserId: ctx.userId,
+            // Don't overwrite the engine's approval metadata when the
+            // engine already stamped it — only set approvedAt/approvedByUserId
+            // on the legacy path where this call is the approval.
+            ...(isEnginePay
+              ? {}
+              : {
+                  approvedAt: now,
+                  approvedByUserId: ctx.userId,
+                }),
             paidAt: now,
             paidByUserId: ctx.userId,
             paymentAccountId: bank.id,
@@ -638,6 +747,7 @@ export const expenseClaimsRoutes: FastifyPluginAsync = async (fastify) => {
         switch (result.error) {
           case "NOT_FOUND": status = 404; break;
           case "NOT_SUBMITTED": status = 409; message = "Claim must be submitted before approve-and-pay."; break;
+          case "NOT_APPROVED": status = 409; message = "Engine-managed claim must be approved via the Approvals queue before paying."; break;
           case "NOT_DIRECT_METHOD": status = 409; message = "Only direct-method claims support approve-and-pay."; break;
           case "SELF_APPROVAL": status = 403; message = "A submitter can't approve their own claim."; break;
           case "MISSING_EXPENSE_ACCOUNT": status = 409; message = "The category has no expense account configured."; break;
@@ -680,6 +790,8 @@ export const expenseClaimsRoutes: FastifyPluginAsync = async (fastify) => {
         .limit(1);
       if (!claim) return { error: "NOT_FOUND" as const };
       if (claim.status !== "submitted") return { error: "NOT_SUBMITTED" as const, status: claim.status };
+      // Engine-owned claims must be rejected via /approvals/:id/reject.
+      if (claim.approvalRequestId) return { error: "ENGINE_OWNED" as const };
       if (claim.submittedByUserId && claim.submittedByUserId === ctx.userId) {
         return { error: "SELF_REJECTION" as const };
       }
@@ -704,6 +816,10 @@ export const expenseClaimsRoutes: FastifyPluginAsync = async (fastify) => {
       switch (result.error) {
         case "NOT_FOUND": status = 404; break;
         case "NOT_SUBMITTED": status = 409; message = "Only submitted claims can be rejected."; break;
+        case "ENGINE_OWNED":
+          status = 409;
+          message = "This claim is managed by the approval engine. Decide it from the Approvals queue instead.";
+          break;
         case "SELF_REJECTION": status = 403; message = "A submitter can't reject their own claim."; break;
       }
       return reply.status(status).send({ error: { code: result.error, message } });
@@ -737,6 +853,17 @@ export const expenseClaimsRoutes: FastifyPluginAsync = async (fastify) => {
       if (!claim) return { error: "NOT_FOUND" as const };
       if (["paid", "void"].includes(claim.status)) {
         return { error: "TERMINAL" as const, status: claim.status };
+      }
+
+      // If there's a live approval request attached, cancel it so the
+      // /approvals queue doesn't keep asking for a decision on a
+      // voided claim. No-op if the request already terminated.
+      if (claim.approvalRequestId) {
+        await cancelApprovalRequest(tx, {
+          tenantId: ctx.tenantId,
+          requestId: claim.approvalRequestId,
+          reason: d.reason || "Claim voided",
+        });
       }
 
       const [updated] = await tx

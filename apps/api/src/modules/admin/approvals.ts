@@ -288,8 +288,10 @@ export const approvalsRoutes: FastifyPluginAsync = async (fastify) => {
           reason: parsed.data.reason ?? null,
         });
 
-        // Domain reject handling: for journal_entry, mark the draft
-        // rejected so the UI shows it in the rejected bucket.
+        // Domain reject handling: flip the underlying row so the UI
+        // shows it in the rejected bucket. Each wired document type
+        // gets its own branch — unwired types just leave the engine
+        // in 'rejected' state, which is fine.
         if (decision.request.documentType === "journal_entry") {
           await tx
             .update(schema.journalEntryDrafts)
@@ -306,6 +308,22 @@ export const approvalsRoutes: FastifyPluginAsync = async (fastify) => {
                   schema.journalEntryDrafts.id,
                   decision.request.documentId,
                 ),
+              ),
+            );
+        } else if (decision.request.documentType === "expense_claim") {
+          await tx
+            .update(schema.expenseClaims)
+            .set({
+              status: "rejected",
+              rejectedByUserId: ctx.userId,
+              rejectedAt: new Date(),
+              rejectionReason: parsed.data.reason ?? null,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(schema.expenseClaims.tenantId, ctx.tenantId),
+                eq(schema.expenseClaims.id, decision.request.documentId),
               ),
             );
         }
@@ -383,7 +401,10 @@ export const approvalsRoutes: FastifyPluginAsync = async (fastify) => {
         reason: parsed.data.reason ?? null,
       });
 
-      // Domain-specific cancel handling.
+      // Domain-specific cancel handling. Flip the domain row to
+      // rejected so the submitter can edit + re-submit cleanly — the
+      // expense-claims PATCH route auto-resets rejected → draft on
+      // edit, same as the JE draft flow.
       if (request.documentType === "journal_entry") {
         await tx
           .update(schema.journalEntryDrafts)
@@ -397,6 +418,22 @@ export const approvalsRoutes: FastifyPluginAsync = async (fastify) => {
             and(
               eq(schema.journalEntryDrafts.tenantId, ctx.tenantId),
               eq(schema.journalEntryDrafts.id, request.documentId),
+            ),
+          );
+      } else if (request.documentType === "expense_claim") {
+        await tx
+          .update(schema.expenseClaims)
+          .set({
+            status: "rejected",
+            rejectedByUserId: ctx.userId,
+            rejectedAt: new Date(),
+            rejectionReason: parsed.data.reason ?? "Withdrawn by submitter",
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(schema.expenseClaims.tenantId, ctx.tenantId),
+              eq(schema.expenseClaims.id, request.documentId),
             ),
           );
       }
@@ -507,6 +544,54 @@ async function finaliseApprovedDocument(
         and(
           eq(schema.journalEntryDrafts.tenantId, request.tenantId),
           eq(schema.journalEntryDrafts.id, draft.id),
+        ),
+      );
+    return;
+  }
+
+  if (request.documentType === "expense_claim") {
+    // Expense claims (roadmap #43a) have two disbursement paths:
+    //   · 'direct'  — reimburse via a one-off bank payment. Engine
+    //     approval flips to 'approved'; the subsequent
+    //     /expense-claims/:id/approve-and-pay call posts the JE and
+    //     flips to 'paid'. Keeps the payment-account + payment-date
+    //     capture out of the generic approvals queue.
+    //   · 'payroll' — next payroll run picks up 'approved' claims and
+    //     bundles them into the run's JE. Also just needs status flipped.
+    //
+    // So both methods land the same way here: flip status submitted →
+    // approved + stamp approvedAt/approvedByUserId. No JE posting in
+    // this branch.
+    const [claim] = await tx
+      .select()
+      .from(schema.expenseClaims)
+      .where(
+        and(
+          eq(schema.expenseClaims.tenantId, request.tenantId),
+          eq(schema.expenseClaims.id, request.documentId),
+        ),
+      );
+    if (!claim) {
+      throw new Error(
+        `expense_claim ${request.documentId} missing at approval`,
+      );
+    }
+    if (claim.status !== "submitted") {
+      // Already moved (void/paid/etc). Idempotent bail.
+      return;
+    }
+    await tx
+      .update(schema.expenseClaims)
+      .set({
+        status: "approved",
+        approvedByUserId: input.deciderUserId,
+        approvedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(schema.expenseClaims.tenantId, request.tenantId),
+          eq(schema.expenseClaims.id, claim.id),
         ),
       );
     return;
