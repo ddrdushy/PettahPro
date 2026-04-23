@@ -16,12 +16,14 @@ import { formatLKR, formatDate } from "@/lib/format";
 
 const statusStyles: Record<BonusRunStatus, string> = {
   draft: "bg-surface-recessed text-text-secondary",
+  pending_approval: "bg-warning-bg text-warning",
   posted: "bg-mint-surface text-mint-dark",
   void: "bg-danger-bg/60 text-danger",
 };
 
 const statusLabels: Record<BonusRunStatus, string> = {
   draft: "Draft",
+  pending_approval: "Pending approval",
   posted: "Posted",
   void: "Void",
 };
@@ -153,6 +155,24 @@ export function BonusRunDetailClient({
           </span>
         )}
       </div>
+
+      {run.status === "pending_approval" && (
+        <section className="mt-6 rounded-card border-hairline border-warning/40 bg-warning-bg p-5">
+          <p className="text-caption uppercase tracking-wide text-warning">
+            Awaiting approval
+          </p>
+          <p className="mt-1 text-small text-charcoal">
+            A bonus approval policy matched this run. The JE posts and payslips
+            become visible once the approver signs off.
+          </p>
+          <Link
+            href="/app/approvals"
+            className="btn-link mt-2 inline-flex text-small"
+          >
+            Open approvals queue →
+          </Link>
+        </section>
+      )}
 
       {/* Totals */}
       <section className="mt-6 grid gap-3 md:grid-cols-4">

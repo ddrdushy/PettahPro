@@ -91,6 +91,9 @@ export const bonusRuns = pgTable("bonus_runs", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   createdByUserId: uuid("created_by_user_id"),
   deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  // Approval engine linkage (roadmap #43d). Non-null iff the run is
+  // owned by the generic engine (parked in `pending_approval`).
+  approvalRequestId: uuid("approval_request_id"),
 });
 
 export type BonusRun = typeof bonusRuns.$inferSelect;

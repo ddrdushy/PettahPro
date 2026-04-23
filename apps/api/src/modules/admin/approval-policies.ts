@@ -21,6 +21,10 @@ const DOCUMENT_TYPES = [
   "bill",
   "purchase_order",
   "invoice",
+  // Roadmap #43d — payroll runs (tenant-admin §7.1 "always → Owner")
+  // and bonus runs (threshold-gated, same shape as bills).
+  "payroll_run",
+  "bonus_run",
 ] as const;
 
 const ApproverSchema = z.object({

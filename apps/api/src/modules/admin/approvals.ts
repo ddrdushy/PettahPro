@@ -9,6 +9,8 @@ import { emitNotification } from "../notifications/emit.js";
 import { postJournal } from "../accounting/journal-posting.js";
 import { postBillCore } from "../buy/bills.js";
 import { sendPurchaseOrderCore } from "../buy/purchase-orders.js";
+import { postPayrollRunCore } from "../hr/payroll-runs.js";
+import { postBonusRunCore } from "../hr/bonuses.js";
 import {
   ApprovalEngineError,
   cancelApprovalRequest,
@@ -399,6 +401,72 @@ export const approvalsRoutes: FastifyPluginAsync = async (fastify) => {
                 eq(schema.purchaseOrders.id, decision.request.documentId),
               ),
             );
+        } else if (decision.request.documentType === "payroll_run") {
+          // Payroll runs (roadmap #43d). Mirror the bill/PO shape: no
+          // dedicated "rejected" status, flip back to draft + clear the
+          // engine handle + stamp reason into notes so HR can adjust
+          // lines and re-post.
+          const reason = parsed.data.reason?.trim();
+          const [existing] = await tx
+            .select({ notes: schema.payrollRuns.notes })
+            .from(schema.payrollRuns)
+            .where(
+              and(
+                eq(schema.payrollRuns.tenantId, ctx.tenantId),
+                eq(schema.payrollRuns.id, decision.request.documentId),
+              ),
+            )
+            .limit(1);
+          const stampedNotes = reason
+            ? existing?.notes
+              ? `${existing.notes}\n\n[Rejected] ${reason}`
+              : `[Rejected] ${reason}`
+            : existing?.notes;
+          await tx
+            .update(schema.payrollRuns)
+            .set({
+              status: "draft",
+              approvalRequestId: null,
+              notes: stampedNotes ?? null,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(schema.payrollRuns.tenantId, ctx.tenantId),
+                eq(schema.payrollRuns.id, decision.request.documentId),
+              ),
+            );
+        } else if (decision.request.documentType === "bonus_run") {
+          const reason = parsed.data.reason?.trim();
+          const [existing] = await tx
+            .select({ notes: schema.bonusRuns.notes })
+            .from(schema.bonusRuns)
+            .where(
+              and(
+                eq(schema.bonusRuns.tenantId, ctx.tenantId),
+                eq(schema.bonusRuns.id, decision.request.documentId),
+              ),
+            )
+            .limit(1);
+          const stampedNotes = reason
+            ? existing?.notes
+              ? `${existing.notes}\n\n[Rejected] ${reason}`
+              : `[Rejected] ${reason}`
+            : existing?.notes;
+          await tx
+            .update(schema.bonusRuns)
+            .set({
+              status: "draft",
+              approvalRequestId: null,
+              notes: stampedNotes ?? null,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(schema.bonusRuns.tenantId, ctx.tenantId),
+                eq(schema.bonusRuns.id, decision.request.documentId),
+              ),
+            );
         }
 
         await recordAuditEvent(tx, {
@@ -571,6 +639,66 @@ export const approvalsRoutes: FastifyPluginAsync = async (fastify) => {
             and(
               eq(schema.purchaseOrders.tenantId, ctx.tenantId),
               eq(schema.purchaseOrders.id, request.documentId),
+            ),
+          );
+      } else if (request.documentType === "payroll_run") {
+        // Payroll runs (roadmap #43d). Same cancel shape as bills/POs:
+        // pending_approval → draft, detach engine handle, stamp reason.
+        const reason = parsed.data.reason?.trim() || "Withdrawn by submitter";
+        const [existing] = await tx
+          .select({ notes: schema.payrollRuns.notes })
+          .from(schema.payrollRuns)
+          .where(
+            and(
+              eq(schema.payrollRuns.tenantId, ctx.tenantId),
+              eq(schema.payrollRuns.id, request.documentId),
+            ),
+          )
+          .limit(1);
+        const stampedNotes = existing?.notes
+          ? `${existing.notes}\n\n[Withdrawn] ${reason}`
+          : `[Withdrawn] ${reason}`;
+        await tx
+          .update(schema.payrollRuns)
+          .set({
+            status: "draft",
+            approvalRequestId: null,
+            notes: stampedNotes,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(schema.payrollRuns.tenantId, ctx.tenantId),
+              eq(schema.payrollRuns.id, request.documentId),
+            ),
+          );
+      } else if (request.documentType === "bonus_run") {
+        const reason = parsed.data.reason?.trim() || "Withdrawn by submitter";
+        const [existing] = await tx
+          .select({ notes: schema.bonusRuns.notes })
+          .from(schema.bonusRuns)
+          .where(
+            and(
+              eq(schema.bonusRuns.tenantId, ctx.tenantId),
+              eq(schema.bonusRuns.id, request.documentId),
+            ),
+          )
+          .limit(1);
+        const stampedNotes = existing?.notes
+          ? `${existing.notes}\n\n[Withdrawn] ${reason}`
+          : `[Withdrawn] ${reason}`;
+        await tx
+          .update(schema.bonusRuns)
+          .set({
+            status: "draft",
+            approvalRequestId: null,
+            notes: stampedNotes,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(schema.bonusRuns.tenantId, ctx.tenantId),
+              eq(schema.bonusRuns.id, request.documentId),
             ),
           );
       }
@@ -785,6 +913,50 @@ async function finaliseApprovedDocument(
       }
       throw new Error(
         `finaliseApprovedDocument(purchase_order): sendPurchaseOrderCore failed — ${result.error}`,
+      );
+    }
+    return;
+  }
+
+  if (request.documentType === "payroll_run") {
+    // Payroll runs (roadmap #43d, tenant-admin-ux-spec §7.1 "always →
+    // Owner"). Engine path: draft → pending_approval → posted. Both
+    // paths land in postPayrollRunCore; the helper re-resolves GL
+    // accounts, posts the JE, and flips status to 'posted' while also
+    // finalising loan EMI effects.
+    const result = await postPayrollRunCore(tx, {
+      tenantId: request.tenantId,
+      payrollRunId: request.documentId,
+      postedByUserId: input.deciderUserId,
+      allowStatuses: ["pending_approval"],
+    });
+    if ("error" in result) {
+      if (result.error === "BAD_STATUS" || result.error === "NOT_FOUND") {
+        return;
+      }
+      throw new Error(
+        `finaliseApprovedDocument(payroll_run): postPayrollRunCore failed — ${result.error}`,
+      );
+    }
+    return;
+  }
+
+  if (request.documentType === "bonus_run") {
+    // Bonus runs (roadmap #43d). Engine path: draft → pending_approval
+    // → posted. Same shape as payroll above — the helper books the JE
+    // and flips status.
+    const result = await postBonusRunCore(tx, {
+      tenantId: request.tenantId,
+      bonusRunId: request.documentId,
+      postedByUserId: input.deciderUserId,
+      allowStatuses: ["pending_approval"],
+    });
+    if ("error" in result) {
+      if (result.error === "BAD_STATUS" || result.error === "NOT_FOUND") {
+        return;
+      }
+      throw new Error(
+        `finaliseApprovedDocument(bonus_run): postBonusRunCore failed — ${result.error}`,
       );
     }
     return;

@@ -2963,7 +2963,12 @@ export interface StatutoryBalance {
   balanceCents: number;
 }
 
-export type PayrollRunStatus = "draft" | "posted" | "paid" | "void";
+export type PayrollRunStatus =
+  | "draft"
+  | "pending_approval"
+  | "posted"
+  | "paid"
+  | "void";
 
 export interface PayrollRun {
   id: string;
@@ -4321,7 +4326,11 @@ export type ApprovalDocumentType =
   | "leave_request"
   | "bill"
   | "purchase_order"
-  | "invoice";
+  | "invoice"
+  // Roadmap #43d — payroll runs (always-approve per spec §7.1) and
+  // bonus runs (threshold-gated, same shape as bills).
+  | "payroll_run"
+  | "bonus_run";
 
 export interface ApprovalStepApprover {
   kind: "role" | "user";
@@ -4775,7 +4784,11 @@ export type BonusFormulaType =
   | "days_of_basic"
   | "manual";
 
-export type BonusRunStatus = "draft" | "posted" | "void";
+export type BonusRunStatus =
+  | "draft"
+  | "pending_approval"
+  | "posted"
+  | "void";
 
 export interface BonusScheme {
   id: string;

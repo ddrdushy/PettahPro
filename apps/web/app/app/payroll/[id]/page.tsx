@@ -35,6 +35,7 @@ const MONTHS = [
 
 const statusTone: Record<PayrollRunStatus, string> = {
   draft: "bg-surface-recessed text-text-secondary",
+  pending_approval: "bg-warning-bg text-warning",
   posted: "bg-mint-surface text-mint-dark",
   paid: "bg-mint text-mint-dark",
   void: "bg-danger-bg/60 text-danger",
@@ -42,6 +43,7 @@ const statusTone: Record<PayrollRunStatus, string> = {
 
 const statusLabel: Record<PayrollRunStatus, string> = {
   draft: "Draft",
+  pending_approval: "Pending approval",
   posted: "Posted",
   paid: "Paid",
   void: "Void",
@@ -99,6 +101,24 @@ export default async function PayrollRunDetailPage({ params }: { params: { id: s
           </div>
         }
       />
+
+      {run.status === "pending_approval" && (
+        <section className="mt-8 rounded-card border-hairline border-warning/40 bg-warning-bg p-5">
+          <p className="text-caption uppercase tracking-wide text-warning">
+            Awaiting approval
+          </p>
+          <p className="mt-1 text-small text-charcoal">
+            A payroll approval policy matched this run. Staff will be paid once
+            the approver signs off — the JE posts atomically at final approval.
+          </p>
+          <Link
+            href="/app/approvals"
+            className="btn-link mt-2 inline-flex text-small"
+          >
+            Open approvals queue →
+          </Link>
+        </section>
+      )}
 
       <section className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Stat label="Gross" value={formatLKR(run.grossCents)} tone="mint" />
