@@ -51,6 +51,8 @@ const nav: Group[] = [
       { label: "Recurring invoices", href: "/app/recurring-invoices", icon: Receipt },
       { label: "Credit notes", href: "/app/credit-notes", icon: Receipt },
       { label: "Payments", href: "/app/payments", icon: Wallet },
+      { label: "POS terminal", href: "/app/pos", icon: ShoppingCart },
+      { label: "POS shifts", href: "/app/pos/shifts", icon: ClipboardCheck },
     ],
   },
   {

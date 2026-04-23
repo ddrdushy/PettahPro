@@ -40,6 +40,7 @@ export const customerPayments = pgTable("customer_payments", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   createdByUserId: uuid("created_by_user_id"),
   deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  posShiftId: uuid("pos_shift_id"),
 });
 
 export type CustomerPayment = typeof customerPayments.$inferSelect;

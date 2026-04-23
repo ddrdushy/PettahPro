@@ -1,23 +1,20 @@
 import type { FastifyPluginAsync } from "fastify";
 import { and, eq, isNull, desc, sql, asc, inArray } from "drizzle-orm";
 import { z } from "zod";
-import { withTenant, schema, nextDocumentNumber } from "@pettahpro/db";
+import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
 import { requirePermission } from "../../lib/permissions.js";
 import { postJournal } from "../accounting/journal-posting.js";
-import { emitNotification } from "../notifications/emit.js";
 import {
   postReversingJournal,
   rewindStockForSource,
 } from "../accounting/reversing-journal.js";
-import {
-  applyStockIssue,
-  peekStockIssue,
-  resolveDefaultWarehouse,
-  resolveStockGLAccounts,
-} from "../inventory/stock-posting.js";
-import { loadTenantSettings } from "../settings/routes.js";
 import { recordAuditEvent } from "../../lib/audit.js";
+import {
+  postDraftInvoice,
+  INVOICE_POST_ERROR_STATUS,
+  buildInvoicePostErrorBody,
+} from "./invoice-posting.js";
 
 const LineSchema = z.object({
   itemId: z.string().uuid().optional(),
@@ -671,326 +668,30 @@ export const invoicesRoutes: FastifyPluginAsync = async (fastify) => {
     return reply.status(201).send({ invoice: result.invoice });
   });
 
-  // POST /invoices/:id/post — finalize and post to GL
+  // POST /invoices/:id/post — finalize and post to GL.
+  // Thin wrapper over postDraftInvoice() — the actual posting pipeline lives
+  // in invoice-posting.ts so POS sale composites can reuse it.
   fastify.post<{ Params: { id: string } }>("/:id/post", async (req, reply) => {
     const ctx = await requirePermission(req, reply, "invoices.post");
     if (!ctx) return;
 
-    const result = await withTenant(ctx.tenantId, async (tx) => {
-      const invRows = await tx
-        .select()
-        .from(schema.invoices)
-        .where(
-          and(
-            eq(schema.invoices.tenantId, ctx.tenantId),
-            eq(schema.invoices.id, req.params.id),
-            isNull(schema.invoices.deletedAt),
-          ),
-        )
-        .limit(1);
-      const invoice = invRows[0];
-      if (!invoice) return { error: "NOT_FOUND" as const };
-      if (invoice.status !== "draft") return { error: "NOT_DRAFT" as const };
-
-      // Credit checks: hard block on credit_hold, soft block on exposure
-      // exceeding credit_limit. Skipped when credit_limit is 0 (treated as
-      // "no limit enforced" to avoid breaking tenants that haven't set one).
-      const [creditInfo] = await tx
-        .select({
-          creditLimitCents: schema.customers.creditLimitCents,
-          creditHold: schema.customers.creditHold,
-          creditHoldReason: schema.customers.creditHoldReason,
-        })
-        .from(schema.customers)
-        .where(eq(schema.customers.id, invoice.customerId))
-        .limit(1);
-      if (creditInfo?.creditHold) {
-        return {
-          error: "CREDIT_HOLD" as const,
-          reason: creditInfo.creditHoldReason ?? null,
-        };
-      }
-      if (creditInfo && creditInfo.creditLimitCents > 0) {
-        const openArRows = (await tx.execute(sql`
-          SELECT customer_open_ar_cents(${invoice.customerId}::uuid)::bigint AS open_cents
-        `)) as unknown as Array<{ open_cents: number | string }>;
-        const openCents = Number(openArRows[0]?.open_cents ?? 0);
-        const newExposure = openCents + invoice.totalCents;
-        if (newExposure > creditInfo.creditLimitCents) {
-          return {
-            error: "CREDIT_LIMIT_EXCEEDED" as const,
-            openCents,
-            limitCents: creditInfo.creditLimitCents,
-            newInvoiceCents: invoice.totalCents,
-          };
-        }
-      }
-
-      const lines = await tx
-        .select()
-        .from(schema.invoiceLines)
-        .where(eq(schema.invoiceLines.invoiceId, invoice.id))
-        .orderBy(asc(schema.invoiceLines.lineNo));
-
-      if (lines.length === 0) return { error: "NO_LINES" as const };
-
-      // Assign invoice number via sequence
-      const invoiceNumber = await nextDocumentNumber(tx, "invoice");
-
-      // Build journal: DR AR · CR income-by-account · CR VAT/SSCL payable
-      const arRows = await tx
-        .select()
-        .from(schema.chartOfAccounts)
-        .where(
-          and(
-            eq(schema.chartOfAccounts.tenantId, ctx.tenantId),
-            eq(schema.chartOfAccounts.accountSubtype, "ar"),
-            isNull(schema.chartOfAccounts.deletedAt),
-          ),
-        )
-        .limit(1);
-      const arAccount = arRows[0];
-      if (!arAccount) return { error: "NO_AR_ACCOUNT" as const };
-
-      const journalLines: Parameters<typeof postJournal>[1]["lines"] = [
-        {
-          accountId: arAccount.id,
-          drCents: invoice.totalCents,
-          description: `AR · ${invoiceNumber}`,
-          customerId: invoice.customerId,
-        },
-      ];
-
-      // Income lines, grouped by income account
-      const incomeByAccount = new Map<string, number>();
-      for (const l of lines) {
-        if (!l.incomeAccountId) {
-          return { error: "MISSING_INCOME_ACCOUNT" as const };
-        }
-        const net = l.lineSubtotalCents - l.discountCents;
-        incomeByAccount.set(
-          l.incomeAccountId,
-          (incomeByAccount.get(l.incomeAccountId) ?? 0) + net,
-        );
-      }
-      for (const [accountId, amount] of incomeByAccount) {
-        if (amount <= 0) continue;
-        journalLines.push({
-          accountId,
-          crCents: amount,
-          description: `Sales · ${invoiceNumber}`,
-          customerId: invoice.customerId,
-        });
-      }
-
-      // Tax lines, grouped by payable account
-      const taxByAccount = new Map<string, number>();
-      const taxCodeIds = Array.from(
-        new Set(lines.map((l) => l.taxCodeId).filter((v): v is string => !!v)),
-      );
-      if (taxCodeIds.length > 0) {
-        const taxRows = await tx
-          .select()
-          .from(schema.taxCodes)
-          .where(eq(schema.taxCodes.tenantId, ctx.tenantId));
-        const payableByCode = new Map(taxRows.map((t) => [t.id, t.payableAccountId]));
-        for (const l of lines) {
-          if (l.taxCents === 0) continue;
-          const payable = payableByCode.get(l.taxCodeId ?? "");
-          if (!payable) continue;
-          taxByAccount.set(payable, (taxByAccount.get(payable) ?? 0) + l.taxCents);
-        }
-      }
-      for (const [accountId, amount] of taxByAccount) {
-        if (amount <= 0) continue;
-        journalLines.push({
-          accountId,
-          crCents: amount,
-          description: `Tax payable · ${invoiceNumber}`,
-        });
-      }
-
-      // Inventory relief + COGS for tracked items (WAVG, single default warehouse v1).
-      // Only runs when the tenant's stockRelieveOn setting = 'invoice' (default).
-      // In 'delivery_note' mode, stock is relieved at DN deliver instead, and
-      // this invoice post skips all stock/COGS writes.
-      const settings = await loadTenantSettings(tx);
-      const trackedLines: Array<{
-        line: (typeof lines)[number];
-        item: typeof schema.items.$inferSelect;
-        cogsCents: number;
-      }> = [];
-      let totalCogsCents = 0;
-
-      const defaultWarehouse = await resolveDefaultWarehouse(tx, ctx.tenantId);
-      const { inventoryAccountId, cogsAccountId } = await resolveStockGLAccounts(
-        tx,
-        ctx.tenantId,
-      );
-
-      if (settings.stockRelieveOn === "invoice") {
-        const linkedItems = await tx
-          .select()
-          .from(schema.items)
-          .where(
-            and(
-              eq(schema.items.tenantId, ctx.tenantId),
-              isNull(schema.items.deletedAt),
-            ),
-          );
-        const itemById = new Map(linkedItems.map((i) => [i.id, i]));
-
-        for (const l of lines) {
-          if (!l.itemId) continue;
-          const item = itemById.get(l.itemId);
-          if (!item || !item.trackInventory) continue;
-          if (!defaultWarehouse) return { error: "NO_DEFAULT_WAREHOUSE" as const };
-          if (!inventoryAccountId || !cogsAccountId) return { error: "NO_STOCK_ACCOUNTS" as const };
-
-          const qty = Number(l.quantity);
-          if (qty <= 0) continue;
-
-          try {
-            const { cogsCents } = await peekStockIssue(tx, {
-              tenantId: ctx.tenantId,
-              itemId: item.id,
-              warehouseId: defaultWarehouse.id,
-              quantity: qty,
-            });
-            trackedLines.push({ line: l, item, cogsCents });
-            totalCogsCents += cogsCents;
-          } catch (err) {
-            const e = err as Error & { code?: string };
-            if (e.code === "NEGATIVE_STOCK") return { error: "NEGATIVE_STOCK" as const, item };
-            throw err;
-          }
-        }
-      }
-
-      if (totalCogsCents > 0 && cogsAccountId && inventoryAccountId) {
-        journalLines.push(
-          {
-            accountId: cogsAccountId,
-            drCents: totalCogsCents,
-            description: `COGS · ${invoiceNumber}`,
-            customerId: invoice.customerId,
-          },
-          {
-            accountId: inventoryAccountId,
-            crCents: totalCogsCents,
-            description: `Inventory relief · ${invoiceNumber}`,
-            customerId: invoice.customerId,
-          },
-        );
-      }
-
-      const { entryId, entryNumber } = await postJournal(tx, {
+    const result = await withTenant(ctx.tenantId, async (tx) =>
+      postDraftInvoice(tx, {
         tenantId: ctx.tenantId,
-        entryDate: invoice.issueDate,
-        memo: `Invoice ${invoiceNumber}`,
-        sourceType: "invoice",
-        sourceId: invoice.id,
-        postedByUserId: ctx.userId,
-        lines: journalLines,
-      });
-
-      // Commit the stock movements with the journal entry id now that it exists
-      for (const t of trackedLines) {
-        await applyStockIssue(tx, {
-          tenantId: ctx.tenantId,
-          itemId: t.item.id,
-          warehouseId: defaultWarehouse!.id,
-          quantity: Number(t.line.quantity),
-          sourceDocumentType: "invoice",
-          sourceDocumentId: invoice.id,
-          sourceLineId: t.line.id,
-          journalEntryId: entryId,
-          postedByUserId: ctx.userId,
-          memo: `Invoice ${invoiceNumber}`,
-        });
-      }
-
-      await tx
-        .update(schema.invoices)
-        .set({
-          status: "posted",
-          invoiceNumber,
-          journalEntryId: entryId,
-          postedAt: new Date(),
-          postedByUserId: ctx.userId,
-          updatedAt: new Date(),
-        })
-        .where(eq(schema.invoices.id, invoice.id));
-
-      // Customer name for a friendlier title — cheap single-row join on id.
-      const [cust] = await tx
-        .select({ name: schema.customers.name })
-        .from(schema.customers)
-        .where(eq(schema.customers.id, invoice.customerId))
-        .limit(1);
-
-      // v1 sends notifications to every user in the tenant — small tenants
-      // today, multi-user fan-out is fine inline. A receipts table can
-      // replace this when it stops scaling.
-      const tenantUsers = await tx.execute(sql`
-        SELECT id FROM users WHERE tenant_id = current_tenant_id()
-      `);
-      const formattedTotal = (invoice.totalCents / 100).toLocaleString("en-LK", {
-        style: "currency",
-        currency: invoice.currency || "LKR",
-        maximumFractionDigits: 2,
-      });
-      for (const u of tenantUsers as unknown as Array<{ id: string }>) {
-        await emitNotification(tx, {
-          tenantId: ctx.tenantId,
-          userId: u.id,
-          kind: "invoice_posted",
-          title: `Invoice ${invoiceNumber} posted`,
-          body: `${cust?.name ?? "Customer"} · ${formattedTotal}`,
-          refType: "invoice",
-          refId: invoice.id,
-        });
-      }
-
-      return { ok: true as const, invoiceNumber, entryNumber };
-    });
+        invoiceId: req.params.id,
+        userId: ctx.userId,
+      }),
+    );
 
     if ("error" in result) {
-      const map: Record<string, number> = {
-        NOT_FOUND: 404,
-        NOT_DRAFT: 409,
-        NO_LINES: 400,
-        NO_AR_ACCOUNT: 500,
-        MISSING_INCOME_ACCOUNT: 500,
-        NO_DEFAULT_WAREHOUSE: 500,
-        NO_STOCK_ACCOUNTS: 500,
-        NEGATIVE_STOCK: 409,
-        CREDIT_HOLD: 409,
-        CREDIT_LIMIT_EXCEEDED: 409,
-      };
-      const body: { error: { code: string; message?: string; itemName?: string; reason?: string; openCents?: number; limitCents?: number; newInvoiceCents?: number } } = {
-        error: { code: result.error },
-      };
-      if (result.error === "NEGATIVE_STOCK" && "item" in result && result.item) {
-        body.error.message = `Not enough stock on hand for ${result.item.name}. Receive stock via a bill before invoicing.`;
-        body.error.itemName = result.item.name;
-      }
-      if (result.error === "CREDIT_HOLD" && "reason" in result) {
-        body.error.message = result.reason
-          ? `Customer is on credit hold — ${result.reason}. Clear the hold before posting.`
-          : "Customer is on credit hold. Clear the hold before posting.";
-        body.error.reason = result.reason ?? undefined;
-      }
-      if (result.error === "CREDIT_LIMIT_EXCEEDED" && "limitCents" in result) {
-        const { openCents, limitCents, newInvoiceCents } = result;
-        body.error.message = `Posting would push this customer past their credit limit. Open ${(openCents / 100).toFixed(2)} + this invoice ${(newInvoiceCents / 100).toFixed(2)} = ${((openCents + newInvoiceCents) / 100).toFixed(2)}, limit ${(limitCents / 100).toFixed(2)}. Collect from them or raise the limit first.`;
-        body.error.openCents = openCents;
-        body.error.limitCents = limitCents;
-        body.error.newInvoiceCents = newInvoiceCents;
-      }
-      return reply.status(map[result.error] ?? 500).send(body);
+      const status = INVOICE_POST_ERROR_STATUS[result.error] ?? 500;
+      return reply.status(status).send({ error: buildInvoicePostErrorBody(result) });
     }
-    return reply.send(result);
+    return reply.send({
+      ok: true,
+      invoiceNumber: result.invoiceNumber,
+      entryNumber: result.entryNumber,
+    });
   });
 
   // POST /invoices/:id/void — reverse a posted invoice

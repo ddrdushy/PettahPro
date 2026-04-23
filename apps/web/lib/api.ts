@@ -1246,6 +1246,32 @@ export const api = {
       `/final-settlements/${id}/cancel`,
       { method: "POST", json: body },
     ),
+
+  // ─── POS ───────────────────────────────────────────────────────────────
+  getCurrentPosShift: () =>
+    request<{ shift: PosShift | null }>("/pos/shifts/current"),
+  listPosShifts: () => request<{ shifts: PosShift[] }>("/pos/shifts"),
+  openPosShift: (body: OpenPosShift) =>
+    request<{ shift: PosShift }>("/pos/shifts", { method: "POST", json: body }),
+  closePosShift: (id: string, body: ClosePosShift) =>
+    request<{
+      ok: true;
+      shift: PosShift;
+      expectedCashCents: number;
+      varianceCents: number;
+    }>(`/pos/shifts/${id}/close`, { method: "POST", json: body }),
+  getPosZReport: (id: string) =>
+    request<PosZReport>(`/pos/shifts/${id}/z-report`),
+  createPosSale: (body: CreatePosSale) =>
+    request<{
+      ok: true;
+      invoiceId: string;
+      invoiceNumber: string;
+      totalCents: number;
+      tenderedCents: number;
+      changeCents: number;
+      paymentIds: string[];
+    }>("/pos/sales", { method: "POST", json: body }),
 };
 
 export interface User {
@@ -4749,4 +4775,102 @@ export interface AuditLogListResponse {
 export interface AuditKindBucket {
   kind: string;
   count: number;
+}
+
+// ─── POS ─────────────────────────────────────────────────────────────────
+
+export type PosShiftStatus = "open" | "closed";
+
+export type PosVarianceReasonCode =
+  | "change_error"
+  | "miscount"
+  | "theft_suspicion"
+  | "other";
+
+export interface PosShift {
+  id: string;
+  tenantId: string;
+  branchId: string | null;
+  cashierUserId: string;
+  status: PosShiftStatus;
+  openedAt: string;
+  openingFloatCents: number;
+  openingNotes: string | null;
+  cashAccountId: string | null;
+  closedAt: string | null;
+  closedByUserId: string | null;
+  closingDenominations: Record<string, number> | null;
+  closingCashCents: number | null;
+  expectedCashCents: number | null;
+  varianceCents: number | null;
+  varianceReasonCode: PosVarianceReasonCode | null;
+  varianceReasonNotes: string | null;
+  varianceJournalEntryId: string | null;
+  supervisorSignature: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface OpenPosShift {
+  branchId?: string;
+  openingFloatCents?: number;
+  openingNotes?: string;
+  cashAccountId?: string;
+}
+
+export interface ClosePosShift {
+  closingCashCents: number;
+  closingDenominations?: Record<string, number>;
+  varianceReasonCode?: PosVarianceReasonCode;
+  varianceReasonNotes?: string;
+  supervisorSignature?: string;
+}
+
+export type PosTenderMethod =
+  | "cash"
+  | "card"
+  | "lankaqr"
+  | "payhere"
+  | "frimi"
+  | "genie"
+  | "ipay"
+  | "bank_transfer"
+  | "other";
+
+export interface PosSaleLine {
+  itemId?: string;
+  description: string;
+  quantity: number;
+  unitPriceCents: number;
+  discountPctBps?: number;
+  taxCodeId?: string;
+}
+
+export interface PosSaleTender {
+  method: PosTenderMethod;
+  amountCents: number;
+  bankAccountId?: string;
+  reference?: string;
+}
+
+export interface CreatePosSale {
+  shiftId: string;
+  customerId?: string;
+  branchId?: string;
+  issueDate?: string;
+  lines: PosSaleLine[];
+  tenders: PosSaleTender[];
+}
+
+export interface PosZReport {
+  shift: PosShift;
+  cashier: { id: string; full_name: string; email: string } | null;
+  tender: Array<{ method: PosTenderMethod; count: number; totalCents: number }>;
+  invoices: {
+    count: number;
+    subtotalCents: number;
+    discountCents: number;
+    taxCents: number;
+    totalCents: number;
+  };
 }
