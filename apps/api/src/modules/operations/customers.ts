@@ -3,6 +3,7 @@ import { and, eq, isNull, desc, ilike, sql } from "drizzle-orm";
 import { z } from "zod";
 import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
+import { recordAuditEvent } from "../../lib/audit.js";
 
 const CreateSchema = z.object({
   name: z.string().trim().min(1).max(255),
@@ -332,6 +333,70 @@ export const customersRoutes: FastifyPluginAsync = async (fastify) => {
           autoStatementEmail: schema.customers.autoStatementEmail,
           statementEmailDay: schema.customers.statementEmailDay,
         });
+      return row;
+    });
+
+    if (!updated) {
+      return reply.status(404).send({ error: { code: "NOT_FOUND" } });
+    }
+    return reply.send({ customer: updated });
+  });
+
+  // PATCH /customers/:id/portal-access — toggle portal login for a customer.
+  // Separate route (vs. a generic update) so the audit trail is explicit
+  // about who revoked access and when. Enforced pre-auth in
+  // `portal_find_customers_by_email` and post-auth via `portal_resolve_session`
+  // (folded into `customer_active`) so flipping this off blows out any
+  // live session on the next /portal/auth/me read.
+  fastify.patch<{
+    Params: { id: string };
+    Body: { portalEnabled: boolean };
+  }>("/:id/portal-access", async (req, reply) => {
+    const ctx = requireAuth(req, reply);
+    if (!ctx) return;
+
+    const BodySchema = z.object({ portalEnabled: z.boolean() });
+    const parsed = BodySchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: { code: "INVALID_INPUT", issues: parsed.error.issues },
+      });
+    }
+    const { portalEnabled } = parsed.data;
+
+    const updated = await withTenant(ctx.tenantId, async (tx) => {
+      const [row] = await tx
+        .update(schema.customers)
+        .set({ portalEnabled, updatedAt: new Date() })
+        .where(
+          and(
+            eq(schema.customers.tenantId, ctx.tenantId),
+            eq(schema.customers.id, req.params.id),
+            isNull(schema.customers.deletedAt),
+          ),
+        )
+        .returning({
+          id: schema.customers.id,
+          name: schema.customers.name,
+          email: schema.customers.email,
+          portalEnabled: schema.customers.portalEnabled,
+        });
+
+      if (row) {
+        await recordAuditEvent(tx, {
+          kind: "portal.access_toggled",
+          summary: portalEnabled
+            ? `Portal access enabled for ${row.name}`
+            : `Portal access revoked for ${row.name}`,
+          refType: "customer",
+          refId: row.id,
+          diff: { portalEnabled, email: row.email },
+          actorUserId: ctx.userId,
+          ipAddress: req.ip ?? null,
+          userAgent: req.headers["user-agent"] ?? null,
+        });
+      }
+
       return row;
     });
 

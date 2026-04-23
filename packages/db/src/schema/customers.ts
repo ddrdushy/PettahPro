@@ -42,6 +42,7 @@ export const customers = pgTable("customers", {
   autoStatementEmail: boolean("auto_statement_email").notNull().default(false),
   statementEmailDay: smallint("statement_email_day"),
   isActive: boolean("is_active").notNull().default(true),
+  portalEnabled: boolean("portal_enabled").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   deletedAt: timestamp("deleted_at", { withTimezone: true }),

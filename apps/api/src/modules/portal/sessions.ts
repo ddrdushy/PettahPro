@@ -23,6 +23,14 @@ const OTP_RATE_PREFIX = "portal-otp-rate:";
 const OTP_RATE_WINDOW_SECONDS = 60 * 60;
 const OTP_RATE_MAX = 5;
 
+const VERIFY_RATE_PREFIX = "portal-verify-rate:";
+// Rate-limit: max 10 verify attempts per email per hour. 6-digit codes
+// have 1M combinations and expire in 10 minutes, so 10/hour is far
+// below the 1-in-100k-ish probability of a successful brute force while
+// still leaving generous headroom for mistyped digits.
+const VERIFY_RATE_WINDOW_SECONDS = 60 * 60;
+const VERIFY_RATE_MAX = 10;
+
 export interface PortalSession {
   id: string;
   tenantId: string;
@@ -117,6 +125,31 @@ export async function tryConsumeOtpRateBudget(
     return {
       ok: false,
       retryAfterSeconds: ttl > 0 ? ttl : OTP_RATE_WINDOW_SECONDS,
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * Gates brute-force attempts against /portal/auth/verify. Counts every
+ * attempt (success or failure), same rolling window as OTP requests, so
+ * an attacker can't burn the code space by hammering verify. We don't
+ * reset on success — a legitimate user retries at most a handful of
+ * times before they're in, so 10/hour is plenty.
+ */
+export async function tryConsumeVerifyRateBudget(
+  email: string,
+): Promise<{ ok: true } | { ok: false; retryAfterSeconds: number }> {
+  const key = VERIFY_RATE_PREFIX + email.toLowerCase();
+  const count = await redis.incr(key);
+  if (count === 1) {
+    await redis.expire(key, VERIFY_RATE_WINDOW_SECONDS);
+  }
+  if (count > VERIFY_RATE_MAX) {
+    const ttl = await redis.ttl(key);
+    return {
+      ok: false,
+      retryAfterSeconds: ttl > 0 ? ttl : VERIFY_RATE_WINDOW_SECONDS,
     };
   }
   return { ok: true };
