@@ -60,3 +60,6 @@ export * from "./attendance-devices.js";
 export * from "./biometric-employee-map.js";
 export * from "./attendance-records.js";
 export * from "./attendance-imports.js";
+export * from "./item-batches.js";
+export * from "./item-serials.js";
+export * from "./stock-movement-batch-allocations.js";

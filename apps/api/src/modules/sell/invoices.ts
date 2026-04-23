@@ -16,6 +16,49 @@ import {
   buildInvoicePostErrorBody,
 } from "./invoice-posting.js";
 
+// Batch / serial outbound picks (roadmap #34). Serial-tracked
+// items need explicit serialNumbers; batch-tracked items may pass
+// explicit batchPicks to override FIFO. See
+// stock-posting.ts:applyStockIssue for the enforcement rules.
+const TrackingInputSchema = z
+  .object({
+    serialNumbers: z.array(z.string().trim().min(1).max(128)).optional(),
+    batchPicks: z
+      .array(
+        z.object({
+          batchId: z.string().uuid(),
+          quantity: z.number().positive(),
+        }),
+      )
+      .optional(),
+  })
+  .optional();
+
+type InvoiceTrackingInput = {
+  serialNumbers?: string[];
+  batchPicks?: Array<{ batchId: string; quantity: number }>;
+};
+
+/**
+ * Strip empties from Zod-parsed tracking input so the bill/invoice line
+ * stores `null` when the caller sent nothing meaningful. Mirrors
+ * `normalizeTrackingInput` in bills.ts.
+ */
+function normalizeInvoiceTrackingInput(
+  input: InvoiceTrackingInput | undefined,
+): InvoiceTrackingInput | null {
+  if (!input) return null;
+  const serialNumbers = input.serialNumbers?.filter((s) => s.length > 0);
+  const batchPicks = input.batchPicks?.filter((p) => p.quantity > 0);
+  const hasSerials = serialNumbers && serialNumbers.length > 0;
+  const hasBatches = batchPicks && batchPicks.length > 0;
+  if (!hasSerials && !hasBatches) return null;
+  return {
+    ...(hasSerials ? { serialNumbers } : {}),
+    ...(hasBatches ? { batchPicks } : {}),
+  };
+}
+
 const LineSchema = z.object({
   itemId: z.string().uuid().optional(),
   description: z.string().min(1).max(500),
@@ -23,6 +66,7 @@ const LineSchema = z.object({
   unitPriceCents: z.number().int().min(0),
   discountPctBps: z.number().int().min(0).max(10000).default(0),
   taxCodeId: z.string().uuid().optional(),
+  tracking: TrackingInputSchema,
 });
 
 const CreateSchema = z.object({
@@ -60,6 +104,10 @@ interface ComputedLine {
   lineTotalCents: number;
   incomeAccountId: string | null;
   taxPayableAccountId: string | null;
+  tracking: {
+    serialNumbers?: string[];
+    batchPicks?: Array<{ batchId: string; quantity: number }>;
+  } | null;
 }
 
 interface LineInput {
@@ -69,6 +117,10 @@ interface LineInput {
   unitPriceCents: number;
   discountPctBps?: number;
   taxCodeId?: string;
+  tracking?: {
+    serialNumbers?: string[];
+    batchPicks?: Array<{ batchId: string; quantity: number }>;
+  };
 }
 
 /**
@@ -155,6 +207,7 @@ export async function computeInvoice(
       lineTotalCents: lineTotal,
       incomeAccountId,
       taxPayableAccountId: tax?.payableAccountId ?? null,
+      tracking: normalizeInvoiceTrackingInput(l.tracking),
     };
   });
 
@@ -349,6 +402,7 @@ export const invoicesRoutes: FastifyPluginAsync = async (fastify) => {
           taxCents: l.taxCents,
           lineTotalCents: l.lineTotalCents,
           incomeAccountId: l.incomeAccountId,
+          trackingInput: l.tracking,
         })),
       );
 
@@ -540,6 +594,7 @@ export const invoicesRoutes: FastifyPluginAsync = async (fastify) => {
           taxCents: l.taxCents,
           lineTotalCents: l.lineTotalCents,
           incomeAccountId: l.incomeAccountId,
+          trackingInput: l.tracking,
         })),
       );
 
@@ -667,6 +722,8 @@ export const invoicesRoutes: FastifyPluginAsync = async (fastify) => {
           taxCents: l.taxCents,
           lineTotalCents: l.lineTotalCents,
           incomeAccountId: l.incomeAccountId,
+          // Duplicate intentionally drops trackingInput — a reissue needs
+          // the user to re-pick serials/batches against current stock.
         })),
       );
 

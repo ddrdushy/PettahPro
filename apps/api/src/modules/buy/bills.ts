@@ -21,6 +21,19 @@ import {
   cancelApprovalRequest,
 } from "../admin/approval-engine.js";
 
+// Batch / serial / expiry tracking input — optional per line,
+// validated at post time against the item's tracking toggles. See
+// stock-posting.ts:applyStockReceipt for the enforcement rules.
+const TrackingInputSchema = z
+  .object({
+    batchNumber: z.string().trim().max(64).optional().or(z.literal("")),
+    mfgDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    expiryDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    batchNotes: z.string().trim().max(500).optional().or(z.literal("")),
+    serialNumbers: z.array(z.string().trim().min(1).max(128)).optional(),
+  })
+  .optional();
+
 const LineSchema = z.object({
   itemId: z.string().uuid().optional(),
   description: z.string().min(1).max(500),
@@ -29,6 +42,7 @@ const LineSchema = z.object({
   discountPctBps: z.number().int().min(0).max(10000).default(0),
   taxCodeId: z.string().uuid().optional(),
   expenseAccountId: z.string().uuid().optional(),
+  tracking: TrackingInputSchema,
 });
 
 const CHARGE_KINDS = [
@@ -73,6 +87,13 @@ interface LineInput {
   discountPctBps?: number;
   taxCodeId?: string;
   expenseAccountId?: string;
+  tracking?: {
+    batchNumber?: string;
+    mfgDate?: string;
+    expiryDate?: string;
+    batchNotes?: string;
+    serialNumbers?: string[];
+  };
 }
 
 interface ChargeInput {
@@ -146,6 +167,24 @@ export function allocateCharges<T extends { lineNetCents: number; quantity: numb
     perLineCents[i] = (floors[k] ?? 0) + (extra[k] ?? 0);
   }
   return { perLineCents, unallocatedCents: 0 };
+}
+
+// Trim + drop empty-string fields so the persisted JSONB is compact.
+// Keeps post-time validation simple: if `trackingInput?.batchNumber`
+// is a string, it's non-empty.
+function normalizeTrackingInput(
+  raw: LineInput["tracking"],
+): LineInput["tracking"] | null {
+  if (!raw) return null;
+  const out: NonNullable<LineInput["tracking"]> = {};
+  if (raw.batchNumber && raw.batchNumber.trim()) out.batchNumber = raw.batchNumber.trim();
+  if (raw.mfgDate) out.mfgDate = raw.mfgDate;
+  if (raw.expiryDate) out.expiryDate = raw.expiryDate;
+  if (raw.batchNotes && raw.batchNotes.trim()) out.batchNotes = raw.batchNotes.trim();
+  if (raw.serialNumbers && raw.serialNumbers.length > 0) {
+    out.serialNumbers = raw.serialNumbers.map((s) => s.trim()).filter(Boolean);
+  }
+  return Object.keys(out).length > 0 ? out : null;
 }
 
 export async function computeBill(
@@ -238,6 +277,7 @@ export async function computeBill(
       taxReceivableAccountId: tax?.receivableAccountId ?? null,
       isStocked,
       effectiveUnitCostCents,
+      tracking: normalizeTrackingInput(l.tracking),
     };
   });
 
@@ -297,7 +337,13 @@ export type PostBillCoreError =
   | "NO_AP_ACCOUNT"
   | "NO_FREIGHT_ACCOUNT"
   | "MISSING_EXPENSE_ACCOUNT"
-  | "NO_DEFAULT_WAREHOUSE";
+  | "NO_DEFAULT_WAREHOUSE"
+  | "BATCH_INPUT_REQUIRED"
+  | "EXPIRY_INPUT_REQUIRED"
+  | "SERIAL_COUNT_MISMATCH"
+  | "SERIAL_DUPLICATE_IN_PAYLOAD"
+  | "SERIAL_BLANK"
+  | "SERIAL_ALREADY_EXISTS";
 
 /**
  * Shared "finish posting a bill" core — single source of truth for AP
@@ -537,19 +583,40 @@ export async function postBillCore(
       const netCents = l.lineSubtotalCents - l.discountCents;
       const allocated = allocatedPerLine[i] ?? 0;
       const unitCost = Math.round((netCents + allocated) / qty);
-      await applyStockReceipt(tx, {
-        tenantId,
-        itemId: item.id,
-        warehouseId: defaultWarehouse.id,
-        quantity: qty,
-        unitCostCents: unitCost,
-        sourceDocumentType: "bill",
-        sourceDocumentId: bill.id,
-        sourceLineId: l.id,
-        journalEntryId: entryId,
-        postedByUserId,
-        memo: `Bill ${internalReference}`,
-      });
+      try {
+        await applyStockReceipt(tx, {
+          tenantId,
+          itemId: item.id,
+          warehouseId: defaultWarehouse.id,
+          quantity: qty,
+          unitCostCents: unitCost,
+          sourceDocumentType: "bill",
+          sourceDocumentId: bill.id,
+          sourceLineId: l.id,
+          journalEntryId: entryId,
+          postedByUserId,
+          memo: `Bill ${internalReference}`,
+          tracking: l.trackingInput
+            ? {
+                ...l.trackingInput,
+                supplierId: bill.supplierId,
+              }
+            : undefined,
+        });
+      } catch (err) {
+        const code = (err as Error & { code?: string }).code;
+        if (
+          code === "BATCH_INPUT_REQUIRED" ||
+          code === "EXPIRY_INPUT_REQUIRED" ||
+          code === "SERIAL_COUNT_MISMATCH" ||
+          code === "SERIAL_BLANK" ||
+          code === "SERIAL_DUPLICATE_IN_PAYLOAD" ||
+          code === "SERIAL_ALREADY_EXISTS"
+        ) {
+          return { error: code as PostBillCoreError };
+        }
+        throw err;
+      }
     }
   }
 
@@ -782,6 +849,7 @@ export const billsRoutes: FastifyPluginAsync = async (fastify) => {
           taxCents: l.taxCents,
           lineTotalCents: l.lineTotalCents,
           expenseAccountId: l.expenseAccountId,
+          trackingInput: l.tracking ?? null,
         })),
       );
 
@@ -941,13 +1009,31 @@ export const billsRoutes: FastifyPluginAsync = async (fastify) => {
         NO_FREIGHT_ACCOUNT: 500,
         MISSING_EXPENSE_ACCOUNT: 500,
         NO_DEFAULT_WAREHOUSE: 500,
+        BATCH_INPUT_REQUIRED: 400,
+        EXPIRY_INPUT_REQUIRED: 400,
+        SERIAL_COUNT_MISMATCH: 400,
+        SERIAL_DUPLICATE_IN_PAYLOAD: 400,
+        SERIAL_BLANK: 400,
+        SERIAL_ALREADY_EXISTS: 409,
       };
-      const message =
-        result.error === "ENGINE_OWNED"
-          ? "This bill is managed by the approval engine. Decide it from the Approvals queue instead."
-          : undefined;
-      return reply.status(map[result.error] ?? 500).send({
-        error: { code: result.error, ...(message ? { message } : {}) },
+      const messages: Record<string, string> = {
+        ENGINE_OWNED:
+          "This bill is managed by the approval engine. Decide it from the Approvals queue instead.",
+        BATCH_INPUT_REQUIRED:
+          "One or more lines have batch tracking on but no batch number. Add the supplier's batch number before posting.",
+        EXPIRY_INPUT_REQUIRED:
+          "One or more lines have expiry tracking on but no expiry date. Add the expiry date before posting.",
+        SERIAL_COUNT_MISMATCH:
+          "Serial numbers must match line quantity for serial-tracked items.",
+        SERIAL_DUPLICATE_IN_PAYLOAD: "Duplicate serial numbers on the same line.",
+        SERIAL_BLANK: "Serial numbers can't be blank.",
+        SERIAL_ALREADY_EXISTS:
+          "One of the serial numbers already exists for this item. Use a different serial or scrap the old one first.",
+      };
+      const code = result.error as string;
+      const message = messages[code];
+      return reply.status(map[code] ?? 500).send({
+        error: { code, ...(message ? { message } : {}) },
       });
     }
     return reply.send(result);

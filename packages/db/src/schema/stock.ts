@@ -48,6 +48,13 @@ export const stockLedger = pgTable("stock_ledger", {
   sourceDocumentId: uuid("source_document_id"),
   sourceLineId: uuid("source_line_id"),
   journalEntryId: uuid("journal_entry_id").references(() => journalEntries.id, { onDelete: "set null" }),
+  // Batch / serial quick-access pointers (roadmap #34). Set on
+  // single-batch / single-serial movements; null when the movement
+  // spans multiple batches (the allocations table is authoritative).
+  // Typed as plain uuid here to avoid a circular import with
+  // `item-batches` / `item-serials`.
+  batchId: uuid("batch_id"),
+  serialId: uuid("serial_id"),
   memo: varchar("memo", { length: 500 }),
   postedByUserId: uuid("posted_by_user_id"),
   occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),

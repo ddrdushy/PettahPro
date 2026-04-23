@@ -160,6 +160,30 @@ export const api = {
     request<{ item: Item }>(`/items/${id}`, { method: "PATCH", json: body }),
   listItemComponents: (id: string) =>
     request<{ components: BundleComponent[] }>(`/items/${id}/components`),
+
+  // Batch / serial / expiry read endpoints (roadmap #34).
+  // All mutation happens via bill post (inbound) and invoice post
+  // (outbound); these are purely for traceability / recall reporting.
+  listItemBatches: (itemId: string, onlyActive = false) =>
+    request<{ batches: ItemBatch[] }>(
+      `/items/${itemId}/batches${onlyActive ? "?active=true" : ""}`,
+    ),
+  listItemSerials: (itemId: string) =>
+    request<{ serials: ItemSerial[] }>(`/items/${itemId}/serials`),
+  getBatchRecall: (batchId: string) =>
+    request<{ batch: ItemBatch; allocations: BatchRecallAllocation[] }>(
+      `/items/batches/${batchId}/recall`,
+    ),
+  getSerialTrace: (serialId: string) =>
+    request<{
+      serial: ItemSerial;
+      item: { id: string; name: string; sku: string | null } | null;
+      batch: { id: string; batchNumber: string; expiryDate: string | null } | null;
+    }>(`/items/serials/${serialId}`),
+  listExpiringBatches: (days = 30) =>
+    request<{ batches: ExpiringBatchRow[]; days: number; cutoff: string }>(
+      `/items/tracking/expiring?days=${days}`,
+    ),
   replaceItemComponents: (
     id: string,
     components: Array<{ componentItemId: string; quantity: number }>,
@@ -2244,7 +2268,95 @@ export interface Item {
   taxCodeId?: string | null;
   categoryId?: string | null;
   isActive: boolean;
+  // Batch / serial / expiry tracking toggles (roadmap #34).
+  // Only meaningful when `trackInventory` is true. Services and
+  // bundles always report `false`.
+  trackBatches: boolean;
+  trackSerials: boolean;
+  trackExpiry: boolean;
+  // Calendar months — applied at sale time to stamp
+  // `item_serials.warranty_expires_at`. Null means no warranty.
+  warrantyMonths: number | null;
   createdAt: string;
+}
+
+// Batch / serial / expiry types (roadmap #34). One row per inbound
+// lot (batches) or physical unit (serials); all mutation flows
+// through bill post (inbound) and invoice post (outbound).
+export interface ItemBatch {
+  id: string;
+  tenantId: string;
+  itemId: string;
+  warehouseId: string;
+  batchNumber: string;
+  mfgDate: string | null;
+  expiryDate: string | null;
+  originalQty: string;
+  remainingQty: string;
+  unitCostCents: number;
+  receivedAt: string;
+  sourceDocumentType: string | null;
+  sourceDocumentId: string | null;
+  sourceLineId: string | null;
+  supplierId: string | null;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt: string | null;
+}
+
+export interface ItemSerial {
+  id: string;
+  tenantId: string;
+  itemId: string;
+  warehouseId: string;
+  serialNumber: string;
+  status: "in_stock" | "sold" | "returned" | "scrapped";
+  batchId: string | null;
+  unitCostCents: number;
+  acquiredDocumentType: string | null;
+  acquiredDocumentId: string | null;
+  acquiredLineId: string | null;
+  acquiredAt: string;
+  supplierId: string | null;
+  soldDocumentType: string | null;
+  soldDocumentId: string | null;
+  soldLineId: string | null;
+  soldCustomerId: string | null;
+  soldAt: string | null;
+  warrantyExpiresAt: string | null;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt: string | null;
+}
+
+// One row per outbound allocation against a specific batch, joined to
+// the stock-ledger entry that produced it. Used by the recall view.
+export interface BatchRecallAllocation {
+  allocationQty: string;
+  allocationUnitCostCents: number;
+  ledgerId: string;
+  ledgerQty: string;
+  sourceDocumentType: string | null;
+  sourceDocumentId: string | null;
+  occurredAt: string;
+}
+
+// Expiring batches report row. `daysUntilExpiry` is computed client-
+// side from `expiryDate` + today; surfacing `expiryDate` directly lets
+// callers format it in whatever timezone they want.
+export interface ExpiringBatchRow {
+  batchId: string;
+  batchNumber: string;
+  expiryDate: string;
+  mfgDate: string | null;
+  remainingQty: string;
+  unitCostCents: number;
+  itemId: string;
+  itemName: string;
+  itemSku: string | null;
+  warehouseId: string;
 }
 
 // Bundle component row shape (roadmap #35). `quantity` arrives on the
@@ -2276,6 +2388,10 @@ export interface UpdateItem {
   taxCodeId?: string | null;
   categoryId?: string | null;
   isActive?: boolean;
+  trackBatches?: boolean;
+  trackSerials?: boolean;
+  trackExpiry?: boolean;
+  warrantyMonths?: number | null;
 }
 
 export interface CreateItem {
@@ -2293,6 +2409,10 @@ export interface CreateItem {
   reorderPoint?: number;
   taxCodeId?: string;
   categoryId?: string | null;
+  trackBatches?: boolean;
+  trackSerials?: boolean;
+  trackExpiry?: boolean;
+  warrantyMonths?: number | null;
 }
 
 export interface ItemCategory {
@@ -2711,6 +2831,18 @@ export interface BillLine {
   taxCents: number;
   lineTotalCents: number;
   expenseAccountId: string | null;
+  trackingInput: BillLineTrackingInput | null;
+}
+
+// Per-line batch / serial / expiry input captured at draft and
+// consumed at post (roadmap #34). Optional — required only when the
+// referenced item has the matching toggle on.
+export interface BillLineTrackingInput {
+  batchNumber?: string;
+  mfgDate?: string;       // YYYY-MM-DD
+  expiryDate?: string;    // YYYY-MM-DD
+  batchNotes?: string;
+  serialNumbers?: string[];
 }
 
 export interface CreateBillLine {
@@ -2721,6 +2853,7 @@ export interface CreateBillLine {
   discountPctBps?: number;
   taxCodeId?: string;
   expenseAccountId?: string;
+  tracking?: BillLineTrackingInput;
 }
 
 export interface CreateBill {
@@ -2889,6 +3022,15 @@ export interface InvoiceLine {
   taxRateBps: number;
   taxCents: number;
   lineTotalCents: number;
+  trackingInput: InvoiceLineTrackingInput | null;
+}
+
+// Outbound tracking picks (roadmap #34). Serial-tracked items must
+// provide `serialNumbers` matching line quantity at post time; batch
+// picks are optional (empty = FIFO auto-pick).
+export interface InvoiceLineTrackingInput {
+  serialNumbers?: string[];
+  batchPicks?: Array<{ batchId: string; quantity: number }>;
 }
 
 export interface CreateInvoiceLine {
@@ -2898,6 +3040,7 @@ export interface CreateInvoiceLine {
   unitPriceCents: number;
   discountPctBps?: number;
   taxCodeId?: string;
+  tracking?: InvoiceLineTrackingInput;
 }
 
 export interface CreateInvoice {

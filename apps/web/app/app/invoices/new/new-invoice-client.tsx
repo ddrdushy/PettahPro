@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import { ArrowLeft, Loader2, Plus, Trash2 } from "lucide-react";
 import {
   api,
@@ -23,6 +23,10 @@ interface LineDraft {
   unitPrice: string;
   discountPct: string;
   taxCodeId: string;
+  // Serial numbers on outbound (roadmap #34). Only surfaced when the
+  // picked item has `trackSerials` on. Batch-tracked items auto-pick
+  // FIFO at post time, so no UI for those here.
+  serialNumbersText: string;
 }
 
 function emptyLine(): LineDraft {
@@ -34,7 +38,15 @@ function emptyLine(): LineDraft {
     unitPrice: "0",
     discountPct: "0",
     taxCodeId: "",
+    serialNumbersText: "",
   };
+}
+
+function parseSerials(raw: string): string[] {
+  return raw
+    .split(/\r?\n|,/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
 }
 
 function toInt(cents: string): number {
@@ -173,14 +185,20 @@ export function NewInvoiceClient({
         reference: reference.trim() || undefined,
         poNumber: poNumber.trim() || undefined,
         notes: notes.trim() || undefined,
-        lines: validLines.map((l) => ({
-          itemId: l.itemId || undefined,
-          description: l.description.trim(),
-          quantity: toNum(l.quantity),
-          unitPriceCents: toInt(l.unitPrice),
-          discountPctBps: Math.round(toNum(l.discountPct) * 100),
-          taxCodeId: l.taxCodeId || undefined,
-        })),
+        lines: validLines.map((l) => {
+          const item = items.find((i) => i.id === l.itemId);
+          const wantsSerials = !!item && item.trackSerials;
+          const serials = wantsSerials ? parseSerials(l.serialNumbersText) : [];
+          return {
+            itemId: l.itemId || undefined,
+            description: l.description.trim(),
+            quantity: toNum(l.quantity),
+            unitPriceCents: toInt(l.unitPrice),
+            discountPctBps: Math.round(toNum(l.discountPct) * 100),
+            taxCodeId: l.taxCodeId || undefined,
+            tracking: serials.length > 0 ? { serialNumbers: serials } : undefined,
+          };
+        }),
       });
 
       if (alsoPost) {
@@ -372,8 +390,13 @@ export function NewInvoiceClient({
                 <tbody className="divide-y-hairline divide-border">
                   {lines.map((l, idx) => {
                     const c = computed.perLine[idx];
+                    const item = items.find((i) => i.id === l.itemId);
+                    const needsSerials = !!item && item.trackSerials;
+                    const serialCount = parseSerials(l.serialNumbersText).length;
+                    const expectedQty = toNum(l.quantity);
                     return (
-                      <tr key={l.id} className="align-top">
+                      <React.Fragment key={l.id}>
+                      <tr className="align-top">
                         <td className="px-3 py-3 text-center text-caption text-text-tertiary">{idx + 1}</td>
                         <td className="px-3 py-3">
                           <select
@@ -456,6 +479,31 @@ export function NewInvoiceClient({
                           </button>
                         </td>
                       </tr>
+                      {needsSerials && (
+                        <tr className="bg-surface-recessed/40">
+                          <td />
+                          <td colSpan={7} className="px-3 pb-4">
+                            <div className="rounded-md border-hairline border-border bg-surface-elevated p-3">
+                              <label className="block text-caption uppercase tracking-wide text-text-tertiary">
+                                Serial numbers (one per line) — {serialCount} / {expectedQty || 0}
+                              </label>
+                              <textarea
+                                rows={Math.min(6, Math.max(3, expectedQty || 3))}
+                                value={l.serialNumbersText}
+                                onChange={(e) => patchLine(l.id, { serialNumbersText: e.target.value })}
+                                placeholder={"SN-0001\nSN-0002"}
+                                className="mt-1.5 w-full rounded-md border-hairline border-border bg-surface-elevated px-2 py-1.5 font-mono text-small text-charcoal focus:border-charcoal focus:outline-none"
+                              />
+                              {expectedQty > 0 && serialCount !== expectedQty && (
+                                <p className="mt-1 text-caption text-amber-700">
+                                  Posting needs exactly {expectedQty} serial{expectedQty === 1 ? "" : "s"} picked from in-stock inventory.
+                                </p>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                      </React.Fragment>
                     );
                   })}
                 </tbody>
