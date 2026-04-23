@@ -396,6 +396,45 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
         interestCents: number;
       }> = [];
 
+      // Commission earnings (#29) — load accrued rows up to periodEnd mapped to
+      // employees via commission_salespeople. Summed per employee; atomically
+      // claimed after the employee loop completes.
+      const commissionRows = eligible.length
+        ? ((await tx.execute(sql`
+            SELECT ce.id               AS earning_id,
+                   ce.amount_cents     AS amount_cents,
+                   cs.employee_id      AS employee_id
+            FROM commission_earnings ce
+            INNER JOIN commission_salespeople cs
+              ON cs.user_id   = ce.salesperson_user_id
+             AND cs.tenant_id = ce.tenant_id
+            WHERE ce.tenant_id = ${ctx.tenantId}::uuid
+              AND ce.status = 'accrued'
+              AND ce.paid_in_run_id IS NULL
+              AND ce.earned_at <= ${periodEnd}::date
+              AND cs.is_active = true
+              AND cs.employee_id IS NOT NULL
+          `)) as unknown as Array<{
+            earning_id: string;
+            amount_cents: number | string;
+            employee_id: string;
+          }>)
+        : [];
+      const commissionByEmployee = new Map<
+        string,
+        { totalCents: number; earningIds: string[] }
+      >();
+      for (const r of commissionRows) {
+        const bucket = commissionByEmployee.get(r.employee_id) ?? {
+          totalCents: 0,
+          earningIds: [] as string[],
+        };
+        bucket.totalCents += Number(r.amount_cents);
+        bucket.earningIds.push(r.earning_id);
+        commissionByEmployee.set(r.employee_id, bucket);
+      }
+      const consumedEarningIds: string[] = [];
+
       // Compute each line and persist
       let gross = 0,
         epfEmp = 0,
@@ -704,6 +743,42 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
           });
         }
 
+        // Commission injection — rolls up every accrued earning for this
+        // employee (net of claw-backs, which are negative rows). We don't
+        // prorate by daysWorked: commissions were earned on specific sales
+        // events, not on days present. Only adds the line if net > 0 — a net-
+        // negative balance (more clawed back than earned) carries forward on
+        // the ledger and will offset future earnings instead of turning into
+        // a negative earning line.
+        const commBucket = commissionByEmployee.get(e.id);
+        if (commBucket && commBucket.totalCents > 0) {
+          resolved.push({
+            code: "COMMISSION",
+            name: `Sales commission (${commBucket.earningIds.length} item${commBucket.earningIds.length === 1 ? "" : "s"})`,
+            kind: "earning",
+            amountCents: commBucket.totalCents,
+            countsForEpf: true,
+            countsForEtf: true,
+            countsForPaye: true,
+            sortOrder: 80,
+          });
+          snapshotInputs.push({
+            componentId: null,
+            code: "COMMISSION",
+            name: `Sales commission (${commBucket.earningIds.length} item${commBucket.earningIds.length === 1 ? "" : "s"})`,
+            kind: "earning",
+            amountCents: commBucket.totalCents,
+            countsForEpf: true,
+            countsForEtf: true,
+            countsForPaye: true,
+            sortOrder: 80,
+          });
+          // Stamp every contributing earning row after the line is inserted.
+          for (const eid of commBucket.earningIds) {
+            consumedEarningIds.push(eid);
+          }
+        }
+
         const c = computePayrollFromComponents({
           components: resolved,
           epfEligible: e.epfEligible,
@@ -831,6 +906,21 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
       // Note: we stamp `status = 'paid'` and decrement outstanding only at
       // post time (see below) so that voiding a draft doesn't leave the
       // loan header in a half-paid state.
+
+      // Claim commission earnings we just rolled into the run. Same atomic
+      // claim idiom: if the tx rolls back, nothing is stamped. A future void
+      // endpoint for payroll runs MUST release these (set paid_in_run_id =
+      // NULL, status back to 'accrued') or earnings will stay stuck.
+      if (consumedEarningIds.length > 0) {
+        await tx.execute(sql`
+          UPDATE commission_earnings
+             SET paid_in_run_id = ${run.id}::uuid,
+                 status         = 'paid',
+                 updated_at     = now()
+           WHERE tenant_id = current_tenant_id()
+             AND id = ANY(${consumedEarningIds}::uuid[])
+        `);
+      }
 
       // Update run aggregates
       await tx

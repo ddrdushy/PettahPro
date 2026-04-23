@@ -13,6 +13,7 @@ import { nextDocumentNumber, schema } from "@pettahpro/db";
 
 import { postJournal } from "../accounting/journal-posting.js";
 import { emitNotification } from "../notifications/emit.js";
+import { accrueOnInvoicePost } from "../commissions/engine.js";
 import {
   applyStockIssue,
   peekStockIssue,
@@ -294,6 +295,26 @@ export async function postDraftInvoice(
       updatedAt: new Date(),
     })
     .where(eq(schema.invoices.id, invoice.id));
+
+  // Commission accrual (#29) — no-ops if invoice has no salesperson tag or
+  // no active 'invoice_posted' rules match.
+  const invoiceNetCents = lines.reduce(
+    (s, l) => s + (l.lineSubtotalCents - l.discountCents),
+    0,
+  );
+  await accrueOnInvoicePost(tx, {
+    tenantId,
+    invoiceId: invoice.id,
+    invoiceNumber,
+    issueDate: invoice.issueDate,
+    customerId: invoice.customerId,
+    salespersonUserId: invoice.salespersonUserId,
+    lines: lines.map((l) => ({
+      itemId: l.itemId,
+      netCents: l.lineSubtotalCents - l.discountCents,
+    })),
+    invoiceNetCents,
+  });
 
   // Notifications — fan-out to every tenant user.
   const [cust] = await tx

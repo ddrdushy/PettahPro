@@ -1272,6 +1272,56 @@ export const api = {
       changeCents: number;
       paymentIds: string[];
     }>("/pos/sales", { method: "POST", json: body }),
+
+  // ─── Commissions ───────────────────────────────────────────────────────
+  listCommissionRules: () =>
+    request<{ rules: CommissionRule[] }>("/commissions/rules"),
+  createCommissionRule: (body: CreateCommissionRule) =>
+    request<{ rule: CommissionRule }>("/commissions/rules", {
+      method: "POST",
+      json: body,
+    }),
+  updateCommissionRule: (id: string, body: Partial<CreateCommissionRule>) =>
+    request<{ rule: CommissionRule }>(`/commissions/rules/${id}`, {
+      method: "PATCH",
+      json: body,
+    }),
+  deleteCommissionRule: (id: string) =>
+    request<{ ok: true }>(`/commissions/rules/${id}`, { method: "DELETE" }),
+  listCommissionSalespeople: () =>
+    request<{ salespeople: CommissionSalesperson[] }>(
+      "/commissions/salespeople",
+    ),
+  upsertCommissionSalesperson: (body: UpsertCommissionSalesperson) =>
+    request<{ salesperson: CommissionSalesperson }>(
+      "/commissions/salespeople",
+      { method: "PUT", json: body },
+    ),
+  deleteCommissionSalesperson: (userId: string) =>
+    request<{ ok: true }>(`/commissions/salespeople/${userId}`, {
+      method: "DELETE",
+    }),
+  listCommissionEarnings: (
+    params: {
+      salespersonUserId?: string;
+      status?: CommissionEarningStatus;
+      from?: string;
+      to?: string;
+    } = {},
+  ) => {
+    const qs = new URLSearchParams();
+    if (params.salespersonUserId)
+      qs.set("salespersonUserId", params.salespersonUserId);
+    if (params.status) qs.set("status", params.status);
+    if (params.from) qs.set("from", params.from);
+    if (params.to) qs.set("to", params.to);
+    const query = qs.toString();
+    return request<{ earnings: CommissionEarning[] }>(
+      `/commissions/earnings${query ? `?${query}` : ""}`,
+    );
+  },
+  getCommissionLedger: () =>
+    request<{ ledger: CommissionLedgerRow[] }>("/commissions/ledger"),
 };
 
 export interface User {
@@ -2096,6 +2146,7 @@ export interface CreateInvoiceLine {
 
 export interface CreateInvoice {
   customerId: string;
+  salespersonUserId?: string;
   issueDate?: string;
   dueDate?: string;
   currency?: string;
@@ -4873,4 +4924,126 @@ export interface PosZReport {
     taxCents: number;
     totalCents: number;
   };
+}
+
+// ─── Commissions ─────────────────────────────────────────────────────────
+
+export type CommissionTriggerEvent = "invoice_posted" | "payment_received";
+export type CommissionFormula = "flat_pct" | "tiered_volume";
+export type CommissionRuleStatus = "active" | "inactive";
+export type CommissionEarningStatus =
+  | "accrued"
+  | "paid"
+  | "clawed_back"
+  | "voided";
+export type CommissionSourceType =
+  | "invoice"
+  | "payment"
+  | "credit_note"
+  | "adjustment";
+
+export interface CommissionFlatPctConfig {
+  bps: number;
+}
+
+export interface CommissionTier {
+  upToCents?: number | null;
+  bps: number;
+}
+
+export interface CommissionTieredVolumeConfig {
+  tiers: CommissionTier[];
+}
+
+export type CommissionRuleConfig =
+  | CommissionFlatPctConfig
+  | CommissionTieredVolumeConfig
+  | Record<string, unknown>;
+
+export interface CommissionRule {
+  id: string;
+  tenantId: string;
+  name: string;
+  description: string | null;
+  status: CommissionRuleStatus;
+  triggerEvent: CommissionTriggerEvent;
+  formula: CommissionFormula;
+  config: CommissionRuleConfig;
+  salespersonUserIds: string[] | null;
+  itemIds: string[] | null;
+  customerIds: string[] | null;
+  effectiveFrom: string;
+  effectiveTo: string | null;
+  priority: number;
+  createdByUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt: string | null;
+}
+
+export interface CreateCommissionRule {
+  name: string;
+  description?: string;
+  status?: CommissionRuleStatus;
+  triggerEvent: CommissionTriggerEvent;
+  formula: CommissionFormula;
+  config: CommissionRuleConfig;
+  salespersonUserIds?: string[] | null;
+  itemIds?: string[] | null;
+  customerIds?: string[] | null;
+  effectiveFrom?: string;
+  effectiveTo?: string | null;
+  priority?: number;
+}
+
+export interface CommissionSalesperson {
+  id: string;
+  userId: string;
+  employeeId: string | null;
+  isActive: boolean;
+  defaultRateBps: number | null;
+  notes: string | null;
+  createdAt: string;
+  userFullName: string;
+  userEmail: string;
+  employeeFullName: string | null;
+  employeeCode: string | null;
+}
+
+export interface UpsertCommissionSalesperson {
+  userId: string;
+  employeeId?: string | null;
+  isActive?: boolean;
+  defaultRateBps?: number | null;
+  notes?: string;
+}
+
+export interface CommissionEarning {
+  id: string;
+  ruleId: string;
+  ruleName: string | null;
+  salespersonUserId: string;
+  sourceType: CommissionSourceType;
+  sourceId: string;
+  sourceNumber: string | null;
+  customerId: string | null;
+  customerName: string | null;
+  baseCents: number;
+  rateBps: number | null;
+  amountCents: number;
+  status: CommissionEarningStatus;
+  earnedAt: string;
+  paidInRunId: string | null;
+  memo: string | null;
+}
+
+export interface CommissionLedgerRow {
+  salespersonUserId: string;
+  fullName: string;
+  email: string;
+  accruedCents: number;
+  paidCents: number;
+  clawedBackCents: number;
+  totalCents: number;
+  rowCount: number;
 }

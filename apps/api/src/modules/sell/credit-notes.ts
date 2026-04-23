@@ -5,6 +5,7 @@ import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
 import { requirePermission } from "../../lib/permissions.js";
 import { postJournal } from "../accounting/journal-posting.js";
+import { clawbackOnCreditNotePost } from "../commissions/engine.js";
 
 const ReasonEnum = z.enum([
   "return",
@@ -559,6 +560,29 @@ export const creditNotesRoutes: FastifyPluginAsync = async (fastify) => {
           .update(schema.creditNotes)
           .set({ appliedCents })
           .where(eq(schema.creditNotes.id, cn.id));
+      }
+
+      // Commission claw-back (#29) — proportional reversal against any
+      // earnings booked on the linked invoice. Unlinked CNs (no invoiceId)
+      // skip this — we have no way to attribute the reversal.
+      if (cn.invoiceId) {
+        const [origInv] = await tx
+          .select({ totalCents: schema.invoices.totalCents })
+          .from(schema.invoices)
+          .where(eq(schema.invoices.id, cn.invoiceId))
+          .limit(1);
+        if (origInv) {
+          await clawbackOnCreditNotePost(tx, {
+            tenantId: ctx.tenantId,
+            creditNoteId: cn.id,
+            creditNoteNumber: cnNumber,
+            issueDate: cn.issueDate,
+            customerId: cn.customerId,
+            originalInvoiceId: cn.invoiceId,
+            cnTotalCents: cn.totalCents,
+            originalInvoiceTotalCents: origInv.totalCents,
+          });
+        }
       }
 
       return { creditNoteNumber: cnNumber, entryNumber, appliedCents };

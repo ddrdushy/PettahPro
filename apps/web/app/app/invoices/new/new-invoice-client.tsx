@@ -4,7 +4,14 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { ArrowLeft, Loader2, Plus, Trash2 } from "lucide-react";
-import { api, ApiError, type Customer, type Item, type TaxCode } from "@/lib/api";
+import {
+  api,
+  ApiError,
+  type CommissionSalesperson,
+  type Customer,
+  type Item,
+  type TaxCode,
+} from "@/lib/api";
 import { formatLKR } from "@/lib/format";
 import { PageHeader } from "@/components/app/page-header";
 
@@ -44,13 +51,16 @@ export function NewInvoiceClient({
   customers,
   items,
   taxCodes,
+  salespeople,
 }: {
   customers: Customer[];
   items: Item[];
   taxCodes: TaxCode[];
+  salespeople: CommissionSalesperson[];
 }) {
   const router = useRouter();
   const [customerId, setCustomerId] = useState("");
+  const [salespersonUserId, setSalespersonUserId] = useState("");
   const [issueDate, setIssueDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [dueDate, setDueDate] = useState("");
   const [reference, setReference] = useState("");
@@ -155,6 +165,7 @@ export function NewInvoiceClient({
     try {
       const { invoice } = await api.createInvoice({
         customerId,
+        salespersonUserId: salespersonUserId || undefined,
         issueDate,
         dueDate: effectiveDueDate || undefined,
         currency: currency.toUpperCase(),
@@ -267,6 +278,28 @@ export function NewInvoiceClient({
                   className="mt-1.5 w-full rounded-md border-hairline border-border-emphasis bg-surface-elevated px-3 py-2.5 text-body text-charcoal placeholder:text-text-tertiary focus:border-charcoal focus:outline-none focus:ring-1 focus:ring-charcoal"
                 />
               </div>
+              {salespeople.length > 0 && (
+                <div className="sm:col-span-2">
+                  <label className="block text-small font-medium text-charcoal">
+                    Salesperson{" "}
+                    <span className="text-caption text-text-tertiary">
+                      (drives commission accrual)
+                    </span>
+                  </label>
+                  <select
+                    value={salespersonUserId}
+                    onChange={(e) => setSalespersonUserId(e.target.value)}
+                    className="mt-1.5 w-full rounded-md border-hairline border-border-emphasis bg-surface-elevated px-3 py-2.5 text-body text-charcoal focus:border-charcoal focus:outline-none focus:ring-1 focus:ring-charcoal"
+                  >
+                    <option value="">— No salesperson —</option>
+                    {salespeople.map((s) => (
+                      <option key={s.userId} value={s.userId}>
+                        {s.userFullName || s.userEmail}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-small font-medium text-charcoal">Currency</label>
