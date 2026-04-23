@@ -51,6 +51,27 @@ export type ApprovalDocumentType =
 export interface PolicyTriggerRule {
   minAmountCents?: number;
   submitters?: string[];
+  /**
+   * Purchase-order specific. When true, the policy only triggers if
+   * the PO under review is the tenant's first non-cancelled PO for the
+   * given supplier. Lets admins set up an "onboard a new supplier"
+   * gate (e.g. route first PO from any new supplier to the Owner)
+   * without writing code. Has no effect for other document types.
+   *
+   * The flag itself doesn't peek at the DB — the domain caller
+   * pre-computes `flags.isFirstPoFromSupplier` when invoking
+   * `resolveApplicablePolicy`, and `evaluateTrigger` just compares.
+   */
+  firstPoFromSupplier?: boolean;
+}
+
+export interface TriggerFlags {
+  /**
+   * Computed by the PO submit route. True iff there are zero other
+   * non-draft, non-cancelled POs for this (tenant, supplier). Used
+   * only when the policy sets `firstPoFromSupplier: true`.
+   */
+  isFirstPoFromSupplier?: boolean;
 }
 
 export interface PolicyStep {
@@ -67,13 +88,19 @@ export interface PolicyStep {
  *     "always approve payroll run" policies).
  *   - submitters: if present and non-empty, submitter must be in the
  *     list. Omit for "applies to everyone".
+ *   - firstPoFromSupplier: purchase-order specific; if true, the
+ *     caller's `flags.isFirstPoFromSupplier` must also be true.
  *
  * Empty rule `{}` matches every submission of the target document
  * type.
  */
 export function evaluateTrigger(
   rule: PolicyTriggerRule,
-  submission: { amountCents: number | null; submitterUserId: string },
+  submission: {
+    amountCents: number | null;
+    submitterUserId: string;
+    flags?: TriggerFlags;
+  },
 ): boolean {
   if (rule.minAmountCents != null) {
     if (submission.amountCents == null) return false;
@@ -81,6 +108,9 @@ export function evaluateTrigger(
   }
   if (rule.submitters && rule.submitters.length > 0) {
     if (!rule.submitters.includes(submission.submitterUserId)) return false;
+  }
+  if (rule.firstPoFromSupplier) {
+    if (!submission.flags?.isFirstPoFromSupplier) return false;
   }
   return true;
 }
@@ -105,6 +135,13 @@ export async function resolveApplicablePolicy(
     documentType: ApprovalDocumentType;
     amountCents: number | null;
     submitterUserId: string;
+    /**
+     * Domain-computed facts about the submission — e.g.
+     * `isFirstPoFromSupplier` for PO routing. Unused flags are
+     * ignored; trigger rules only match on flags they explicitly
+     * declare.
+     */
+    flags?: TriggerFlags;
   },
 ): Promise<{
   policyId: string;
@@ -132,6 +169,7 @@ export async function resolveApplicablePolicy(
       evaluateTrigger(rule, {
         amountCents: input.amountCents,
         submitterUserId: input.submitterUserId,
+        flags: input.flags,
       })
     ) {
       const steps = normaliseSteps(row.steps);

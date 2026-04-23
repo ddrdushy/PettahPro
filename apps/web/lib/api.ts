@@ -2151,8 +2151,14 @@ export interface CreateBill {
   chargeAllocationMethod?: BillChargeAllocationMethod;
 }
 
+// PO lifecycle. `pending_approval` is the engine parking state
+// introduced in roadmap #43c — reached when the /send route detects a
+// matching `document_type='purchase_order'` policy. Treated like a
+// draft for edit purposes; only /approvals routes can move it to
+// `sent`.
 export type PurchaseOrderStatus =
   | "draft"
+  | "pending_approval"
   | "sent"
   | "acknowledged"
   | "cancelled"
@@ -2195,6 +2201,7 @@ export interface PurchaseOrderDetail {
   cancelledReason: string | null;
   convertedBillId: string | null;
   convertedAt: string | null;
+  approvalRequestId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -4330,6 +4337,10 @@ export interface ApprovalStep {
 export interface ApprovalTriggerRule {
   minAmountCents?: number;
   submitters?: string[];
+  // Purchase-order specific: only trigger when the PO is the tenant's
+  // first non-cancelled order for a given supplier. Introduced in
+  // roadmap #43c. Has no effect for other document types.
+  firstPoFromSupplier?: boolean;
 }
 
 export interface ApprovalPolicy {

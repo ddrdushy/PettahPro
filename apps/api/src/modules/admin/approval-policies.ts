@@ -38,6 +38,10 @@ const TriggerRuleSchema = z
   .object({
     minAmountCents: z.number().int().nonnegative().optional(),
     submitters: z.array(z.string()).optional(),
+    // Purchase-order specific. See approval-engine.ts — the runtime
+    // matches this against the pre-computed `isFirstPoFromSupplier`
+    // flag at submit time. Ignored for other document types.
+    firstPoFromSupplier: z.boolean().optional(),
   })
   .default({});
 

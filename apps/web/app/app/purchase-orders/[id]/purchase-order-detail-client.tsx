@@ -17,6 +17,7 @@ import { formatLKR, formatDate } from "@/lib/format";
 
 const statusStyles: Record<PurchaseOrderStatus, string> = {
   draft: "bg-surface-recessed text-text-secondary",
+  pending_approval: "bg-warning-bg text-warning",
   sent: "bg-mint-surface text-mint-dark",
   acknowledged: "bg-mint text-mint-dark",
   cancelled: "bg-danger-bg/60 text-danger",
@@ -25,6 +26,7 @@ const statusStyles: Record<PurchaseOrderStatus, string> = {
 
 const statusLabels: Record<PurchaseOrderStatus, string> = {
   draft: "Draft",
+  pending_approval: "Pending approval",
   sent: "Sent",
   acknowledged: "Acknowledged",
   cancelled: "Cancelled",
@@ -50,8 +52,13 @@ export function PurchaseOrderDetailClient({
     setError(null);
     setBusy(kind);
     try {
-      if (kind === "send") await api.sendPurchaseOrder(purchaseOrder.id);
-      else if (kind === "acknowledge") {
+      if (kind === "send") {
+        // The API returns { parked: true } when a matching PO approval
+        // policy sits the PO in pending_approval instead of issuing.
+        // router.refresh() will repaint with the new status; the banner
+        // below explains what happened.
+        await api.sendPurchaseOrder(purchaseOrder.id);
+      } else if (kind === "acknowledge") {
         const ref = window.prompt("Supplier's acknowledgement reference (optional):") ?? undefined;
         await api.acknowledgePurchaseOrder(purchaseOrder.id, ref || undefined);
       } else if (kind === "cancel") {
@@ -75,9 +82,18 @@ export function PurchaseOrderDetailClient({
   }
 
   const canSend = purchaseOrder.status === "draft";
-  const canAck = purchaseOrder.status === "sent" || purchaseOrder.status === "draft";
-  const canCancel = purchaseOrder.status !== "converted" && purchaseOrder.status !== "cancelled";
-  const canConvert = purchaseOrder.status !== "converted" && purchaseOrder.status !== "cancelled";
+  const canAck =
+    (purchaseOrder.status === "sent" || purchaseOrder.status === "draft") &&
+    !purchaseOrder.approvalRequestId;
+  const canCancel =
+    purchaseOrder.status !== "converted" &&
+    purchaseOrder.status !== "cancelled" &&
+    purchaseOrder.status !== "pending_approval";
+  const canConvert =
+    purchaseOrder.status !== "converted" &&
+    purchaseOrder.status !== "cancelled" &&
+    purchaseOrder.status !== "pending_approval" &&
+    purchaseOrder.status !== "draft";
 
   return (
     <main className="container-p py-10">
@@ -137,6 +153,24 @@ export function PurchaseOrderDetailClient({
           </div>
         }
       />
+
+      {purchaseOrder.status === "pending_approval" && (
+        <section className="mt-6 rounded-card border-hairline border-warning/40 bg-warning-bg p-5">
+          <p className="text-caption uppercase tracking-wide text-warning">
+            Awaiting approval
+          </p>
+          <p className="mt-1 text-small text-charcoal">
+            A purchase order approval policy matched this submission.
+            The PO number will be allocated and sent once the approver signs off.
+          </p>
+          <Link
+            href="/app/approvals"
+            className="btn-link mt-2 inline-flex text-small"
+          >
+            Open approvals queue →
+          </Link>
+        </section>
+      )}
 
       {purchaseOrder.convertedBillId && (
         <div className="mt-6 rounded-card border-hairline border-border bg-surface-elevated px-5 py-3 text-small">
