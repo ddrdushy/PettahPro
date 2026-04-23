@@ -152,8 +152,22 @@ export const api = {
 
   listItems: (q?: string) =>
     request<{ items: Item[] }>(`/items${q ? `?q=${encodeURIComponent(q)}` : ""}`),
+  getItem: (id: string) =>
+    request<{ item: Item; components: BundleComponent[] }>(`/items/${id}`),
   createItem: (body: CreateItem) =>
     request<{ item: Item }>("/items", { method: "POST", json: body }),
+  updateItem: (id: string, body: UpdateItem) =>
+    request<{ item: Item }>(`/items/${id}`, { method: "PATCH", json: body }),
+  listItemComponents: (id: string) =>
+    request<{ components: BundleComponent[] }>(`/items/${id}/components`),
+  replaceItemComponents: (
+    id: string,
+    components: Array<{ componentItemId: string; quantity: number }>,
+  ) =>
+    request<{ components: BundleComponent[] }>(`/items/${id}/components`, {
+      method: "PUT",
+      json: { components },
+    }),
 
   listItemCategories: () =>
     request<{ categories: ItemCategoryNode[] }>("/item-categories"),
@@ -1880,8 +1894,41 @@ export interface Item {
   trackInventory: boolean;
   valuationMethod: "fifo" | "weighted_avg" | "standard";
   reorderPoint: number | null;
+  taxCodeId?: string | null;
+  categoryId?: string | null;
   isActive: boolean;
   createdAt: string;
+}
+
+// Bundle component row shape (roadmap #35). `quantity` arrives on the
+// wire as a number; the backend stores it as numeric(18,4). The
+// `componentName` / `componentSku` fields are joined in by the API for
+// UI rendering so the detail page doesn't need a second round-trip.
+export interface BundleComponent {
+  id: string;
+  componentItemId: string;
+  componentName: string;
+  componentSku: string | null;
+  quantity: number;
+  sortOrder: number;
+}
+
+export interface UpdateItem {
+  sku?: string | null;
+  barcode?: string | null;
+  name?: string;
+  description?: string | null;
+  itemType?: "product" | "service" | "bundle";
+  unit?: string;
+  sellPriceCents?: number;
+  buyPriceCents?: number;
+  currency?: string;
+  trackInventory?: boolean;
+  valuationMethod?: "fifo" | "weighted_avg" | "standard";
+  reorderPoint?: number | null;
+  taxCodeId?: string | null;
+  categoryId?: string | null;
+  isActive?: boolean;
 }
 
 export interface CreateItem {

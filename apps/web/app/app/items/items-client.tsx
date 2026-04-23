@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useMemo, useState } from "react";
 import { Package, Plus, Search } from "lucide-react";
 import { PageHeader } from "@/components/app/page-header";
@@ -34,17 +35,24 @@ export function ItemsClient({
     {
       header: "Item",
       accessor: (i) => (
-        <div>
-          <p className="font-medium text-charcoal">{i.name}</p>
+        <Link href={`/app/items/${i.id}`} className="group block">
+          <p className="font-medium text-charcoal group-hover:underline">
+            {i.name}
+          </p>
           {i.sku && <p className="text-caption text-text-tertiary">{i.sku}</p>}
-        </div>
+        </Link>
       ),
     },
     {
       header: "Type",
-      accessor: (i) => (
-        <span className="capitalize text-small">{i.itemType}</span>
-      ),
+      accessor: (i) =>
+        i.itemType === "bundle" ? (
+          <span className="inline-flex items-center rounded-full bg-indigo-50 px-2.5 py-0.5 text-caption text-indigo-700">
+            Bundle
+          </span>
+        ) : (
+          <span className="capitalize text-small">{i.itemType}</span>
+        ),
     },
     {
       header: "Unit",
@@ -136,6 +144,7 @@ export function ItemsClient({
         <ItemForm
           taxCodes={taxCodes}
           categories={categories}
+          allItems={rows}
           onCreated={(i) => {
             setRows((r) => [i, ...r]);
             setDrawerOpen(false);
