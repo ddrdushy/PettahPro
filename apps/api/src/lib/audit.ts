@@ -58,6 +58,18 @@ export type AuditEventKind =
   | "attachment.deleted"
   // Kit / bundle items (roadmap #35)
   | "item_bundle.updated"
+  // Petty cash float (roadmap #38)
+  | "petty_cash_float.opened"
+  | "petty_cash_float.closed"
+  | "petty_cash_float.updated"
+  | "petty_cash_transaction.posted"
+  | "petty_cash_transaction.voided"
+  | "petty_cash_top_up.requested"
+  | "petty_cash_top_up.approved"
+  | "petty_cash_top_up.rejected"
+  | "petty_cash_top_up.posted"
+  | "petty_cash_top_up.cancelled"
+  | "petty_cash_reconciliation.posted"
   // Settings
   | "settings.update"
   | "number_series.update"

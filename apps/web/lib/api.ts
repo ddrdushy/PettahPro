@@ -1482,6 +1482,154 @@ export const api = {
   portalListRecurring: () =>
     request<{ recurring: PortalRecurringTemplate[] }>("/portal/recurring"),
 
+  // --- Petty cash (roadmap #38) --------------------------------------
+  listPettyCashFloats: () =>
+    request<{ floats: PettyCashFloatRow[] }>("/petty-cash/floats"),
+  getPettyCashFloat: (id: string) =>
+    request<{ float: PettyCashFloatRow }>(`/petty-cash/floats/${id}`),
+  openPettyCashFloat: (body: {
+    branchId: string;
+    name: string;
+    floatHolderUserId: string;
+    ceilingCents: number;
+    seedAmountCents?: number;
+    seedSourceAccountId?: string;
+    notes?: string;
+  }) =>
+    request<{ float: PettyCashFloatRow }>("/petty-cash/floats", {
+      method: "POST",
+      json: body,
+    }),
+  updatePettyCashFloat: (
+    id: string,
+    body: { name?: string; ceilingCents?: number; notes?: string },
+  ) =>
+    request<{ float: PettyCashFloatRow }>(`/petty-cash/floats/${id}`, {
+      method: "PATCH",
+      json: body,
+    }),
+  closePettyCashFloat: (
+    id: string,
+    body: {
+      destinationAccountId?: string;
+      closeDate: string;
+      reason?: string;
+    },
+  ) =>
+    request<{ float: PettyCashFloatRow }>(
+      `/petty-cash/floats/${id}/close`,
+      { method: "POST", json: body },
+    ),
+  listPettyCashTransactions: (floatId: string) =>
+    request<{ transactions: PettyCashTransactionRow[] }>(
+      `/petty-cash/floats/${floatId}/transactions`,
+    ),
+  postPettyCashExpense: (body: {
+    pettyCashFloatId: string;
+    amountCents: number;
+    txnDate: string;
+    description: string;
+    categoryAccountId: string;
+    receiptNumber?: string;
+  }) =>
+    request<{ transaction: PettyCashTransactionRow }>(
+      "/petty-cash/transactions/expense",
+      { method: "POST", json: body },
+    ),
+  postPettyCashAdvanceOut: (body: {
+    pettyCashFloatId: string;
+    amountCents: number;
+    txnDate: string;
+    description: string;
+    staffAdvanceAccountId: string;
+    counterpartyEmployeeId: string;
+    receiptNumber?: string;
+  }) =>
+    request<{ transaction: PettyCashTransactionRow }>(
+      "/petty-cash/transactions/advance-out",
+      { method: "POST", json: body },
+    ),
+  postPettyCashAdvanceReturn: (body: {
+    pettyCashFloatId: string;
+    amountCents: number;
+    txnDate: string;
+    description: string;
+    staffAdvanceAccountId: string;
+    counterpartyEmployeeId: string;
+    receiptNumber?: string;
+  }) =>
+    request<{ transaction: PettyCashTransactionRow }>(
+      "/petty-cash/transactions/advance-return",
+      { method: "POST", json: body },
+    ),
+  voidPettyCashTransaction: (
+    id: string,
+    body: { reason: string; reversalDate: string },
+  ) =>
+    request<{ ok: true }>(`/petty-cash/transactions/${id}/void`, {
+      method: "POST",
+      json: body,
+    }),
+  listPettyCashTopUpRequests: (q?: { floatId?: string; status?: string }) => {
+    const params = new URLSearchParams();
+    if (q?.floatId) params.set("floatId", q.floatId);
+    if (q?.status) params.set("status", q.status);
+    const qs = params.toString();
+    return request<{ requests: PettyCashTopUpRequestRow[] }>(
+      `/petty-cash/top-up-requests${qs ? `?${qs}` : ""}`,
+    );
+  },
+  createPettyCashTopUpRequest: (body: {
+    pettyCashFloatId: string;
+    requestedAmountCents: number;
+    reason: string;
+  }) =>
+    request<{ request: PettyCashTopUpRequestRow }>(
+      "/petty-cash/top-up-requests",
+      { method: "POST", json: body },
+    ),
+  approvePettyCashTopUpRequest: (id: string, body?: { decisionNotes?: string }) =>
+    request<{ request: PettyCashTopUpRequestRow }>(
+      `/petty-cash/top-up-requests/${id}/approve`,
+      { method: "POST", json: body ?? {} },
+    ),
+  rejectPettyCashTopUpRequest: (id: string, body?: { decisionNotes?: string }) =>
+    request<{ request: PettyCashTopUpRequestRow }>(
+      `/petty-cash/top-up-requests/${id}/reject`,
+      { method: "POST", json: body ?? {} },
+    ),
+  postPettyCashTopUpRequest: (
+    id: string,
+    body: { txnDate: string; sourceAccountId: string; amountCents?: number },
+  ) =>
+    request<{
+      request: PettyCashTopUpRequestRow;
+      transaction: PettyCashTransactionRow;
+    }>(`/petty-cash/top-up-requests/${id}/post`, {
+      method: "POST",
+      json: body,
+    }),
+  cancelPettyCashTopUpRequest: (id: string) =>
+    request<{ request: PettyCashTopUpRequestRow }>(
+      `/petty-cash/top-up-requests/${id}/cancel`,
+      { method: "POST" },
+    ),
+  listPettyCashReconciliations: (floatId: string) =>
+    request<{ reconciliations: PettyCashReconciliationRow[] }>(
+      `/petty-cash/floats/${floatId}/reconciliations`,
+    ),
+  createPettyCashReconciliation: (body: {
+    pettyCashFloatId: string;
+    reconDate: string;
+    countedCents: number;
+    varianceReason?: string;
+    notes?: string;
+  }) =>
+    request<{ reconciliation: PettyCashReconciliationRow }>(
+      "/petty-cash/reconciliations",
+      { method: "POST", json: body },
+    ),
+
   // --- Document attachments (roadmap #32) ----------------------------
   // Cross-module file store. Upload goes through a FormData POST so we
   // can stream bytes without base64 bloat. Download / preview return a
@@ -1546,7 +1694,8 @@ export type DocumentAttachmentEntityType =
   | "payment"
   | "receipt"
   | "final_settlement"
-  | "journal_entry";
+  | "journal_entry"
+  | "petty_cash_transaction";
 
 export interface DocumentAttachmentRow {
   id: string;
@@ -5662,4 +5811,102 @@ export interface PortalRecurringTemplate {
   endDate: string | null;
   currency: string;
   reference: string | null;
+}
+
+// Petty cash (roadmap #38) — rows shared between list/detail/edit screens.
+// Shape mirrors the Drizzle schema tables in packages/db/src/schema/petty-cash-*.
+export type PettyCashFloatStatus = 'active' | 'closed';
+
+export interface PettyCashFloatRow {
+  id: string;
+  branchId: string;
+  name: string;
+  floatHolderUserId: string;
+  ceilingCents: number;
+  currentBalanceCents: number;
+  pettyCashAccountId: string;
+  status: PettyCashFloatStatus;
+  openedAt: string;
+  openedByUserId: string;
+  closedAt: string | null;
+  closedByUserId: string | null;
+  closedReason: string | null;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type PettyCashTxnType =
+  | 'expense'
+  | 'advance_out'
+  | 'advance_return'
+  | 'top_up'
+  | 'variance_short'
+  | 'variance_over'
+  | 'close_transfer';
+
+export interface PettyCashTransactionRow {
+  id: string;
+  pettyCashFloatId: string;
+  txnType: PettyCashTxnType;
+  amountCents: number;
+  txnDate: string;
+  description: string;
+  categoryAccountId: string | null;
+  counterpartyEmployeeId: string | null;
+  counterpartyAccountId: string | null;
+  receiptNumber: string | null;
+  journalEntryId: string;
+  postedAt: string;
+  postedByUserId: string;
+  voidedAt: string | null;
+  voidedByUserId: string | null;
+  voidReason: string | null;
+  voidJournalEntryId: string | null;
+  reconciliationId: string | null;
+  topUpRequestId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type PettyCashTopUpStatus =
+  | 'pending'
+  | 'approved'
+  | 'rejected'
+  | 'posted'
+  | 'cancelled';
+
+export interface PettyCashTopUpRequestRow {
+  id: string;
+  pettyCashFloatId: string;
+  requestedAmountCents: number;
+  reason: string;
+  status: PettyCashTopUpStatus;
+  requestedAt: string;
+  requestedByUserId: string;
+  decidedAt: string | null;
+  decidedByUserId: string | null;
+  decisionNotes: string | null;
+  postedTransactionId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PettyCashReconciliationRow {
+  id: string;
+  pettyCashFloatId: string;
+  reconDate: string;
+  openingBalanceCents: number;
+  movementsInCents: number;
+  movementsOutCents: number;
+  expectedCloseCents: number;
+  countedCents: number;
+  varianceCents: number;
+  varianceReason: string | null;
+  varianceTransactionId: string | null;
+  reconciledAt: string;
+  reconciledByUserId: string;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
 }

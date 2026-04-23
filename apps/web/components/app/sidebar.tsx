@@ -113,6 +113,7 @@ const nav: Group[] = [
       { label: "Fixed assets", href: "/app/fixed-assets", icon: Box },
       { label: "Bank reconciliation", href: "/app/bank-reconciliation", icon: ScrollText },
       { label: "Cheques", href: "/app/cheques", icon: FileSignature },
+      { label: "Petty cash", href: "/app/petty-cash", icon: Wallet },
     ],
   },
   {

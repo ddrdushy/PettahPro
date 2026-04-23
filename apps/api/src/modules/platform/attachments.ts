@@ -69,6 +69,7 @@ const ENTITY_TABLE: Record<EntityType, string> = {
   receipt: "payments",
   final_settlement: "final_settlements",
   journal_entry: "journal_entries",
+  petty_cash_transaction: "petty_cash_transactions",
 };
 
 function projectRow(row: typeof schema.documentAttachments.$inferSelect) {
