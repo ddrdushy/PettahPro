@@ -11,7 +11,7 @@ import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 
 import { schema, withTenant } from "@pettahpro/db";
-import { requireAuth } from "../../lib/with-tenant.js";
+import { requirePermission } from "../../lib/permissions.js";
 import { postJournal } from "../accounting/journal-posting.js";
 import { emitNotification } from "../notifications/emit.js";
 
@@ -95,7 +95,7 @@ const EXPECTED_CASH_METHODS = ["cash"] as const;
 export const posShiftsRoutes: FastifyPluginAsync = async (fastify) => {
   // GET /pos/shifts/current — the currently-open shift for the signed-in cashier
   fastify.get("/current", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "pos.operate");
     if (!ctx) return;
 
     const shift = await withTenant(ctx.tenantId, async (tx) => {
@@ -118,7 +118,7 @@ export const posShiftsRoutes: FastifyPluginAsync = async (fastify) => {
 
   // GET /pos/shifts — recent shifts for the tenant (all cashiers)
   fastify.get("/", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "pos.operate");
     if (!ctx) return;
 
     const rows = await withTenant(ctx.tenantId, async (tx) =>
@@ -134,7 +134,7 @@ export const posShiftsRoutes: FastifyPluginAsync = async (fastify) => {
 
   // POST /pos/shifts — open a new shift
   fastify.post("/", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "pos.operate");
     if (!ctx) return;
 
     const parsed = OpenShiftSchema.safeParse(req.body);
@@ -211,9 +211,12 @@ export const posShiftsRoutes: FastifyPluginAsync = async (fastify) => {
     return reply.status(201).send({ shift: result.shift });
   });
 
-  // POST /pos/shifts/:id/close — close a shift with denomination count
+  // POST /pos/shifts/:id/close — close a shift with denomination count.
+  // Gated on `pos.close` (not pos.operate) so the money-count moment stays
+  // with a supervisor/admin/accountant — cashiers can sell but can't sign
+  // off on their own till variance.
   fastify.post<{ Params: { id: string } }>("/:id/close", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "pos.close");
     if (!ctx) return;
 
     const parsed = CloseShiftSchema.safeParse(req.body);
@@ -402,7 +405,7 @@ export const posShiftsRoutes: FastifyPluginAsync = async (fastify) => {
 
   // GET /pos/shifts/:id/z-report — aggregated totals for end-of-day print-out
   fastify.get<{ Params: { id: string } }>("/:id/z-report", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "pos.operate");
     if (!ctx) return;
 
     const report = await withTenant(ctx.tenantId, async (tx) => {

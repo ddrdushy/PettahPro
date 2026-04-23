@@ -168,9 +168,23 @@ export async function computeInvoice(
 
 export const invoicesRoutes: FastifyPluginAsync = async (fastify) => {
   // GET /invoices — list
-  fastify.get("/", async (req, reply) => {
+  //
+  // `channel` filter (default "web") keeps the POS sale tape out of the
+  // billing-team list. POS sales post invoices with channel='pos' so that
+  // the ledger is consistent, but a cashier's busy day otherwise drowns
+  // the invoice list used by AR. Pass ?channel=pos or ?channel=all to
+  // override for reconciliation views.
+  fastify.get<{ Querystring: { channel?: string } }>("/", async (req, reply) => {
     const ctx = requireAuth(req, reply);
     if (!ctx) return;
+
+    const channelParam = (req.query.channel ?? "web").toLowerCase();
+    const channelFilter =
+      channelParam === "all"
+        ? undefined
+        : channelParam === "pos"
+          ? eq(schema.invoices.channel, "pos")
+          : eq(schema.invoices.channel, "web");
 
     const rows = await withTenant(ctx.tenantId, async (tx) =>
       tx
@@ -187,6 +201,7 @@ export const invoicesRoutes: FastifyPluginAsync = async (fastify) => {
           taxCents: schema.invoices.taxCents,
           totalCents: schema.invoices.totalCents,
           balanceDueCents: schema.invoices.balanceDueCents,
+          channel: schema.invoices.channel,
           createdAt: schema.invoices.createdAt,
         })
         .from(schema.invoices)
@@ -195,6 +210,7 @@ export const invoicesRoutes: FastifyPluginAsync = async (fastify) => {
           and(
             eq(schema.invoices.tenantId, ctx.tenantId),
             isNull(schema.invoices.deletedAt),
+            ...(channelFilter ? [channelFilter] : []),
           ),
         )
         .orderBy(desc(schema.invoices.createdAt))

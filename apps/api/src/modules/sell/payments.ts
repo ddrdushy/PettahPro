@@ -3,6 +3,7 @@ import { and, eq, isNull, desc, inArray, asc, sql } from "drizzle-orm";
 import { z } from "zod";
 import { withTenant, schema, nextDocumentNumber } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
+import { requirePermission } from "../../lib/permissions.js";
 import { postJournal } from "../accounting/journal-posting.js";
 import { emitNotification } from "../notifications/emit.js";
 import { resolveChequeGLAccounts } from "../cheques/accounts.js";
@@ -86,7 +87,7 @@ export const paymentsRoutes: FastifyPluginAsync = async (fastify) => {
 
   // POST /payments — create + post in one shot
   fastify.post("/", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "payments.manage");
     if (!ctx) return;
 
     const parsed = CreateSchema.safeParse(req.body);

@@ -166,6 +166,8 @@ DECLARE
     'payroll.manage',    true,
     'hr.manage',         true,
     'inventory.manage',  true,
+    'pos.operate',       true,
+    'pos.close',         true,
     'reports.view',      true,
     'settings.manage',   true,
     'users.manage',      true
@@ -182,6 +184,7 @@ DECLARE
   sales_perms jsonb := jsonb_build_object(
     'invoices.create',   true,
     'invoices.post',     true,
+    'pos.operate',       true,
     'reports.view',      true
   );
   readonly_perms jsonb := jsonb_build_object(

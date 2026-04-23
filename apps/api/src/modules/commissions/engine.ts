@@ -271,12 +271,50 @@ export async function clawbackOnCreditNotePost(
   const proportion =
     Math.min(1, input.cnTotalCents / input.originalInvoiceTotalCents);
 
+  // Cumulative-cap safety. If prior CNs already clawed back against this
+  // invoice, we need to cap the new clawback so we never recover more than
+  // the original earning. Without this, CN1=60% + CN2=60% would claw 120%
+  // of the original — and land the salesperson with a permanent negative
+  // balance even after the invoice is fully credited.
+  const priorClawbacks = await tx
+    .select({
+      clawbackOfEarningId: schema.commissionEarnings.clawbackOfEarningId,
+      amountCents: schema.commissionEarnings.amountCents,
+    })
+    .from(schema.commissionEarnings)
+    .where(
+      and(
+        eq(schema.commissionEarnings.tenantId, input.tenantId),
+        eq(schema.commissionEarnings.sourceType, "credit_note"),
+      ),
+    );
+  const priorByEarning = new Map<string, number>();
+  for (const pc of priorClawbacks) {
+    if (!pc.clawbackOfEarningId) continue;
+    // amounts are already negative — we sum absolute values.
+    const prev = priorByEarning.get(pc.clawbackOfEarningId) ?? 0;
+    priorByEarning.set(pc.clawbackOfEarningId, prev + Math.abs(pc.amountCents));
+  }
+
   for (const orig of originalEarnings) {
     // Claw-back amount is proportional to the CN share of the original
     // invoice total. Rounded to the nearest cent; use Math.round for
     // symmetric rounding so big CNs don't underrecover.
-    const clawAmount = Math.round(orig.amountCents * proportion);
+    const rawClaw = Math.round(orig.amountCents * proportion);
+    const alreadyClawed = priorByEarning.get(orig.id) ?? 0;
+    const remainingCap = Math.max(0, orig.amountCents - alreadyClawed);
+    const clawAmount = Math.min(rawClaw, remainingCap);
     if (clawAmount <= 0) continue;
+
+    // Audit annotation: when the original earning was already paid out in
+    // a prior payroll run, call that out in the memo so finance can see
+    // the clawback is offsetting cash that already left the business —
+    // not just an unpaid accrual. The clawback still rides the normal
+    // "offset against future accrued" path at payroll compute.
+    const paidTag =
+      orig.status === "paid"
+        ? " (original earning already paid out)"
+        : "";
 
     await insertEarning(tx, {
       tenantId: input.tenantId,
@@ -290,7 +328,7 @@ export async function clawbackOnCreditNotePost(
       rateBps: orig.rateBps,
       amountCents: -clawAmount,
       earnedAt: input.issueDate,
-      memo: `Claw-back · ${input.creditNoteNumber} vs ${orig.sourceNumber ?? ""}`.trim(),
+      memo: `Claw-back · ${input.creditNoteNumber} vs ${orig.sourceNumber ?? ""}${paidTag}`.trim(),
       clawbackOfEarningId: orig.id,
     });
   }

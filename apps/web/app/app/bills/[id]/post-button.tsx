@@ -4,10 +4,12 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Loader2, Send } from "lucide-react";
 import { api, ApiError } from "@/lib/api";
+import { useCan } from "@/components/auth/permissions-provider";
 
 export function PostBillButton({ id }: { id: string }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
+  const canPost = useCan("bills.post");
 
   async function handle() {
     if (!confirm("Post this bill to the ledger? The entry will be immutable.")) return;
@@ -21,6 +23,8 @@ export function PostBillButton({ id }: { id: string }) {
       setBusy(false);
     }
   }
+
+  if (!canPost) return null;
 
   return (
     <button type="button" onClick={handle} disabled={busy} className="btn-primary">

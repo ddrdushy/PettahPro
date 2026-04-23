@@ -13,7 +13,7 @@ import { and, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 
 import { nextDocumentNumber, schema, withTenant } from "@pettahpro/db";
-import { requireAuth } from "../../lib/with-tenant.js";
+import { requirePermission } from "../../lib/permissions.js";
 import { postJournal } from "../accounting/journal-posting.js";
 import { emitNotification } from "../notifications/emit.js";
 import { computeInvoice } from "../sell/invoices.js";
@@ -65,9 +65,11 @@ const CreatePosSaleSchema = z.object({
 });
 
 export const posSalesRoutes: FastifyPluginAsync = async (fastify) => {
-  // POST /pos/sales — create + post invoice + record tenders in one tx
+  // POST /pos/sales — create + post invoice + record tenders in one tx.
+  // Gated on `pos.operate` — a sales-only user can ring transactions but
+  // closing the shift (with variance JE) needs `pos.close`.
   fastify.post("/", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "pos.operate");
     if (!ctx) return;
 
     const parsed = CreatePosSaleSchema.safeParse(req.body);

@@ -121,7 +121,7 @@ export async function runStaleFlaggingForTenant(
       await emitNotification(tx, {
         tenantId: row.tenant_id,
         userId: null, // broadcast to the tenant
-        kind: "cheque.stale",
+        kind: "cheque_stale",
         title,
         body,
         refType: "cheque",

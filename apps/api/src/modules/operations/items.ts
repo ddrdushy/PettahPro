@@ -3,6 +3,7 @@ import { and, eq, isNull, desc, ilike } from "drizzle-orm";
 import { z } from "zod";
 import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
+import { requirePermission } from "../../lib/permissions.js";
 
 const CreateSchema = z.object({
   sku: z.string().trim().max(64).optional().or(z.literal("")),
@@ -48,7 +49,7 @@ export const itemsRoutes: FastifyPluginAsync = async (fastify) => {
   });
 
   fastify.post("/", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "inventory.manage");
     if (!ctx) return;
 
     const parsed = CreateSchema.safeParse(req.body);

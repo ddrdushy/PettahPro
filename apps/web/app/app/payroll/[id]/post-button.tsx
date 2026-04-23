@@ -4,10 +4,12 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Loader2, Send } from "lucide-react";
 import { api, ApiError } from "@/lib/api";
+import { useCan } from "@/components/auth/permissions-provider";
 
 export function PostPayrollButton({ id }: { id: string }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
+  const canManage = useCan("payroll.manage");
 
   async function handle() {
     if (!confirm("Post this payroll run to the ledger? The journal will be immutable.")) return;
@@ -21,6 +23,8 @@ export function PostPayrollButton({ id }: { id: string }) {
       setBusy(false);
     }
   }
+
+  if (!canManage) return null;
 
   return (
     <button type="button" onClick={handle} disabled={busy} className="btn-primary">

@@ -10,8 +10,11 @@ import type { InvoiceListRow } from "@/lib/api";
 
 export const metadata: Metadata = { title: "Invoices" };
 
-async function fetchInvoices(): Promise<InvoiceListRow[]> {
-  const res = await fetch(`${process.env.INTERNAL_API_URL ?? "http://api:4000"}/invoices`, {
+type Channel = "web" | "pos" | "all";
+
+async function fetchInvoices(channel: Channel): Promise<InvoiceListRow[]> {
+  const qs = `?channel=${channel}`;
+  const res = await fetch(`${process.env.INTERNAL_API_URL ?? "http://api:4000"}/invoices${qs}`, {
     headers: { cookie: cookies().toString() },
     cache: "no-store",
   });
@@ -20,8 +23,16 @@ async function fetchInvoices(): Promise<InvoiceListRow[]> {
   return data.invoices;
 }
 
-export default async function InvoicesPage() {
-  const invoices = await fetchInvoices();
+export default async function InvoicesPage({
+  searchParams,
+}: {
+  searchParams: { channel?: string };
+}) {
+  // Default view hides the POS tape — cashier receipts otherwise drown
+  // the list AR uses daily. `?channel=pos` or `?channel=all` for recon.
+  const channel: Channel =
+    searchParams.channel === "pos" ? "pos" : searchParams.channel === "all" ? "all" : "web";
+  const invoices = await fetchInvoices(channel);
 
   const columns: Column<InvoiceListRow>[] = [
     {
@@ -90,7 +101,30 @@ export default async function InvoicesPage() {
         }
       />
 
-      <div className="mt-6">
+      <div className="mt-6 flex items-center gap-2 text-small">
+        <span className="text-text-tertiary">View:</span>
+        {(
+          [
+            { value: "web", label: "Billing" },
+            { value: "pos", label: "POS sales" },
+            { value: "all", label: "All channels" },
+          ] as { value: Channel; label: string }[]
+        ).map((opt) => (
+          <Link
+            key={opt.value}
+            href={opt.value === "web" ? "/app/invoices" : `/app/invoices?channel=${opt.value}`}
+            className={
+              opt.value === channel
+                ? "rounded-full bg-charcoal px-3 py-1 text-offwhite"
+                : "rounded-full border-hairline border-border px-3 py-1 text-text-secondary hover:border-charcoal hover:text-charcoal"
+            }
+          >
+            {opt.label}
+          </Link>
+        ))}
+      </div>
+
+      <div className="mt-4">
         <DataTable
           rows={invoices}
           columns={columns}

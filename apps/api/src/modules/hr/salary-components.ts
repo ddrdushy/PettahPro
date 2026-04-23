@@ -3,6 +3,7 @@ import { and, eq, isNull, asc, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
+import { requirePermission } from "../../lib/permissions.js";
 
 const KINDS = ["earning", "deduction"] as const;
 const BASES = ["fixed", "percent_of_basic", "from_employee_basic"] as const;
@@ -61,7 +62,7 @@ export const salaryComponentsRoutes: FastifyPluginAsync = async (fastify) => {
 
   // POST /salary-components — add a tenant-specific component
   fastify.post("/", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "hr.manage");
     if (!ctx) return;
 
     const parsed = CreateComponentSchema.safeParse(req.body);
@@ -106,7 +107,7 @@ export const salaryComponentsRoutes: FastifyPluginAsync = async (fastify) => {
 
   // PATCH /salary-components/:id — edit name/flags/default amount
   fastify.patch<{ Params: { id: string } }>("/:id", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "hr.manage");
     if (!ctx) return;
 
     const parsed = UpdateComponentSchema.safeParse(req.body);
@@ -175,7 +176,7 @@ export const salaryComponentsRoutes: FastifyPluginAsync = async (fastify) => {
 
   // DELETE /salary-components/:id — soft-delete (only non-system)
   fastify.delete<{ Params: { id: string } }>("/:id", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "hr.manage");
     if (!ctx) return;
 
     const result = await withTenant(ctx.tenantId, async (tx) => {
@@ -289,7 +290,7 @@ export const employeeSalaryStructureRoutes: FastifyPluginAsync = async (fastify)
     items: z.array(UpsertEmployeeComponentSchema.omit({ effectiveFrom: true })),
   });
   fastify.put<{ Params: { id: string } }>("/:id/salary-structure", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "hr.manage");
     if (!ctx) return;
 
     const parsed = PutStructureSchema.safeParse(req.body);
