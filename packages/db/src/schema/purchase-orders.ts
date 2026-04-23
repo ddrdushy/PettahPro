@@ -18,6 +18,12 @@ import { items } from "./items.js";
 import { taxCodes, chartOfAccounts } from "./accounts.js";
 import { bills } from "./bills.js";
 
+// PO lifecycle: `draft → [pending_approval] → sent → acknowledged →
+// converted` (with `cancelled` terminal from most points). The
+// `pending_approval` state is only reached when a matching
+// `document_type='purchase_order'` approval policy exists — see
+// apps/api/.../approval-engine.ts and migration 69
+// (69-approval-engine-purchase-orders.sql).
 export const purchaseOrders = pgTable("purchase_orders", {
   id: uuid("id").primaryKey().default(sql`uuid_generate_v7()`),
   tenantId: uuid("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
@@ -42,6 +48,11 @@ export const purchaseOrders = pgTable("purchase_orders", {
   cancelledReason: text("cancelled_reason"),
   convertedBillId: uuid("converted_bill_id").references(() => bills.id, { onDelete: "set null" }),
   convertedAt: timestamp("converted_at", { withTimezone: true }),
+  // Approval engine linkage (roadmap #43c). Non-null iff the PO is
+  // owned by the generic engine (parked in `pending_approval`). Cleared
+  // on approve (PO moves to 'sent') and on reject/cancel (PO flips back
+  // to 'draft'). The FK has ON DELETE SET NULL.
+  approvalRequestId: uuid("approval_request_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   createdByUserId: uuid("created_by_user_id"),

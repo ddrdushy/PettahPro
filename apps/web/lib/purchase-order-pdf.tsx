@@ -52,6 +52,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.8,
   },
   statusDraft: { backgroundColor: SURFACE_RECESSED, color: TEXT_SECONDARY },
+  statusPending: { backgroundColor: "#FAF0D9", color: "#B47A15" },
   statusSent: { backgroundColor: MINT_SURFACE, color: MINT_DARK },
   statusAcknowledged: { backgroundColor: "#7FB89A", color: MINT_DARK },
   statusConverted: { backgroundColor: "#FAF0D9", color: "#B47A15" },
@@ -209,6 +210,7 @@ export function PurchaseOrderPDF({
 }) {
   const statusStyle = {
     draft: styles.statusDraft,
+    pending_approval: styles.statusPending,
     sent: styles.statusSent,
     acknowledged: styles.statusAcknowledged,
     converted: styles.statusConverted,

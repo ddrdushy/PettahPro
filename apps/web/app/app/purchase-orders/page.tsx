@@ -10,6 +10,7 @@ export const metadata: Metadata = { title: "Purchase orders" };
 
 const statusStyles: Record<PurchaseOrderStatus, string> = {
   draft: "bg-surface-recessed text-text-secondary",
+  pending_approval: "bg-amber-surface/60 text-amber-dark",
   sent: "bg-mint-surface text-mint-dark",
   acknowledged: "bg-mint text-mint-dark",
   cancelled: "bg-danger-bg/60 text-danger",
@@ -18,6 +19,7 @@ const statusStyles: Record<PurchaseOrderStatus, string> = {
 
 const statusLabels: Record<PurchaseOrderStatus, string> = {
   draft: "Draft",
+  pending_approval: "Pending approval",
   sent: "Sent",
   acknowledged: "Acknowledged",
   cancelled: "Cancelled",

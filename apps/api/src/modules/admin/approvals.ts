@@ -8,6 +8,7 @@ import { recordAuditEvent } from "../../lib/audit.js";
 import { emitNotification } from "../notifications/emit.js";
 import { postJournal } from "../accounting/journal-posting.js";
 import { postBillCore } from "../buy/bills.js";
+import { sendPurchaseOrderCore } from "../buy/purchase-orders.js";
 import {
   ApprovalEngineError,
   cancelApprovalRequest,
@@ -363,6 +364,41 @@ export const approvalsRoutes: FastifyPluginAsync = async (fastify) => {
                 eq(schema.bills.id, decision.request.documentId),
               ),
             );
+        } else if (decision.request.documentType === "purchase_order") {
+          // POs (roadmap #43c). Same shape as the bill branch: no
+          // dedicated "rejected" status, flip back to draft + clear the
+          // engine handle + stamp the reason into notes so the
+          // submitter has context when they reopen the PO.
+          const reason = parsed.data.reason?.trim();
+          const [existing] = await tx
+            .select({ notes: schema.purchaseOrders.notes })
+            .from(schema.purchaseOrders)
+            .where(
+              and(
+                eq(schema.purchaseOrders.tenantId, ctx.tenantId),
+                eq(schema.purchaseOrders.id, decision.request.documentId),
+              ),
+            )
+            .limit(1);
+          const stampedNotes = reason
+            ? existing?.notes
+              ? `${existing.notes}\n\n[Rejected] ${reason}`
+              : `[Rejected] ${reason}`
+            : existing?.notes;
+          await tx
+            .update(schema.purchaseOrders)
+            .set({
+              status: "draft",
+              approvalRequestId: null,
+              notes: stampedNotes ?? null,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(schema.purchaseOrders.tenantId, ctx.tenantId),
+                eq(schema.purchaseOrders.id, decision.request.documentId),
+              ),
+            );
         }
 
         await recordAuditEvent(tx, {
@@ -504,6 +540,37 @@ export const approvalsRoutes: FastifyPluginAsync = async (fastify) => {
             and(
               eq(schema.bills.tenantId, ctx.tenantId),
               eq(schema.bills.id, request.documentId),
+            ),
+          );
+      } else if (request.documentType === "purchase_order") {
+        // POs: mirror the bill cancel semantics. pending_approval →
+        // draft, detach engine handle, stamp reason into notes.
+        const reason = parsed.data.reason?.trim() || "Withdrawn by submitter";
+        const [existing] = await tx
+          .select({ notes: schema.purchaseOrders.notes })
+          .from(schema.purchaseOrders)
+          .where(
+            and(
+              eq(schema.purchaseOrders.tenantId, ctx.tenantId),
+              eq(schema.purchaseOrders.id, request.documentId),
+            ),
+          )
+          .limit(1);
+        const stampedNotes = existing?.notes
+          ? `${existing.notes}\n\n[Withdrawn] ${reason}`
+          : `[Withdrawn] ${reason}`;
+        await tx
+          .update(schema.purchaseOrders)
+          .set({
+            status: "draft",
+            approvalRequestId: null,
+            notes: stampedNotes,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(schema.purchaseOrders.tenantId, ctx.tenantId),
+              eq(schema.purchaseOrders.id, request.documentId),
             ),
           );
       }
@@ -691,6 +758,33 @@ async function finaliseApprovedDocument(
       }
       throw new Error(
         `finaliseApprovedDocument(bill): postBillCore failed — ${result.error}`,
+      );
+    }
+    return;
+  }
+
+  if (request.documentType === "purchase_order") {
+    // POs (roadmap #43c). Immediate path: draft → sent. Engine path:
+    // draft → pending_approval → sent. Both land in sendPurchaseOrderCore
+    // (shared helper in buy/purchase-orders.ts) so the "allocate number
+    // + flip to sent" transition is byte-identical regardless of
+    // whether approval was required.
+    //
+    // Idempotent bail on BAD_STATUS / NOT_FOUND: same reasoning as the
+    // bill branch — the domain row's terminal state wins (PO might
+    // have been cancelled from the detail page while the approver was
+    // deciding).
+    const result = await sendPurchaseOrderCore(tx, {
+      tenantId: request.tenantId,
+      purchaseOrderId: request.documentId,
+      allowStatuses: ["pending_approval"],
+    });
+    if ("error" in result) {
+      if (result.error === "BAD_STATUS" || result.error === "NOT_FOUND") {
+        return;
+      }
+      throw new Error(
+        `finaliseApprovedDocument(purchase_order): sendPurchaseOrderCore failed — ${result.error}`,
       );
     }
     return;

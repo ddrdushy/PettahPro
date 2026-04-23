@@ -27,6 +27,7 @@ interface Draft {
   description: string;
   documentType: ApprovalDocumentType;
   triggerMinRupees: string; // string to allow empty
+  firstPoFromSupplier: boolean; // purchase_order only; ignored otherwise
   isActive: boolean;
   steps: ApprovalStep[];
 }
@@ -37,6 +38,7 @@ function blankDraft(): Draft {
     description: "",
     documentType: "journal_entry",
     triggerMinRupees: "",
+    firstPoFromSupplier: false,
     isActive: true,
     steps: [{ approvers: [], anyOf: true }],
   };
@@ -51,6 +53,7 @@ function policyToDraft(p: ApprovalPolicy): Draft {
       p.triggerRule.minAmountCents !== undefined
         ? (p.triggerRule.minAmountCents / 100).toFixed(2)
         : "",
+    firstPoFromSupplier: p.triggerRule.firstPoFromSupplier === true,
     isActive: p.isActive,
     steps: p.steps.length > 0 ? p.steps : [{ approvers: [], anyOf: true }],
   };
@@ -124,11 +127,20 @@ export function ApprovalsClient({
   }
 
   function buildPayload() {
-    const trigger: { minAmountCents?: number } = {};
+    const trigger: {
+      minAmountCents?: number;
+      firstPoFromSupplier?: boolean;
+    } = {};
     const rupees = draft.triggerMinRupees.trim();
     if (rupees !== "") {
       const n = Number(rupees.replace(/,/g, ""));
       if (Number.isFinite(n) && n >= 0) trigger.minAmountCents = Math.round(n * 100);
+    }
+    // The first-PO-from-supplier flag is purchase_order specific.
+    // We never persist it for other document types, even if the user
+    // clicked the box and then switched documentType.
+    if (draft.documentType === "purchase_order" && draft.firstPoFromSupplier) {
+      trigger.firstPoFromSupplier = true;
     }
     return {
       name: draft.name.trim(),
@@ -302,6 +314,27 @@ export function ApprovalsClient({
                     className="w-full rounded-md border-hairline border-border-emphasis bg-surface-elevated px-3 py-2 text-body text-charcoal"
                   />
                 </label>
+                {draft.documentType === "purchase_order" && (
+                  <label className="flex items-start gap-2 text-small sm:col-span-2">
+                    <input
+                      type="checkbox"
+                      checked={draft.firstPoFromSupplier}
+                      onChange={(e) =>
+                        setDraft((d) => ({
+                          ...d,
+                          firstPoFromSupplier: e.target.checked,
+                        }))
+                      }
+                      className="mt-0.5 h-4 w-4"
+                    />
+                    <span className="text-charcoal">
+                      Only trigger on the first PO from a supplier
+                      <span className="ml-1 text-text-tertiary">
+                        (new-supplier onboarding gate; combines with the amount threshold via AND)
+                      </span>
+                    </span>
+                  </label>
+                )}
                 <label className="block text-small sm:col-span-2">
                   <span className="mb-1 block text-caption text-text-secondary">Description (optional)</span>
                   <textarea

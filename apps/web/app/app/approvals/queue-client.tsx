@@ -337,5 +337,11 @@ function deepLinkFor(request: ApprovalRequest): string | null {
     // submitter needs when revisiting from the queue.
     return `/app/bills/${request.documentId}`;
   }
+  if (request.documentType === "purchase_order") {
+    // roadmap #43c — documentId is the purchase_orders.id. The detail
+    // page shows lines + the "Awaiting approval" banner and is where
+    // the approver / submitter revisits from the queue.
+    return `/app/purchase-orders/${request.documentId}`;
+  }
   return null;
 }

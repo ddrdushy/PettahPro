@@ -1,8 +1,13 @@
 import type { FastifyPluginAsync } from "fastify";
-import { and, eq, isNull, desc, asc, sql } from "drizzle-orm";
+import { and, eq, isNull, desc, asc, inArray, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
+import {
+  cancelApprovalRequest,
+  createApprovalRequest,
+  resolveApplicablePolicy,
+} from "../admin/approval-engine.js";
 
 const LineSchema = z.object({
   itemId: z.string().uuid().optional(),
@@ -147,6 +152,75 @@ async function computePO(
   const totalCents = subtotalCents - discountCents + taxCents;
 
   return { lines, subtotalCents, discountCents, taxCents, totalCents };
+}
+
+// Error codes returned by sendPurchaseOrderCore — the single helper
+// that performs the "allocate PO number + flip to 'sent'" transition.
+// Both the immediate /send route and finaliseApprovedDocument (engine
+// path) delegate here so the transition is always identical.
+export type SendPurchaseOrderError =
+  | "NOT_FOUND"
+  | "BAD_STATUS"
+  | "NUMBER_ALLOC_FAILED";
+
+/**
+ * Shared "issue the PO" transition. The PO moves from whichever status
+ * the caller pre-gated on (drafts go through directly; engine-approved
+ * POs come in as pending_approval) to 'sent' with a freshly allocated
+ * po_number.
+ *
+ * The `allowStatuses` parameter is an explicit whitelist. Each caller
+ * owns the gate: the immediate route passes ["draft"], the engine
+ * finaliser passes ["pending_approval"]. This guards against any race
+ * where two paths try to issue the same PO.
+ */
+export async function sendPurchaseOrderCore(
+  tx: Parameters<Parameters<typeof withTenant>[1]>[0],
+  input: {
+    tenantId: string;
+    purchaseOrderId: string;
+    allowStatuses: readonly string[];
+  },
+): Promise<{ poNumber: string } | { error: SendPurchaseOrderError }> {
+  const [po] = await tx
+    .select()
+    .from(schema.purchaseOrders)
+    .where(
+      and(
+        eq(schema.purchaseOrders.tenantId, input.tenantId),
+        eq(schema.purchaseOrders.id, input.purchaseOrderId),
+        isNull(schema.purchaseOrders.deletedAt),
+      ),
+    )
+    .limit(1);
+  if (!po) return { error: "NOT_FOUND" };
+  if (!input.allowStatuses.includes(po.status)) return { error: "BAD_STATUS" };
+
+  // If the PO already has a number (idempotent re-entry from the
+  // engine finaliser after a crash, say) we reuse it instead of
+  // burning another from the sequence.
+  let poNumber = po.poNumber;
+  if (!poNumber) {
+    const numRows = (await tx.execute(
+      sql`SELECT next_document_number('purchase_order') AS number`,
+    )) as unknown as Array<{ number: string }>;
+    poNumber = numRows[0]?.number ?? null;
+    if (!poNumber) return { error: "NUMBER_ALLOC_FAILED" };
+  }
+
+  const now = new Date();
+  await tx
+    .update(schema.purchaseOrders)
+    .set({
+      status: "sent",
+      poNumber,
+      sentAt: now,
+      approvalRequestId: null, // detach engine handle once issued
+      updatedAt: now,
+    })
+    .where(eq(schema.purchaseOrders.id, po.id));
+
+  return { poNumber };
 }
 
 export const purchaseOrdersRoutes: FastifyPluginAsync = async (fastify) => {
@@ -316,11 +390,28 @@ export const purchaseOrdersRoutes: FastifyPluginAsync = async (fastify) => {
   });
 
   // POST /purchase-orders/:id/send — allocate number + flip to 'sent'
+  //
+  // Dual-path (roadmap #43c):
+  //
+  //   · No matching approval policy → immediate issue. Allocates a
+  //     po_number and flips draft → sent in one go, preserving the
+  //     pre-engine behaviour.
+  //
+  //   · Matching policy found → park in pending_approval and create an
+  //     approval_request snapshotted from the policy steps. The actual
+  //     issue (number allocation + sent flip) happens when the final
+  //     approver decides via /approvals/:id/approve, which calls
+  //     finaliseApprovedDocument → sendPurchaseOrderCore.
+  //
+  // Legacy refusal: if the PO is already owned by the engine
+  // (approvalRequestId set, status=pending_approval) any fresh /send
+  // call gets a 409 ENGINE_OWNED. Decisions flow exclusively through
+  // the approvals queue from that point.
   fastify.post<{ Params: { id: string } }>("/:id/send", async (req, reply) => {
     const ctx = requireAuth(req, reply);
     if (!ctx) return;
 
-    const result = await withTenant(ctx.tenantId, async (tx) => {
+    const outcome = await withTenant(ctx.tenantId, async (tx) => {
       const [po] = await tx
         .select()
         .from(schema.purchaseOrders)
@@ -333,33 +424,96 @@ export const purchaseOrdersRoutes: FastifyPluginAsync = async (fastify) => {
         )
         .limit(1);
       if (!po) return { error: "NOT_FOUND" as const };
+      if (po.approvalRequestId) return { error: "ENGINE_OWNED" as const };
       if (po.status !== "draft") return { error: "NOT_DRAFT" as const };
 
-      const numRows = (await tx.execute(
-        sql`SELECT next_document_number('purchase_order') AS number`,
-      )) as unknown as Array<{ number: string }>;
-      const poNumber = numRows[0]?.number;
-      if (!poNumber) return { error: "NUMBER_ALLOC_FAILED" as const };
+      // "First PO from supplier?" flag — count non-cancelled, non-draft
+      // POs for this supplier that aren't this one. Cheap: the
+      // (tenant_id, supplier_id) index already covers it.
+      const prior = await tx
+        .select({ id: schema.purchaseOrders.id })
+        .from(schema.purchaseOrders)
+        .where(
+          and(
+            eq(schema.purchaseOrders.tenantId, ctx.tenantId),
+            eq(schema.purchaseOrders.supplierId, po.supplierId),
+            ne(schema.purchaseOrders.id, po.id),
+            isNull(schema.purchaseOrders.deletedAt),
+            inArray(schema.purchaseOrders.status, [
+              "pending_approval",
+              "sent",
+              "acknowledged",
+              "converted",
+            ]),
+          ),
+        )
+        .limit(1);
+      const isFirstPoFromSupplier = prior.length === 0;
 
-      const now = new Date();
-      await tx
-        .update(schema.purchaseOrders)
-        .set({ status: "sent", poNumber, sentAt: now, updatedAt: now })
-        .where(eq(schema.purchaseOrders.id, po.id));
+      const policy = await resolveApplicablePolicy(tx, {
+        documentType: "purchase_order",
+        amountCents: po.totalCents,
+        submitterUserId: ctx.userId,
+        flags: { isFirstPoFromSupplier },
+      });
 
-      return { poNumber };
+      if (policy) {
+        const request = await createApprovalRequest(tx, {
+          tenantId: ctx.tenantId,
+          documentType: "purchase_order",
+          documentId: po.id,
+          amountCents: po.totalCents,
+          policyId: policy.policyId,
+          steps: policy.steps,
+          submitterUserId: ctx.userId,
+        });
+        await tx
+          .update(schema.purchaseOrders)
+          .set({
+            status: "pending_approval",
+            approvalRequestId: request.id,
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.purchaseOrders.id, po.id));
+        return { parked: true as const, requestId: request.id };
+      }
+
+      const issued = await sendPurchaseOrderCore(tx, {
+        tenantId: ctx.tenantId,
+        purchaseOrderId: po.id,
+        allowStatuses: ["draft"],
+      });
+      if ("error" in issued) return { error: issued.error };
+      return { parked: false as const, poNumber: issued.poNumber };
     });
 
-    if ("error" in result) {
-      const msgs: Record<string, string> = {
-        NOT_FOUND: "Purchase order not found.",
-        NOT_DRAFT: "Only draft purchase orders can be sent.",
-        NUMBER_ALLOC_FAILED: "Couldn't allocate a PO number.",
-      };
-      const code = result.error as string;
-      return reply.status(code === "NOT_FOUND" ? 404 : 400).send({ error: { code, message: msgs[code] ?? code } });
+    if ("error" in outcome) {
+      // Inline mapping — TS narrows `code` correctly in the switch and
+      // avoids the `Record<string, …>[code]` index-signature false
+      // positive (same issue seen on bills.ts in #43b).
+      const code = outcome.error;
+      const status =
+        code === "NOT_FOUND"
+          ? 404
+          : code === "ENGINE_OWNED"
+            ? 409
+            : code === "NUMBER_ALLOC_FAILED"
+              ? 500
+              : 400;
+      const message =
+        code === "NOT_FOUND"
+          ? "Purchase order not found."
+          : code === "ENGINE_OWNED"
+            ? "This purchase order is managed by the approval engine. Decide it from the Approvals queue instead."
+            : code === "NUMBER_ALLOC_FAILED"
+              ? "Couldn't allocate a PO number."
+              : "Only draft purchase orders can be sent.";
+      return reply.status(status).send({ error: { code, message } });
     }
-    return reply.send({ ok: true, ...result });
+    if (outcome.parked) {
+      return reply.send({ ok: true, parked: true, approvalRequestId: outcome.requestId });
+    }
+    return reply.send({ ok: true, poNumber: outcome.poNumber });
   });
 
   // POST /purchase-orders/:id/acknowledge — supplier confirmed receipt
@@ -390,6 +544,7 @@ export const purchaseOrdersRoutes: FastifyPluginAsync = async (fastify) => {
           )
           .limit(1);
         if (!po) return { error: "NOT_FOUND" as const };
+        if (po.approvalRequestId) return { error: "ENGINE_OWNED" as const };
         if (po.status !== "sent" && po.status !== "draft") {
           return { error: "WRONG_STATUS" as const };
         }
@@ -409,7 +564,8 @@ export const purchaseOrdersRoutes: FastifyPluginAsync = async (fastify) => {
 
       if ("error" in result) {
         const code = result.error as string;
-        return reply.status(code === "NOT_FOUND" ? 404 : 400).send({ error: { code } });
+        const status = code === "NOT_FOUND" ? 404 : code === "ENGINE_OWNED" ? 409 : 400;
+        return reply.status(status).send({ error: { code } });
       }
       return reply.send({ ok: true });
     },
@@ -445,11 +601,24 @@ export const purchaseOrdersRoutes: FastifyPluginAsync = async (fastify) => {
         if (!po) return { error: "NOT_FOUND" as const };
         if (po.status === "converted") return { error: "ALREADY_CONVERTED" as const };
 
+        // If the PO sits in pending_approval, cancelling the PO also
+        // cancels the underlying approval_request so the queue doesn't
+        // keep it pending. Matches the "cancel cascades" semantics
+        // expense_claims uses — the domain row wins over the engine.
+        if (po.approvalRequestId) {
+          await cancelApprovalRequest(tx, {
+            tenantId: ctx.tenantId,
+            requestId: po.approvalRequestId,
+            reason: reason ?? "Purchase order cancelled",
+          });
+        }
+
         const now = new Date();
         await tx
           .update(schema.purchaseOrders)
           .set({
             status: "cancelled",
+            approvalRequestId: null,
             cancelledAt: now,
             cancelledReason: reason,
             updatedAt: now,
@@ -486,6 +655,9 @@ export const purchaseOrdersRoutes: FastifyPluginAsync = async (fastify) => {
       if (!po) return { error: "NOT_FOUND" as const };
       if (po.status === "converted") return { error: "ALREADY_CONVERTED" as const };
       if (po.status === "cancelled") return { error: "CANCELLED" as const };
+      if (po.status === "draft" || po.status === "pending_approval") {
+        return { error: "NOT_ISSUED" as const };
+      }
 
       const poLines = await tx
         .select()
@@ -573,6 +745,8 @@ export const purchaseOrdersRoutes: FastifyPluginAsync = async (fastify) => {
         NOT_FOUND: "Purchase order not found.",
         ALREADY_CONVERTED: "This purchase order has already been converted.",
         CANCELLED: "Cancelled purchase orders can't be converted.",
+        NOT_ISSUED:
+          "Send (or approve) the purchase order before converting it to a bill.",
         EMPTY: "Purchase order has no lines.",
         SUPPLIER_NOT_FOUND: "Supplier was deleted.",
         BILL_INSERT_FAILED: "Couldn't create the bill.",
