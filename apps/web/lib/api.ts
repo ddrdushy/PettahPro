@@ -1467,7 +1467,86 @@ export const api = {
     request<{ payments: PortalPayment[] }>("/portal/payments"),
   portalListRecurring: () =>
     request<{ recurring: PortalRecurringTemplate[] }>("/portal/recurring"),
+
+  // --- Document attachments (roadmap #32) ----------------------------
+  // Cross-module file store. Upload goes through a FormData POST so we
+  // can stream bytes without base64 bloat. Download / preview return a
+  // URL the caller can stick in <a href> / <iframe src> — letting the
+  // browser handle the streaming + content-disposition dance.
+  listAttachments: (entityType: DocumentAttachmentEntityType, entityId: string) =>
+    request<{ attachments: DocumentAttachmentRow[] }>(
+      `/attachments?entityType=${encodeURIComponent(entityType)}&entityId=${encodeURIComponent(entityId)}`,
+    ),
+  uploadAttachment: async (
+    entityType: DocumentAttachmentEntityType,
+    entityId: string,
+    file: File,
+  ) => {
+    const fd = new FormData();
+    fd.append("entityType", entityType);
+    fd.append("entityId", entityId);
+    fd.append("file", file);
+    // Bypass request() helper — we must NOT set Content-Type manually;
+    // the browser has to emit `multipart/form-data; boundary=...` for us.
+    const res = await fetch(`${API_BASE}/attachments`, {
+      method: "POST",
+      credentials: "include",
+      body: fd,
+    });
+    const contentType = res.headers.get("content-type") ?? "";
+    const payload = contentType.includes("application/json")
+      ? await res.json()
+      : null;
+    if (!res.ok) {
+      const err = payload?.error;
+      throw new ApiError(
+        res.status,
+        err?.code ?? "UNKNOWN",
+        err?.message ?? res.statusText,
+        err?.issues,
+      );
+    }
+    return payload as { attachment: DocumentAttachmentRow };
+  },
+  deleteAttachment: (id: string) =>
+    request<{ ok: true; attachment: DocumentAttachmentRow }>(
+      `/attachments/${id}`,
+      { method: "DELETE" },
+    ),
+  attachmentDownloadUrl: (id: string) => `${API_BASE}/attachments/${id}`,
+  attachmentPreviewUrl: (id: string) => `${API_BASE}/attachments/${id}/preview`,
 };
+
+// Attachment entity types — must stay in sync with the server-side
+// DOCUMENT_ATTACHMENT_ENTITY_TYPES constant and the DB CHECK constraint.
+export type DocumentAttachmentEntityType =
+  | "invoice"
+  | "sales_order"
+  | "quotation"
+  | "credit_note"
+  | "bill"
+  | "purchase_order"
+  | "purchase_requisition"
+  | "goods_received_note"
+  | "expense_claim"
+  | "payment"
+  | "receipt"
+  | "final_settlement"
+  | "journal_entry";
+
+export interface DocumentAttachmentRow {
+  id: string;
+  entityType: DocumentAttachmentEntityType;
+  entityId: string;
+  fileName: string;
+  contentType: string;
+  sizeBytes: number;
+  sha256: string | null;
+  uploadedByUserId: string;
+  uploadedAt: string;
+  retentionUntil: string;
+  deletedAt: string | null;
+}
 
 export interface User {
   id: string;

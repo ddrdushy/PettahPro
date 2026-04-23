@@ -1,6 +1,9 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
+import multipart from "@fastify/multipart";
 import { tenantContextPlugin } from "./plugins/tenant-context.js";
+import { ensureBucket } from "./lib/object-storage.js";
+import { attachmentsRoutes } from "./modules/platform/attachments.js";
 import { identityPlugin } from "./modules/identity/plugin.js";
 import { healthRoutes } from "./routes/health.js";
 import { customersRoutes } from "./modules/operations/customers.js";
@@ -105,6 +108,14 @@ export async function buildServer(): Promise<FastifyInstance> {
     trustProxy: true,
   });
 
+  // Multipart support for document attachment uploads (roadmap #32).
+  // Cap at 10 MB per file — matches the DB CHECK constraint and the
+  // belt-and-braces check in the attachments module.
+  await server.register(multipart, {
+    attachFieldsToBody: false,
+    limits: { fileSize: 10 * 1024 * 1024 },
+  });
+
   await server.register(cors, {
     origin: (origin, cb) => {
       // Allow same-origin, localhost dev, or any *.pettahpro.lk in prod
@@ -196,7 +207,18 @@ export async function buildServer(): Promise<FastifyInstance> {
   await server.register(posShiftsRoutes, { prefix: "/pos/shifts" });
   await server.register(posSalesRoutes, { prefix: "/pos/sales" });
   await server.register(commissionsRoutes, { prefix: "/commissions" });
+  await server.register(attachmentsRoutes, { prefix: "/attachments" });
   await server.register(portalPlugin);
+
+  // Kick MinIO bucket creation off in the background — don't block
+  // boot or crash the server if the object store is unreachable; the
+  // attachment endpoints will 503 on use which is the right signal.
+  ensureBucket().catch((err) => {
+    server.log.warn(
+      { err },
+      "ensureBucket failed — attachments storage unavailable at boot",
+    );
+  });
 
   server.setErrorHandler((err, req, reply) => {
     req.log.error({ err }, "request failed");

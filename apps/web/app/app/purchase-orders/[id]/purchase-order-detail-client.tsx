@@ -13,6 +13,7 @@ import {
   type Supplier,
 } from "@/lib/api";
 import { PageHeader } from "@/components/app/page-header";
+import { AttachmentsPanel } from "@/components/app/attachments-panel";
 import { formatLKR, formatDate } from "@/lib/format";
 
 const statusStyles: Record<PurchaseOrderStatus, string> = {
@@ -263,6 +264,10 @@ export function PurchaseOrderDetailClient({
           <p className="mt-2 whitespace-pre-wrap text-small text-text-primary">{purchaseOrder.notes}</p>
         </section>
       )}
+
+      <div className="mt-6">
+        <AttachmentsPanel entityType="purchase_order" entityId={purchaseOrder.id} />
+      </div>
     </main>
   );
 }
