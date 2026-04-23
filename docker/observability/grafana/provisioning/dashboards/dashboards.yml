@@ -1,0 +1,14 @@
+# Auto-load all JSON dashboards from /var/lib/grafana/dashboards at boot.
+# Roadmap #46.
+apiVersion: 1
+
+providers:
+  - name: pettahpro
+    orgId: 1
+    folder: PettahPro
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards

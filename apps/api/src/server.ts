@@ -2,6 +2,8 @@ import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
 import { tenantContextPlugin } from "./plugins/tenant-context.js";
+import { telemetryPlugin } from "./plugins/telemetry.js";
+import { errorTrackingPlugin } from "./plugins/error-tracking.js";
 import { ensureBucket } from "./lib/object-storage.js";
 import { attachmentsRoutes } from "./modules/platform/attachments.js";
 import { identityPlugin } from "./modules/identity/plugin.js";
@@ -132,6 +134,11 @@ export async function buildServer(): Promise<FastifyInstance> {
   });
 
   await server.register(tenantContextPlugin);
+  // Telemetry + error tracking (roadmap #46). Registered after
+  // tenant-context so the Sentry scope can read req.tenantId / req.userId
+  // on its onRequest hook, but before routes so they instrument everything.
+  await server.register(telemetryPlugin);
+  await server.register(errorTrackingPlugin);
   await server.register(identityPlugin);
   await server.register(healthRoutes, { prefix: "/health" });
   await server.register(customersRoutes, { prefix: "/customers" });

@@ -137,8 +137,6 @@ Stuff a live production deployment needs that no spec file addresses.
 
 | # | Gap | Why it matters | Rough size |
 |---|---|---|---|
-| K1 | **Observability stack** — no Sentry, no Prometheus / Grafana, no log aggregation. `pino` goes to stdout. | In production this means "hope nothing breaks." | M (self-hosted OSS — Sentry, Grafana, Loki per the stack preference) |
-| K2 | **Health / metrics endpoint** beyond `/health` liveness — need `/metrics` (Prometheus-format) for every service. | Prerequisite for K1. | S |
 | K3 | **Secrets rotation story** — `SESSION_SECRET` is baked in at deploy; rotating invalidates all sessions. | Real ops need. | S |
 | K4 | **Staging / pre-prod env in repo** — no staging config, no migration-dry-run script, no seeded demo tenant for QA. | Every change currently hits main without a safety net. | M |
 | K5 | **CI pipeline** — PR template mentions it; verify `.github/workflows/` actually runs typecheck + tests on PR. | Prerequisite for landing changes with confidence. | S (if missing) |
