@@ -39,6 +39,7 @@ export * from "./audit-events.js";
 export * from "./final-settlements.js";
 export * from "./expense-claims.js";
 export * from "./notification-preferences.js";
+export * from "./notification-digests.js";
 export * from "./approval-policies.js";
 export * from "./roles.js";
 export * from "./fx-rates.js";

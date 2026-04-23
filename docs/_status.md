@@ -4,7 +4,7 @@ Living counterweight to [`_roadmap.md`](./_roadmap.md). The roadmap says what's 
 
 Every PR should end with a check: does anything here need to be added, cleared, or bumped?
 
-Last updated: 2026-04-22 (PR #59 — landed cost allocation). Unchanged since #48 RLS hardening: no new bugs, typecheck baseline still 32 (api: 21 + 8 carryover from #50 stock counts = 29 observed, unchanged by #59; web: 10, unchanged), no regressions. Modules added to §5 below: stock counts (#50), proforma invoices + recurring bills (#51), recurring journals (#52), number series (#53), audit log viewer (#54), customer statement email (#55), final settlements (#57), landed cost on bills (#59).
+Last updated: 2026-04-23 (PR #70 — #45 notification digest windows). No new known bugs; no shipped regressions. Typecheck baseline held (api: 29 observed, web: 10, db: 1). PR #70 adds one new table set (notification_digest_queue + notification_digest_emails), one new column on notification_preferences (`cadence`), one new scheduled job (send-notification-digests, hourly), and extends emitNotification() + the preferences page. Modules touched in §5 below: Notifications (digest cadence + queue + email log), plus the settings/notifications page updated to a cadence dropdown.
 
 ---
 
@@ -88,6 +88,7 @@ Modules where a past change surprised us. Touch with care and re-test the listed
 | Cheque lifecycle (9 states) | Every state transition has a reverse path; transitions are gated by current state + what document linked the cheque. | When adding a cheque-using module, run through: issued → handed → deposited → presented → cleared, and separately: bounced, stopped, cancelled, stale. |
 | Payroll compute engine (`sl-tax`) | Used by regular payroll runs + bonus runs. Any change to EPF/ETF/PAYE math affects both. | Run a regular payroll + a bonus run (both flat_amount and percent_of_basic) and spot-check EPF/ETF/PAYE deductions. |
 | Period lock on back-dated transactions | Soft-closed = warn, closed = block. Enforced in `postJournal`. Salary revisions also enforce against revision effective dates. | Try posting a JE into a closed period, try a salary revision effective in a closed period. |
+| Notification digest cron (`apps/api/src/modules/notifications/digest-cron.ts`) | Hourly job that fires against every tenant at their local digest hour (`tenantLocalNow` uses `Intl.DateTimeFormat` with `tenants.timezone`). Dedupe is a lookback over `notification_digest_emails` — two ticks in the same tenant-local hour won't double-send, but a regression in the dedupe query or the tenant-local hour math will silently spam every user. All per-tenant reads are inside `withTenant()` because the queue + emails tables are RLS-gated; cross-tenant reads without that context return zero rows (fail-closed, but still a bug). | Seed a queue row (digest cadence), force the cron to fire with a mocked "now" matching the tenant's digest hour, assert one email + one log row + delivered_at stamped. Re-fire the cron seconds later — assert no duplicate send (dedupe window). Test in a non-Colombo timezone if you change `tenantLocalNow`. |
 
 ---
 
@@ -114,7 +115,8 @@ Quick read on which corners are stale. `Tests`: "unit" = unit tests exist, "rout
 | Quotations | early | — | 0 | Stable. |
 | Sales orders | early | — | 0 | Stable. |
 | Delivery notes | early | — | 0 | Has `taxType` → new field name drift (see typecheck debt). |
-| Invoices | early + #32 (period lock) + #35 (credit) + #36 (bad debt) | — | 5 typecheck | Heavy module. Any change risks post-flow. |
+| Invoices | early + #32 (period lock) + #35 (credit) + #36 (bad debt) + #69 (channel filter) | — | 5 typecheck | Heavy module. Any change risks post-flow. `?channel=web\|pos\|all` defaults to `web` so POS receipts don't flood AR. |
+| POS terminal | #67 + #69 (permission keys) | — | 0 | Shift open / sale / shift close. `pos.operate` + `pos.close` permission keys. Uses shared `postDraftInvoice()` helper with rest of invoice post path. |
 | Recurring invoices | mid | — | 0 | Hourly BullMQ cron. Has never misfired in dev but untested in load. |
 | Credit notes | early + #46 (PDF) | — | 1 typecheck (new PDF route) | Stable. |
 | Customer payments | early + #36 (bad debt reverse) | — | 1 typecheck | Stable. |
@@ -136,7 +138,7 @@ Quick read on which corners are stale. `Tests`: "unit" = unit tests exist, "rout
 | Chart of accounts | early | — | 0 | Stable. |
 | Tax codes | early | — | 0 | Schema field rename drift (see `bills/[id]/page.tsx:36`). |
 | Journal entries | early + #32 + #37 | — | 1 typecheck | Choke point. See fragile areas. |
-| Fixed assets | mid | — | 0 | Monthly depreciation cron, untested in load. |
+| Fixed assets | mid + #69 (manual → daily cron) | — | 0 | `runMonthlyDepreciationForAllTenants` now dispatched by BullMQ scheduled worker on 24h interval; guards on `getUTCDate() !== 1` so it only does work on the 1st. Idempotent via `(tenant, year, month)` unique index. |
 | Bank reconciliation | mid | — | 0 | CSV parsing has sharp edges per bank. |
 | Cheques | mid | — | 2 typecheck | 9-state lifecycle — fragile. |
 | Period lock | #32 | — | 0 | Enforced in one place. See fragile areas. |
@@ -150,7 +152,7 @@ Quick read on which corners are stale. `Tests`: "unit" = unit tests exist, "rout
 | Audit log viewer | #54 | — | 0 | `recordAuditEvent` never throws — a failed audit write doesn't break the primary action. |
 | Employees | early + #41 (exit) | — | 0 | Stable. |
 | Salary components | early | — | 3 typecheck | Sprouted debt but functional. |
-| Payroll runs | early + #41 (pro-rata) + #42 (bonus integration) | — | 4 typecheck | Compute engine = load-bearing. See fragile areas. |
+| Payroll runs | early + #41 (pro-rata) + #42 (bonus integration) + #69 (void endpoint + expense-claim bundling) | — | 4 typecheck | Compute engine = load-bearing. See fragile areas. PR #69 added `POST /payroll-runs/:id/void` that reverses the JE (line-flip + `isReversed=true`), releases commission earnings, salary revisions, loan EMIs, and expense-claim reimbursements. Also wired expense-claim payroll disbursement into compute: draft-time load + REIMBURSE/REIMBURSE_TAX emission + atomic claim stamp; post-time per-category DR lines subtracted from wages. |
 | Leave types + requests | mid | — | 0 | Stable. |
 | Statutory filings | mid | — | 2 typecheck | EPF/ETF/PAYE remit. |
 | Salary revisions (arrears) | late | — | 0 | Period-lock enforced on revision dates. |
@@ -158,11 +160,12 @@ Quick read on which corners are stale. `Tests`: "unit" = unit tests exist, "rout
 | Mid-period payroll events | #41 | — | 0 | Pro-rata engine. |
 | Bonus schemes | #42 | — | 0 | Just shipped. |
 | Final settlements | #57 | — | 0 | Gross-to-net exit calc. Waives pending loan schedules on post. FS-series numbers. Partial unique index enforces one active settlement per employee. |
-| Expense claims | #60 | — | 0 | Just shipped. Five-state lifecycle, SOD-enforced, category → GL expense account mapping. Direct-pay path posts DR expense / CR bank. Payroll-bundling path leaves row `approved`; payroll-compute claim integration is a pending mechanical follow-up (columns in place). EXP-series numbers. Snapshot pattern on submit so category re-mapping doesn't rewrite history. |
+| Expense claims | #60 + #69 (payroll-compute wired) | — | 0 | Five-state lifecycle, SOD-enforced, category → GL expense account mapping. Direct-pay path posts DR expense / CR bank. Payroll-bundling path (PR #69): payroll-compute loads approved rows with `applied_in_run_id IS NULL`, emits REIMBURSE / REIMBURSE_TAX earnings per employee by `is_taxable`, atomically stamps the applied columns at draft. Post books per-category DR lines (grouped by `expense_account_id`, falling back to wages when null) and subtracts reimburse total from Salaries expense. Payroll void releases the claim. EXP-series numbers. Category snapshot on submit. |
+| Commissions engine | #68 + #69 (cumulative-cap clawback + memo + net-negative flag) | — | 0 | Tiered rules, on-invoice vs on-collection recognition. Accrues DR 5170 / CR 2260 at invoice post. Clawback on credit-note post reverses pro-rata, capped cumulatively so repeat CNs can't claw >100% of the original earning. `/commissions/ledger` sorts accrued ASC (negatives first) and flags `netNegative` for stuck balances. Payroll bundling via `applied_in_run_id`; released on payroll void. |
 | Reports (TB, P&L, BS, GL, VAT, cash flow) | mid | — | 0 | Read-only, low risk. |
 | Reports (dashboard) | mid | — | 4 typecheck | Aging bucket label union mismatch. |
 | AR aging / AP aging / 3-way match | mid | — | 0 | Stable. |
-| Notifications | mid | — | 0 | In-app only so far. |
+| Notifications | mid + #63 (prefs) + #70 (digest windows) | — | 0 | In-app bell + per-kind preferences + daily / weekly digest emails. `emitNotification()` branches on `notification_preferences.cadence`: immediate → bell, daily/weekly → `notification_digest_queue`. Hourly `send-notification-digests` cron coalesces per user at tenant-local 08:00 (Monday-only for weekly), logs every attempt to `notification_digest_emails` for dedupe (20h daily / 6d weekly lookback). Failed sends stay queued. Switching cadence flushes any pending queue rows for that kind. |
 | Marketing site | ongoing | — | 8 typecheck | Tuple type drift. Doesn't affect app. |
 
 ---

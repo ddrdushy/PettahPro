@@ -685,10 +685,13 @@ export const api = {
     request<{ ok: true; markedRead: number }>("/notifications/read-all", { method: "POST" }),
   listNotificationPreferences: () =>
     request<{ preferences: NotificationPreference[] }>("/notifications/preferences"),
-  updateNotificationPreference: (kind: string, enabled: boolean) =>
-    request<{ ok: true; kind: string; enabled: boolean }>(
+  updateNotificationPreference: (
+    kind: string,
+    body: { enabled?: boolean; cadence?: NotificationCadence },
+  ) =>
+    request<{ ok: true; kind: string; enabled: boolean; cadence: NotificationCadence }>(
       `/notifications/preferences/${encodeURIComponent(kind)}`,
-      { method: "PATCH", json: { enabled } },
+      { method: "PATCH", json: body },
     ),
 
   // Approval policies (roadmap #26)
@@ -4135,12 +4138,15 @@ export interface AppNotification {
   isBroadcast: boolean;
 }
 
-// Notification prefs (roadmap #25)
+// Notification prefs (roadmap #25 + #45)
+export type NotificationCadence = "off" | "immediate" | "daily" | "weekly";
+
 export interface NotificationPreference {
   kind: string;
   label: string;
   description: string;
   enabled: boolean;
+  cadence: NotificationCadence;
   known: boolean;
 }
 

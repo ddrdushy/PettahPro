@@ -1,7 +1,19 @@
 "use client";
 
 import { useState } from "react";
-import { api, ApiError, type NotificationPreference } from "@/lib/api";
+import {
+  api,
+  ApiError,
+  type NotificationCadence,
+  type NotificationPreference,
+} from "@/lib/api";
+
+const CADENCE_OPTIONS: { value: NotificationCadence; label: string; hint: string }[] = [
+  { value: "immediate", label: "Immediate", hint: "Appears in your in-app bell the moment it happens." },
+  { value: "daily",     label: "Daily digest", hint: "Rolled up into one email each morning." },
+  { value: "weekly",    label: "Weekly digest", hint: "Rolled up into one email every Monday morning." },
+  { value: "off",       label: "Off", hint: "Don't notify me about this kind." },
+];
 
 export function NotificationPrefsClient({
   initial,
@@ -12,16 +24,27 @@ export function NotificationPrefsClient({
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
 
-  async function toggle(kind: string, nextEnabled: boolean) {
+  async function setCadence(kind: string, next: NotificationCadence) {
     setError(null);
     setBusy((b) => ({ ...b, [kind]: true }));
-    // Optimistic
-    setPrefs((p) => p.map((x) => (x.kind === kind ? { ...x, enabled: nextEnabled } : x)));
+    const before = prefs.find((p) => p.kind === kind)?.cadence;
+    // Optimistic — the server derives `enabled` from cadence so we mirror.
+    setPrefs((p) =>
+      p.map((x) =>
+        x.kind === kind ? { ...x, cadence: next, enabled: next !== "off" } : x,
+      ),
+    );
     try {
-      await api.updateNotificationPreference(kind, nextEnabled);
+      await api.updateNotificationPreference(kind, { cadence: next });
     } catch (err) {
       // Roll back on failure.
-      setPrefs((p) => p.map((x) => (x.kind === kind ? { ...x, enabled: !nextEnabled } : x)));
+      if (before) {
+        setPrefs((p) =>
+          p.map((x) =>
+            x.kind === kind ? { ...x, cadence: before, enabled: before !== "off" } : x,
+          ),
+        );
+      }
       setError(err instanceof ApiError ? err.message : "Couldn't save that change.");
     } finally {
       setBusy((b) => ({ ...b, [kind]: false }));
@@ -41,7 +64,7 @@ export function NotificationPrefsClient({
           <thead className="bg-surface-recessed text-caption uppercase tracking-wide text-text-tertiary">
             <tr>
               <th className="px-6 py-3 text-left">Event</th>
-              <th className="w-28 px-6 py-3 text-right">In-app</th>
+              <th className="w-48 px-6 py-3 text-right">Delivery</th>
             </tr>
           </thead>
           <tbody className="divide-y-hairline divide-border">
@@ -52,10 +75,10 @@ export function NotificationPrefsClient({
                   <p className="text-caption text-text-tertiary">{p.description}</p>
                 </td>
                 <td className="px-6 py-4 text-right">
-                  <Toggle
-                    checked={p.enabled}
+                  <CadenceSelect
+                    value={p.cadence}
                     disabled={busy[p.kind]}
-                    onChange={(v) => toggle(p.kind, v)}
+                    onChange={(v) => setCadence(p.kind, v)}
                   />
                 </td>
               </tr>
@@ -78,10 +101,10 @@ export function NotificationPrefsClient({
                 <tr key={p.kind}>
                   <td className="px-6 py-4 font-mono text-text-secondary">{p.kind}</td>
                   <td className="px-6 py-4 text-right">
-                    <Toggle
-                      checked={p.enabled}
+                    <CadenceSelect
+                      value={p.cadence}
                       disabled={busy[p.kind]}
-                      onChange={(v) => toggle(p.kind, v)}
+                      onChange={(v) => setCadence(p.kind, v)}
                     />
                   </td>
                 </tr>
@@ -91,38 +114,41 @@ export function NotificationPrefsClient({
         </section>
       )}
 
-      <p className="text-caption text-text-tertiary">
-        Tenant-wide announcements (e.g. period closed) are broadcast to everyone and aren't user-level opt-out.
-      </p>
+      <div className="rounded-md bg-mint-surface/60 p-4 text-caption text-mint-dark">
+        <p className="font-medium">About digest delivery</p>
+        <ul className="mt-1 list-disc pl-4">
+          <li>Daily digests go out each morning; weekly digests on Monday morning — in your tenant's timezone.</li>
+          <li>Digest mode replaces the in-app bell for that kind. You'll see the summary in email instead.</li>
+          <li>Switching from digest to immediate or off clears any events still waiting in the queue.</li>
+          <li>Tenant-wide announcements (e.g. period closed) are broadcast to everyone and don't go through digest.</li>
+        </ul>
+      </div>
     </div>
   );
 }
 
-function Toggle({
-  checked,
+function CadenceSelect({
+  value,
   disabled,
   onChange,
 }: {
-  checked: boolean;
+  value: NotificationCadence;
   disabled?: boolean;
-  onChange: (v: boolean) => void;
+  onChange: (v: NotificationCadence) => void;
 }) {
   return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
+    <select
+      value={value}
       disabled={disabled}
-      onClick={() => onChange(!checked)}
-      className={`relative inline-flex h-6 w-11 flex-none items-center rounded-full transition ${
-        checked ? "bg-mint-dark" : "bg-surface-recessed"
-      } ${disabled ? "opacity-50" : ""}`}
+      onChange={(e) => onChange(e.target.value as NotificationCadence)}
+      className="w-full rounded-md border-hairline border-border-emphasis bg-surface-elevated px-3 py-2 text-small text-charcoal focus:border-charcoal focus:outline-none focus:ring-1 focus:ring-charcoal disabled:opacity-50"
+      title={CADENCE_OPTIONS.find((o) => o.value === value)?.hint}
     >
-      <span
-        className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition ${
-          checked ? "translate-x-6" : "translate-x-1"
-        }`}
-      />
-    </button>
+      {CADENCE_OPTIONS.map((o) => (
+        <option key={o.value} value={o.value}>
+          {o.label}
+        </option>
+      ))}
+    </select>
   );
 }

@@ -20,11 +20,17 @@ export interface EmitNotificationInput {
  * lands in the same commit as the triggering event when that's desirable.
  *
  * Per-user opt-out (roadmap #25): before inserting a directed notification
- * (userId set) we check notification_preferences for an explicit
- * { enabled: false } row for this (user, kind). No row = default-enabled,
- * so existing users keep receiving everything until they opt out. Broadcasts
- * (userId null) bypass the check — tenant-wide announcements aren't
- * user-level opt-out material.
+ * (userId set) we check notification_preferences for the caller's cadence.
+ * Semantics:
+ *   • No row OR cadence='immediate'  → in-app bell (current behaviour)
+ *   • enabled=false OR cadence='off' → silently drop
+ *   • cadence='daily' or 'weekly'    → insert into notification_digest_queue
+ *     so the digest cron can coalesce into one email (roadmap #45)
+ *
+ * Broadcasts (userId null) bypass the check — tenant-wide announcements
+ * aren't user-level opt-out material and shouldn't be deferred into a
+ * digest either (by the time the email lands, "period closed" has lost
+ * urgency).
  */
 export async function emitNotification(
   tx: PostgresJsDatabase<typeof schema>,
@@ -33,7 +39,10 @@ export async function emitNotification(
   try {
     if (input.userId) {
       const [pref] = await tx
-        .select({ enabled: schema.notificationPreferences.enabled })
+        .select({
+          enabled: schema.notificationPreferences.enabled,
+          cadence: schema.notificationPreferences.cadence,
+        })
         .from(schema.notificationPreferences)
         .where(
           and(
@@ -43,8 +52,30 @@ export async function emitNotification(
           ),
         )
         .limit(1);
-      if (pref && !pref.enabled) {
-        // User has opted out of this kind — silently drop.
+
+      if (pref && (!pref.enabled || pref.cadence === "off")) {
+        // Hard opt-out — drop silently.
+        return;
+      }
+
+      const cadence = pref?.cadence ?? "immediate";
+      if (cadence === "daily" || cadence === "weekly") {
+        // Divert to the digest queue. The digest cron coalesces these
+        // into one rollup email per user per window, so no in-app bell
+        // row is written. Users who want both bell + digest can keep
+        // cadence='immediate' and add an inbox filter on their side —
+        // digest mode is explicitly "instead of" not "in addition to"
+        // to keep the mental model simple.
+        await tx.insert(schema.notificationDigestQueue).values({
+          tenantId: input.tenantId,
+          userId: input.userId,
+          kind: input.kind,
+          cadence,
+          title: input.title,
+          body: input.body ?? null,
+          refType: input.refType ?? null,
+          refId: input.refId ?? null,
+        });
         return;
       }
     }

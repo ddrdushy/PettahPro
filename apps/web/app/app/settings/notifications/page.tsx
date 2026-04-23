@@ -31,7 +31,7 @@ export default async function NotificationPrefsPage() {
       <PageHeader
         eyebrow="Admin"
         title="Notification preferences"
-        description="Turn off the in-app notifications you don't want to see. Changes apply immediately — already-delivered items stay put in your bell."
+        description="Pick how each event reaches you. Immediate lands in the bell; daily or weekly rolls up into one email so you can batch-review. Changes apply to future events — the bell keeps what's already been delivered."
       />
       <NotificationPrefsClient initial={preferences} />
     </main>

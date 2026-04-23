@@ -3,9 +3,10 @@ import { pgTable, uuid, varchar, timestamp, boolean } from "drizzle-orm/pg-core"
 import { tenants } from "./tenants.js";
 import { users } from "./users.js";
 
-// Per-user opt-out for notification kinds (roadmap #25). Absence of a
-// row means "enabled" — emit.ts will only filter out when an explicit
-// { enabled: false } row exists.
+// Per-user opt-out + cadence for notification kinds (roadmap #25 + #45).
+// Absence of a row means "enabled=immediate" — emit.ts drops the event
+// when enabled=false OR cadence='off', and routes daily/weekly into the
+// digest queue instead of the in-app bell.
 export const notificationPreferences = pgTable("notification_preferences", {
   id: uuid("id").primaryKey().default(sql`uuid_generate_v7()`),
   tenantId: uuid("tenant_id")
@@ -16,6 +17,10 @@ export const notificationPreferences = pgTable("notification_preferences", {
     .references(() => users.id, { onDelete: "cascade" }),
   kind: varchar("kind", { length: 64 }).notNull(),
   enabled: boolean("enabled").notNull().default(true),
+  // Roadmap #45. 'off' | 'immediate' | 'daily' | 'weekly'. CHECK in SQL.
+  // 'immediate' preserves pre-PR behaviour; 'daily' / 'weekly' divert
+  // into notification_digest_queue for rollup emails.
+  cadence: varchar("cadence", { length: 16 }).notNull().default("immediate"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
