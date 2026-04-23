@@ -84,6 +84,7 @@ import { settingsRoutes } from "./modules/settings/routes.js";
 import { numberSeriesRoutes } from "./modules/settings/number-series.js";
 import { auditLogRoutes } from "./modules/audit/routes.js";
 import { approvalPoliciesRoutes } from "./modules/admin/approval-policies.js";
+import { approvalsRoutes } from "./modules/admin/approvals.js";
 import { rolesRoutes } from "./modules/admin/roles.js";
 import { posShiftsRoutes } from "./modules/pos/shifts.js";
 import { posSalesRoutes } from "./modules/pos/sales.js";
@@ -188,6 +189,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await server.register(numberSeriesRoutes, { prefix: "/number-series" });
   await server.register(auditLogRoutes, { prefix: "/audit-log" });
   await server.register(approvalPoliciesRoutes, { prefix: "/approval-policies" });
+  await server.register(approvalsRoutes, { prefix: "/approvals" });
   await server.register(rolesRoutes, { prefix: "/roles" });
   await server.register(posShiftsRoutes, { prefix: "/pos/shifts" });
   await server.register(posSalesRoutes, { prefix: "/pos/sales" });

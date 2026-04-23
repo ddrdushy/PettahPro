@@ -16,6 +16,8 @@ const KIND_LABEL: Record<string, string> = {
   "journal.void": "Journal voided",
   "journal.approve": "Journal approved",
   "journal.reject": "Journal rejected",
+  "approval.decide": "Approval decided",
+  "approval.cancel": "Approval withdrawn",
   "period.close": "Period soft-closed",
   "period.reopen": "Period reopened",
   "period.close_year": "Year-end closed",

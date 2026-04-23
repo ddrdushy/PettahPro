@@ -80,6 +80,11 @@ export const journalEntryDrafts = pgTable("journal_entry_drafts", {
   rejectedAt: timestamp("rejected_at", { withTimezone: true }),
   rejectionReason: text("rejection_reason"),
   postedJournalEntryId: uuid("posted_journal_entry_id").references(() => journalEntries.id, { onDelete: "set null" }),
+  // Link to approval_requests when the draft was created via the
+  // policy-driven engine path (PR #74 / roadmap #43). Null when the
+  // legacy flat-threshold path created the draft — both paths coexist
+  // until every tenant has designed a journal_entry policy.
+  approvalRequestId: uuid("approval_request_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });

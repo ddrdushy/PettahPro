@@ -711,6 +711,43 @@ export const api = {
       { method: "PATCH", json: body },
     ),
 
+  // Approval engine runtime (roadmap #43).
+  // The generic queue surfaces requests regardless of source document
+  // type — JE today, other domains follow in PRs #43a–#43e.
+  listApprovalRequests: (params: {
+    scope?: "mine" | "submitted_by_me" | "all";
+    status?: ApprovalRequestStatus;
+    documentType?: ApprovalDocumentType;
+  } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.scope) qs.set("scope", params.scope);
+    if (params.status) qs.set("status", params.status);
+    if (params.documentType) qs.set("documentType", params.documentType);
+    const s = qs.toString();
+    return request<{ requests: ApprovalRequest[] }>(
+      `/approvals${s ? `?${s}` : ""}`,
+    );
+  },
+  getApprovalRequest: (id: string) =>
+    request<{ request: ApprovalRequest; steps: ApprovalRequestStep[] }>(
+      `/approvals/${id}`,
+    ),
+  approveApprovalRequest: (id: string, reason?: string) =>
+    request<{ ok: true; request: ApprovalRequest }>(`/approvals/${id}/approve`, {
+      method: "POST",
+      json: { reason },
+    }),
+  rejectApprovalRequest: (id: string, reason?: string) =>
+    request<{ ok: true; request: ApprovalRequest }>(`/approvals/${id}/reject`, {
+      method: "POST",
+      json: { reason },
+    }),
+  cancelApprovalRequest: (id: string, reason?: string) =>
+    request<{ ok: true }>(`/approvals/${id}/cancel`, {
+      method: "POST",
+      json: { reason },
+    }),
+
   // Approval policies (roadmap #26)
   listApprovalPolicies: () =>
     request<{ policies: ApprovalPolicy[] }>("/approval-policies"),
@@ -4313,6 +4350,52 @@ export interface CreateApprovalPolicy {
   isActive?: boolean;
 }
 
+// Approval engine runtime (roadmap #43).
+export type ApprovalRequestStatus =
+  | "pending"
+  | "approved"
+  | "rejected"
+  | "cancelled";
+export type ApprovalRequestStepStatus =
+  | "pending"
+  | "approved"
+  | "rejected"
+  | "skipped";
+
+export interface ApprovalRequest {
+  id: string;
+  tenantId: string;
+  documentType: ApprovalDocumentType;
+  documentId: string;
+  amountCents: number | null;
+  policyId: string | null;
+  submitterUserId: string;
+  status: ApprovalRequestStatus;
+  currentStepIdx: number;
+  stepsTotal: number;
+  decidedAt: string | null;
+  decidedByUserId: string | null;
+  decisionReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ApprovalRequestStep {
+  id: string;
+  tenantId: string;
+  requestId: string;
+  stepIdx: number;
+  approvers: Array<{ kind: "user" | "role"; id: string; label?: string }>;
+  anyOf: boolean;
+  status: ApprovalRequestStepStatus;
+  decision: "approve" | "reject" | null;
+  decidedAt: string | null;
+  decidedByUserId: string | null;
+  decisionReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 // Custom roles (roadmap #27)
 export interface AppRole {
   id: string;
@@ -4889,6 +4972,8 @@ export type AuditEventKind =
   | "journal.void"
   | "journal.approve"
   | "journal.reject"
+  | "approval.decide"
+  | "approval.cancel"
   | "period.close"
   | "period.reopen"
   | "period.close_year"

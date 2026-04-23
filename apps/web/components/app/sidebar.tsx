@@ -132,6 +132,7 @@ const nav: Group[] = [
     title: "Admin",
     items: [
       { label: "Branches", href: "/app/branches", icon: Building2 },
+      { label: "Approvals", href: "/app/approvals", icon: ClipboardCheck },
       { label: "Audit log", href: "/app/audit-log", icon: ShieldCheck },
       { label: "Settings", href: "/app/settings", icon: Settings },
     ],

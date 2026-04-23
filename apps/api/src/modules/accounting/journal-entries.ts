@@ -8,6 +8,10 @@ import { postJournal } from "./journal-posting.js";
 import { loadTenantSettings } from "../settings/routes.js";
 import { emitNotification } from "../notifications/emit.js";
 import { recordAuditEvent } from "../../lib/audit.js";
+import {
+  resolveApplicablePolicy,
+  createApprovalRequest,
+} from "../admin/approval-engine.js";
 
 const LineSchema = z
   .object({
@@ -226,7 +230,6 @@ export const journalEntriesRoutes: FastifyPluginAsync = async (fastify) => {
       const result = await withTenant(ctx.tenantId, async (tx) => {
         const settings = await loadTenantSettings(tx);
         const threshold = settings.journalApprovalThresholdCents;
-        const needsApproval = threshold > 0 && drTotal >= threshold;
 
         const normLines = lines.map((l) => ({
           accountId: l.accountId,
@@ -237,7 +240,30 @@ export const journalEntriesRoutes: FastifyPluginAsync = async (fastify) => {
           supplierId: l.supplierId ?? null,
         }));
 
-        if (needsApproval) {
+        // Approval decision — two paths coexist:
+        //
+        //   1. Engine path (roadmap #43): try to match an active
+        //      approval_policies row for document_type='journal_entry'.
+        //      If a policy matches, snapshot its steps into an
+        //      approval_request and park the draft with the request id.
+        //
+        //   2. Legacy flat-threshold path: if no policy matches, fall
+        //      back to the tenant's journalApprovalThresholdCents. This
+        //      keeps existing tenants who haven't designed a policy
+        //      working unchanged.
+        //
+        // Both paths ultimately create a journal_entry_drafts row with
+        // status='pending_approval'. The engine path additionally
+        // populates approval_request_id so the generic /approvals queue
+        // can drive the decision.
+        const policy = await resolveApplicablePolicy(tx, {
+          documentType: "journal_entry",
+          amountCents: drTotal,
+          submitterUserId: ctx.userId,
+        });
+        const needsLegacyApproval = !policy && threshold > 0 && drTotal >= threshold;
+
+        if (policy || needsLegacyApproval) {
           const [draft] = await tx
             .insert(schema.journalEntryDrafts)
             .values({
@@ -251,20 +277,77 @@ export const journalEntriesRoutes: FastifyPluginAsync = async (fastify) => {
             .returning();
           if (!draft) throw new Error("Draft insert failed");
 
-          await emitNotification(tx, {
-            tenantId: ctx.tenantId,
-            kind: "je_approval_pending",
-            title: `Journal entry pending approval · ${(drTotal / 100).toFixed(2)}`,
-            body: memo && memo.trim() ? memo.trim() : `Entry dated ${entryDate}`,
-            refType: "journal_entry_draft",
-            refId: draft.id,
-          });
+          let approvalRequestId: string | null = null;
+          if (policy) {
+            const request = await createApprovalRequest(tx, {
+              tenantId: ctx.tenantId,
+              documentType: "journal_entry",
+              documentId: draft.id,
+              amountCents: drTotal,
+              policyId: policy.policyId,
+              steps: policy.steps,
+              submitterUserId: ctx.userId,
+            });
+            approvalRequestId = request.id;
+            await tx
+              .update(schema.journalEntryDrafts)
+              .set({ approvalRequestId: request.id, updatedAt: new Date() })
+              .where(eq(schema.journalEntryDrafts.id, draft.id));
+
+            // Notify first-step approvers via the engine path. We need
+            // to expand roles → users here; reuse the same pattern the
+            // /approvals route uses by hitting user_roles directly.
+            const firstStep = policy.steps[0];
+            if (firstStep) {
+              const userIds = new Set<string>();
+              const roleIds: string[] = [];
+              for (const a of firstStep.approvers) {
+                if (a.kind === "user") userIds.add(a.id);
+                else roleIds.push(a.id);
+              }
+              if (roleIds.length > 0) {
+                const res = (await tx.execute(sql`
+                  SELECT DISTINCT user_id
+                  FROM user_roles
+                  WHERE tenant_id = current_tenant_id()
+                    AND role_id IN (${sql.raw(
+                      roleIds.map((id) => `'${id}'::uuid`).join(","),
+                    )})
+                `)) as unknown as Array<{ user_id: string }>;
+                for (const r of res) userIds.add(r.user_id);
+              }
+              for (const userId of userIds) {
+                if (userId === ctx.userId) continue; // SOD: don't nag the submitter
+                await emitNotification(tx, {
+                  tenantId: ctx.tenantId,
+                  userId,
+                  kind: "approval_pending",
+                  title: `Approval needed · journal entry · ${(drTotal / 100).toFixed(2)}`,
+                  body: memo && memo.trim() ? memo.trim() : `Entry dated ${entryDate}`,
+                  refType: "approval_request",
+                  refId: request.id,
+                });
+              }
+            }
+          } else {
+            // Legacy flat-threshold path — tenant-wide broadcast bell.
+            await emitNotification(tx, {
+              tenantId: ctx.tenantId,
+              kind: "je_approval_pending",
+              title: `Journal entry pending approval · ${(drTotal / 100).toFixed(2)}`,
+              body: memo && memo.trim() ? memo.trim() : `Entry dated ${entryDate}`,
+              refType: "journal_entry_draft",
+              refId: draft.id,
+            });
+          }
 
           return {
             status: "pending_approval" as const,
             draftId: draft.id,
             thresholdCents: threshold,
             totalCents: drTotal,
+            approvalRequestId,
+            policyId: policy?.policyId ?? null,
           };
         }
 
@@ -353,6 +436,12 @@ export const journalEntriesRoutes: FastifyPluginAsync = async (fastify) => {
       if (!draft) return { error: "NOT_FOUND" as const };
       if (draft.status !== "pending_approval") return { error: "NOT_PENDING" as const };
       if (draft.createdByUserId === ctx.userId) return { error: "SELF_APPROVAL" as const };
+      // Engine-driven drafts must go through /approvals/:id/approve so
+      // the request + step rows are stamped in lock-step with the
+      // draft. Reject the legacy route rather than silently posting.
+      if (draft.approvalRequestId) {
+        return { error: "ENGINE_OWNED" as const };
+      }
 
       const { entryId, entryNumber } = await postJournal(tx, {
         tenantId: ctx.tenantId,
@@ -420,10 +509,13 @@ export const journalEntriesRoutes: FastifyPluginAsync = async (fastify) => {
         NOT_FOUND: 404,
         NOT_PENDING: 409,
         SELF_APPROVAL: 409,
+        ENGINE_OWNED: 409,
       };
       const msgs: Record<string, string> = {
         NOT_PENDING: "This draft isn't pending approval.",
         SELF_APPROVAL: "You can't approve a journal entry you created yourself — ask someone else.",
+        ENGINE_OWNED:
+          "This draft is managed by the approval engine. Decide it from the Approvals queue instead.",
       };
       const code = result.error as string;
       return reply.status(map[code] ?? 500).send({ error: { code, message: msgs[code] ?? code } });
@@ -457,6 +549,7 @@ export const journalEntriesRoutes: FastifyPluginAsync = async (fastify) => {
           .limit(1);
         if (!draft) return { error: "NOT_FOUND" as const };
         if (draft.status !== "pending_approval") return { error: "NOT_PENDING" as const };
+        if (draft.approvalRequestId) return { error: "ENGINE_OWNED" as const };
 
         await tx
           .update(schema.journalEntryDrafts)
@@ -506,9 +599,16 @@ export const journalEntriesRoutes: FastifyPluginAsync = async (fastify) => {
         const map: Record<string, number> = {
           NOT_FOUND: 404,
           NOT_PENDING: 409,
+          ENGINE_OWNED: 409,
+        };
+        const msgs: Record<string, string> = {
+          ENGINE_OWNED:
+            "This draft is managed by the approval engine. Decide it from the Approvals queue instead.",
         };
         const code = result.error as string;
-        return reply.status(map[code] ?? 500).send({ error: { code } });
+        return reply
+          .status(map[code] ?? 500)
+          .send({ error: { code, message: msgs[code] ?? code } });
       }
       return reply.send(result);
     },
