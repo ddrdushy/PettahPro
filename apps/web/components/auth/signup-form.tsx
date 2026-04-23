@@ -32,7 +32,9 @@ export function SignupForm() {
             ? "An account with this email already exists. Try signing in."
             : err.code === "INVALID_INPUT"
               ? "Please check the fields and try again."
-              : err.message || "Something went wrong. Try again."
+              : err.code === "RATE_LIMITED"
+                ? "Too many signup attempts from this network. Please wait a few minutes."
+                : err.message || "Something went wrong. Try again."
           : "Can't reach the server. Check your connection.";
       setError(msg);
     } finally {

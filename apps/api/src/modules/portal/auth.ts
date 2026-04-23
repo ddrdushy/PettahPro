@@ -125,13 +125,28 @@ function escapeHtml(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
+// Per-IP rate-limit budgets for the portal auth endpoints (#47).
+// The existing per-email budget (see tryConsumeOtpRateBudget below)
+// protects a single customer from OTP spam; this one protects the
+// PLATFORM from mass-enumeration by a single attacker IP cycling
+// through different emails. Both layers run together.
+//   /request-otp — 5 per 10 minutes per IP
+//   /verify      — 10 per minute per IP (allows fat-fingered codes
+//                  without locking out a legitimate customer)
+// See apps/api/src/plugins/rate-limit.ts for the global fallback.
+const PORTAL_REQUEST_OTP_RATE_LIMIT = { max: 5, timeWindow: "10 minutes" };
+const PORTAL_VERIFY_RATE_LIMIT = { max: 10, timeWindow: "1 minute" };
+
 export const portalAuthRoutes: FastifyPluginAsync = async (fastify) => {
   // POST /portal/auth/request-otp
   //
   // Always returns 200 (plus a soft "sent" flag) regardless of whether
   // the email matched any customer. Returning 404 here would let an
   // attacker enumerate which emails are customers on the platform.
-  fastify.post("/request-otp", async (req, reply) => {
+  fastify.post(
+    "/request-otp",
+    { config: { rateLimit: PORTAL_REQUEST_OTP_RATE_LIMIT } },
+    async (req, reply) => {
     const parsed = RequestOtpSchema.safeParse(req.body);
     if (!parsed.success) {
       return reply.status(400).send({ error: { code: "INVALID_INPUT", issues: parsed.error.issues } });
@@ -226,7 +241,10 @@ export const portalAuthRoutes: FastifyPluginAsync = async (fastify) => {
   });
 
   // POST /portal/auth/verify
-  fastify.post("/verify", async (req, reply) => {
+  fastify.post(
+    "/verify",
+    { config: { rateLimit: PORTAL_VERIFY_RATE_LIMIT } },
+    async (req, reply) => {
     const parsed = VerifySchema.safeParse(req.body);
     if (!parsed.success) {
       return reply.status(400).send({ error: { code: "INVALID_INPUT", issues: parsed.error.issues } });

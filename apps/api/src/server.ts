@@ -4,6 +4,7 @@ import multipart from "@fastify/multipart";
 import { tenantContextPlugin } from "./plugins/tenant-context.js";
 import { telemetryPlugin } from "./plugins/telemetry.js";
 import { errorTrackingPlugin } from "./plugins/error-tracking.js";
+import { rateLimitPlugin } from "./plugins/rate-limit.js";
 import { ensureBucket } from "./lib/object-storage.js";
 import { attachmentsRoutes } from "./modules/platform/attachments.js";
 import { identityPlugin } from "./modules/identity/plugin.js";
@@ -139,6 +140,12 @@ export async function buildServer(): Promise<FastifyInstance> {
   // on its onRequest hook, but before routes so they instrument everything.
   await server.register(telemetryPlugin);
   await server.register(errorTrackingPlugin);
+  // Rate limiting (roadmap #47). Registered BEFORE identityPlugin so a
+  // pre-auth flood (credential stuffing, signup spam, OTP enumeration)
+  // is throttled without ever reaching the session cookie lookup.
+  // Per-route overrides on /auth/login, /auth/signup, /portal/auth/*
+  // are set via route config.
+  await server.register(rateLimitPlugin);
   await server.register(identityPlugin);
   await server.register(healthRoutes, { prefix: "/health" });
   await server.register(customersRoutes, { prefix: "/customers" });
