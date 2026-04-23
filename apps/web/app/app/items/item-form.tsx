@@ -3,13 +3,21 @@
 import { useState, type FormEvent } from "react";
 import { Loader2 } from "lucide-react";
 import { Field } from "@/components/auth/field";
-import { api, ApiError, type Item, type TaxCode } from "@/lib/api";
+import {
+  api,
+  ApiError,
+  type Item,
+  type ItemCategoryNode,
+  type TaxCode,
+} from "@/lib/api";
 
 export function ItemForm({
   taxCodes,
+  categories = [],
   onCreated,
 }: {
   taxCodes: TaxCode[];
+  categories?: ItemCategoryNode[];
   onCreated: (i: Item) => void;
 }) {
   const [itemType, setItemType] = useState<"product" | "service" | "bundle">("product");
@@ -26,6 +34,7 @@ export function ItemForm({
     const buyLKR = Number(f.get("buyPrice") ?? 0);
     const reorder = Number(f.get("reorderPoint") ?? 0);
     const taxCodeId = String(f.get("taxCodeId") ?? "");
+    const categoryId = String(f.get("categoryId") ?? "");
 
     try {
       const { item } = await api.createItem({
@@ -38,6 +47,7 @@ export function ItemForm({
         buyPriceCents: Math.round(buyLKR * 100),
         reorderPoint: reorder > 0 ? Math.round(reorder) : undefined,
         taxCodeId: taxCodeId || undefined,
+        categoryId: categoryId || null,
       });
       onCreated(item);
     } catch (err) {
@@ -83,6 +93,33 @@ export function ItemForm({
           <Field label="Unit" name="unit" defaultValue="unit" placeholder="bag · kg · unit · hour" />
         </div>
         <Field label="Description" name="description" />
+        {categories.length > 0 && (
+          <div>
+            <label
+              htmlFor="categoryId"
+              className="block text-small font-medium text-charcoal"
+            >
+              Category
+            </label>
+            <select
+              id="categoryId"
+              name="categoryId"
+              defaultValue=""
+              className="mt-1.5 block w-full rounded-md border-hairline border-border-emphasis bg-surface-elevated px-3 py-2.5 text-body text-charcoal focus:border-charcoal focus:outline-none focus:ring-1 focus:ring-charcoal"
+            >
+              <option value="">No category</option>
+              {categories.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {"\u00A0\u00A0".repeat(c.depth)}
+                  {c.name}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-caption text-text-tertiary">
+              Inherits valuation, tax code, and GL accounts from the category.
+            </p>
+          </div>
+        )}
       </section>
 
       <section className="space-y-4">

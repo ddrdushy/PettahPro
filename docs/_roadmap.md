@@ -4,11 +4,11 @@ Live tracker of what's shipped, what's next, and what's backlog — cross-checke
 
 **Three-doc triangle:** this file says what's shipped; [`_status.md`](./_status.md) says what's broken, fragile, or at-risk right now; [`_gaps.md`](./_gaps.md) is the parking lot for real gaps that aren't on the roadmap yet (security, cost-centers, bank feeds, e-filing, observability, platform workstreams). Promote items from `_gaps.md` into this file when it's their turn.
 
-Last updated: 2026-04-23 after PR #72 "#31 customer portal hardening" (follows PR #71 customer portal + PR #70 digest windows + PR #69 hardening). **All must-haves, all original should-haves, #28 POS, #29 commission engine, #45 digest windows, and #31 customer portal (+ hardening) all shipped.** Remaining tracked backlog: one deferred follow-up from PR #63 (#43 approval engine wiring) plus the Nice-to-have list.
+Last updated: 2026-04-23 after PR #73 "#36 inventory category hierarchy" (follows PR #72 customer portal hardening + PR #71 customer portal + PR #70 digest windows). **All must-haves, all original should-haves, #28 POS, #29 commission engine, #45 digest windows, #31 customer portal (+ hardening), and #36 inventory categories all shipped.** Remaining tracked backlog: one deferred follow-up from PR #63 (#43 approval engine wiring) plus the Nice-to-have list (all M/L from here).
 
 ---
 
-## ✅ Shipped (PRs #1 – #72)
+## ✅ Shipped (PRs #1 – #73)
 
 ### Platform foundation
 - Multi-tenant Postgres with RLS (`current_tenant_id()` + `SET LOCAL app.tenant_id`), enforced at a non-superuser `pettahpro_app` role so dev and prod both actually exercise the policies (PR #48)
@@ -141,7 +141,7 @@ Each item has a spec reference, one-sentence description, and rough sizing (**S*
 | 33 | Document templates builder | sell §19, buy §20, tenant-admin §4 | Drag-drop PDF layout per tenant, multi-language. | L |
 | 34 | Item batch / serial / expiry tracking | inventory §2.7 | Per-item toggle, FIFO by batch, recall capability. | L |
 | 35 | Kit / bundle items | inventory §9 | Sale consumes components, bundle priced < sum of components. | M |
-| 36 | Inventory category hierarchy | inventory §2.4 | Unlimited-depth tree with inherited defaults. | S |
+| 36 | ~~Inventory category hierarchy~~ | inventory §2.4 | **Shipped in PR #73.** Unlimited-depth self-referential tree (`item_categories.parent_id`) with DB trigger for cycle prevention + same-tenant parent enforcement, partial-unique sibling names, and `item_category_effective_defaults(uuid)` recursive CTE that walks ancestors picking the first non-null default (child overrides parent). Defaults cover valuation method, tax code, income/COGS/asset accounts, SKU prefix, and reorder point — null = inherit. Soft-delete blocks on active children (HAS_CHILDREN) and referenced items (HAS_ITEMS) so nothing gets accidentally orphaned; items FK is ON DELETE SET NULL as a safety net. Tree view with expand/collapse + inline add-sub/edit/delete, category picker in the item form. | ~~S~~ |
 | 37 | ~~Stale cheque auto-flag~~ | business-tenant-layer2 §6.2 | **Shipped in PR #66.** Daily cron flips active cheques past their 6-month `stale_at` date to `status='stale'` with per-cheque notifications. Issued-direction cheques get a Reissue action that mints a new cheque linked via `replaced_by_cheque_id` (preserves the original JE; AP stays the same). Manual `POST /cheques/flag-stale` for ad-hoc triggers. | ~~S~~ |
 | 38 | Petty cash float | business-tenant-layer2 §7 | Per-branch ceiling, top-up workflow, EOD reconciliation. | M |
 | 39 | Attendance capture | business-tenant-layer2 §5 | QR / biometric file import / geofence+photo / manual muster. | M |
@@ -166,9 +166,9 @@ These are their own workstreams — track separately from this roadmap.
 
 One PR = one feature. Ship, merge, move on. Batched PRs allowed when features are clearly related (e.g. DN + PO PDFs were batched because they follow the same pattern).
 
-Current recommendation: compliance + convenience + role enforcement + FX revaluation + POS + commission engine + digest windows + customer portal all done. Nothing user-visible is a hard gap. Next work falls in two camps:
+Current recommendation: compliance + convenience + role enforcement + FX revaluation + POS + commission engine + digest windows + customer portal + inventory categories all done. Nothing user-visible is a hard gap and the easy-win pile is now empty. Next work falls in two camps:
 
 1. **Close the remaining loop** — **#43 approval engine wiring** (L). Route documents through the `approval_policies` stored by #26 at submit time, replacing the existing per-domain `pending_approval` columns. Architecturally heavier but it's the last tracked follow-up.
-2. **Pick from Nice-to-have** — **#36 inventory category hierarchy** is the only remaining S-sized cheap win (organization for tenants with >50 SKUs). Beyond that the list is all M/L — #30 purchase requisition, #32 document attachments, #33 document template builder, #34 batch/serial/expiry tracking, #35 kit/bundle items, #38 petty cash float, #39 attendance capture, #40 dual depreciation.
+2. **Pick from Nice-to-have** — all M/L from here: #30 purchase requisition (M), #32 document attachments (M), #33 document template builder (L), #34 batch/serial/expiry tracking (L), #35 kit/bundle items (M), #38 petty cash float (M), #39 attendance capture (M), #40 dual depreciation (M).
 
-**Up next: #36 inventory category hierarchy.** Cheap, high-value for tenants with deep SKU lists, and clears the last S-sized item before either #43 or a run at M/L features.
+**Up next: operator's choice.** #43 closes the architecture debt; #34 (batch/serial/expiry) compounds nicely on top of the category tree just shipped; #32 (attachments) touches every transaction module and is the most universally-requested. No more S-sized shortcuts available.

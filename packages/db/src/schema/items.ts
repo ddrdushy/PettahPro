@@ -27,6 +27,7 @@ export const items = pgTable("items", {
   taxCodeId: uuid("tax_code_id"),
   trackInventory: boolean("track_inventory").notNull().default(true),
   valuationMethod: varchar("valuation_method", { length: 16 }).notNull().default("weighted_avg"),
+  categoryId: uuid("category_id"),
   reorderPoint: integer("reorder_point"),
   incomeAccountId: uuid("income_account_id"),
   expenseAccountId: uuid("expense_account_id"),
