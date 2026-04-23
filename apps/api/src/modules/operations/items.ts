@@ -19,6 +19,7 @@ const CreateSchema = z.object({
   valuationMethod: z.enum(["fifo", "weighted_avg", "standard"]).default("weighted_avg"),
   reorderPoint: z.number().int().min(0).optional(),
   taxCodeId: z.string().uuid().optional(),
+  categoryId: z.string().uuid().nullable().optional(),
 });
 
 export const itemsRoutes: FastifyPluginAsync = async (fastify) => {
@@ -80,6 +81,7 @@ export const itemsRoutes: FastifyPluginAsync = async (fastify) => {
             valuationMethod: data.valuationMethod,
             reorderPoint: data.reorderPoint ?? null,
             taxCodeId: data.taxCodeId ?? null,
+            categoryId: data.categoryId ?? null,
           })
           .returning();
         return i;

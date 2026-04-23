@@ -155,6 +155,23 @@ export const api = {
   createItem: (body: CreateItem) =>
     request<{ item: Item }>("/items", { method: "POST", json: body }),
 
+  listItemCategories: () =>
+    request<{ categories: ItemCategoryNode[] }>("/item-categories"),
+  getItemCategoryEffective: (id: string) =>
+    request<{ effective: ItemCategoryEffective }>(`/item-categories/${id}/effective`),
+  createItemCategory: (body: CreateItemCategory) =>
+    request<{ category: ItemCategory }>("/item-categories", {
+      method: "POST",
+      json: body,
+    }),
+  updateItemCategory: (id: string, body: UpdateItemCategory) =>
+    request<{ category: ItemCategory }>(`/item-categories/${id}`, {
+      method: "PATCH",
+      json: body,
+    }),
+  deleteItemCategory: (id: string) =>
+    request<{ ok: true }>(`/item-categories/${id}`, { method: "DELETE" }),
+
   listCoa: () => request<{ accounts: Account[] }>("/coa"),
   listTaxCodes: () => request<{ taxCodes: TaxCode[] }>("/tax-codes"),
 
@@ -1713,7 +1730,74 @@ export interface CreateItem {
   valuationMethod?: "fifo" | "weighted_avg" | "standard";
   reorderPoint?: number;
   taxCodeId?: string;
+  categoryId?: string | null;
 }
+
+export interface ItemCategory {
+  id: string;
+  tenantId: string;
+  parentId: string | null;
+  name: string;
+  codePrefix: string | null;
+  defaultValuationMethod: "fifo" | "weighted_avg" | "standard" | "specific" | null;
+  defaultTaxCodeId: string | null;
+  defaultIncomeAccountId: string | null;
+  defaultExpenseAccountId: string | null;
+  defaultAssetAccountId: string | null;
+  defaultReorderPoint: number | null;
+  sortOrder: number;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// Tree row returned by GET /item-categories — adds depth, rendered
+// breadcrumb path, and item count for delete-guard UX.
+export interface ItemCategoryNode {
+  id: string;
+  parentId: string | null;
+  name: string;
+  codePrefix: string | null;
+  defaultValuationMethod: "fifo" | "weighted_avg" | "standard" | "specific" | null;
+  defaultTaxCodeId: string | null;
+  defaultIncomeAccountId: string | null;
+  defaultExpenseAccountId: string | null;
+  defaultAssetAccountId: string | null;
+  defaultReorderPoint: number | null;
+  sortOrder: number;
+  isActive: boolean;
+  depth: number;
+  path: string;
+  itemCount: number;
+}
+
+export interface ItemCategoryEffective {
+  categoryId: string;
+  name: string | null;
+  depth: number | null;
+  codePrefix: string | null;
+  defaultValuationMethod: "fifo" | "weighted_avg" | "standard" | "specific" | null;
+  defaultTaxCodeId: string | null;
+  defaultIncomeAccountId: string | null;
+  defaultExpenseAccountId: string | null;
+  defaultAssetAccountId: string | null;
+  defaultReorderPoint: number | null;
+}
+
+export interface CreateItemCategory {
+  name: string;
+  parentId?: string | null;
+  codePrefix?: string | null;
+  defaultValuationMethod?: "fifo" | "weighted_avg" | "standard" | "specific" | null;
+  defaultTaxCodeId?: string | null;
+  defaultIncomeAccountId?: string | null;
+  defaultExpenseAccountId?: string | null;
+  defaultAssetAccountId?: string | null;
+  defaultReorderPoint?: number | null;
+  sortOrder?: number;
+}
+
+export type UpdateItemCategory = Partial<CreateItemCategory>;
 
 export interface Account {
   id: string;

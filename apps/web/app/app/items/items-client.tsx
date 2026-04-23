@@ -7,14 +7,16 @@ import { DataTable, type Column } from "@/components/app/data-table";
 import { Drawer } from "@/components/app/drawer";
 import { ItemForm } from "./item-form";
 import { formatLKR } from "@/lib/format";
-import type { Item, TaxCode } from "@/lib/api";
+import type { Item, ItemCategoryNode, TaxCode } from "@/lib/api";
 
 export function ItemsClient({
   initial,
   taxCodes,
+  categories,
 }: {
   initial: Item[];
   taxCodes: TaxCode[];
+  categories: ItemCategoryNode[];
 }) {
   const [rows, setRows] = useState<Item[]>(initial);
   const [query, setQuery] = useState("");
@@ -133,6 +135,7 @@ export function ItemsClient({
       >
         <ItemForm
           taxCodes={taxCodes}
+          categories={categories}
           onCreated={(i) => {
             setRows((r) => [i, ...r]);
             setDrawerOpen(false);
