@@ -9,6 +9,18 @@ import { runScheduledStatementEmails } from "./modules/operations/customer-state
 import { runStaleChequeFlagging } from "./modules/cheques/stale-flag.js";
 import { runMonthlyDepreciationForAllTenants } from "./modules/accounting/fixed-assets.js";
 import { runNotificationDigests } from "./modules/notifications/digest-cron.js";
+import {
+  initErrorTrackingForWorker,
+  captureException,
+} from "./plugins/error-tracking.js";
+import {
+  recordScheduledJob,
+  startWorkerMetricsServer,
+} from "./worker-metrics.js";
+
+// Initialise Sentry before anything else so boot errors get captured too.
+// No-op when SENTRY_DSN isn't set.
+initErrorTrackingForWorker();
 
 const log = pino({
   level: process.env.LOG_LEVEL ?? "info",
@@ -137,47 +149,54 @@ const defaultWorker = new Worker(
   { connection },
 );
 
+async function runScheduledJob(name: string): Promise<unknown> {
+  if (name === "generate-recurring-invoices") {
+    return runDueRecurringInvoices(db, log);
+  }
+  if (name === "generate-recurring-bills") {
+    return runDueRecurringBills(db, log);
+  }
+  if (name === "generate-recurring-journals") {
+    return runDueRecurringJournals(db, log);
+  }
+  if (name === "send-scheduled-statement-emails") {
+    return runScheduledStatementEmails(db, log);
+  }
+  if (name === "flag-stale-cheques") {
+    return runStaleChequeFlagging(db, log);
+  }
+  if (name === "run-monthly-depreciation") {
+    return runMonthlyDepreciationForAllTenants(db, log);
+  }
+  if (name === "send-notification-digests") {
+    return runNotificationDigests(db, log);
+  }
+  return null; // unknown
+}
+
 const scheduledWorker = new Worker(
   "scheduled",
   async (job) => {
     log.info({ id: job.id, name: job.name }, "scheduled job fired");
-    if (job.name === "generate-recurring-invoices") {
-      const result = await runDueRecurringInvoices(db, log);
-      log.info(result, "recurring-invoice run complete");
+    const start = process.hrtime();
+    try {
+      const result = await runScheduledJob(job.name);
+      const [sec, nsec] = process.hrtime(start);
+      const duration = sec + nsec / 1e9;
+      if (result === null) {
+        log.warn({ name: job.name }, "unknown scheduled job");
+        recordScheduledJob(job.name, "skipped", duration);
+        return { ok: false, reason: "unknown-job" };
+      }
+      log.info({ name: job.name, result }, "scheduled job complete");
+      recordScheduledJob(job.name, "ok", duration);
       return result;
+    } catch (err) {
+      const [sec, nsec] = process.hrtime(start);
+      recordScheduledJob(job.name, "error", sec + nsec / 1e9);
+      captureException(err, { jobName: job.name });
+      throw err;
     }
-    if (job.name === "generate-recurring-bills") {
-      const result = await runDueRecurringBills(db, log);
-      log.info(result, "recurring-bill run complete");
-      return result;
-    }
-    if (job.name === "generate-recurring-journals") {
-      const result = await runDueRecurringJournals(db, log);
-      log.info(result, "recurring-journal run complete");
-      return result;
-    }
-    if (job.name === "send-scheduled-statement-emails") {
-      const result = await runScheduledStatementEmails(db, log);
-      log.info(result, "scheduled statement emails run complete");
-      return result;
-    }
-    if (job.name === "flag-stale-cheques") {
-      const result = await runStaleChequeFlagging(db, log);
-      log.info(result, "stale-cheque flagging run complete");
-      return result;
-    }
-    if (job.name === "run-monthly-depreciation") {
-      const result = await runMonthlyDepreciationForAllTenants(db, log);
-      log.info(result, "monthly depreciation run complete");
-      return result;
-    }
-    if (job.name === "send-notification-digests") {
-      const result = await runNotificationDigests(db, log);
-      log.info(result, "notification digest run complete");
-      return result;
-    }
-    log.warn({ name: job.name }, "unknown scheduled job");
-    return { ok: false, reason: "unknown-job" };
   },
   { connection },
 );
@@ -188,5 +207,6 @@ for (const w of [defaultWorker, scheduledWorker]) {
 }
 
 await registerSchedules();
+startWorkerMetricsServer(log);
 
 log.info("PettahPro worker started");

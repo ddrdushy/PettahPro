@@ -1,0 +1,152 @@
+# Observability stack (roadmap #46).
+#
+# Separate compose file so dev boxes don't have to run it. Spin up with:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d
+#
+# All four services are self-hosted OSS (no external SaaS dependency).
+# Services intentionally bind only to 127.0.0.1 on the host — they're
+# operator tooling, not tenant-facing endpoints.
+#
+# Services:
+#   prometheus  :9090  metrics aggregation, scrapes api + worker /metrics
+#   grafana     :3001  dashboards (datasources auto-provisioned)
+#   loki        :3100  log aggregation (Grafana-compatible)
+#   promtail    —     tails docker container logs into Loki
+#   glitchtip   :8000  Sentry-protocol-compatible error tracking
+#   glitchtip-pg —     glitchtip's own postgres (isolated from tenant db)
+#
+# See docs/observability.md for run-book-level guidance.
+services:
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    container_name: pettahpro-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./docker/observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+      - --web.enable-lifecycle
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks:
+      - default
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: pettahpro-grafana
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+      - loki
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    volumes:
+      - ./docker/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3001:3000"
+    networks:
+      - default
+
+  loki:
+    image: grafana/loki:3.3.0
+    container_name: pettahpro-loki
+    restart: unless-stopped
+    volumes:
+      - ./docker/observability/loki/loki-config.yml:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    ports:
+      - "127.0.0.1:3100:3100"
+    networks:
+      - default
+
+  promtail:
+    image: grafana/promtail:3.3.0
+    container_name: pettahpro-promtail
+    restart: unless-stopped
+    depends_on:
+      - loki
+    volumes:
+      - ./docker/observability/promtail/promtail-config.yml:/etc/promtail/config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - promtail_positions:/tmp
+    command: -config.file=/etc/promtail/config.yml
+    networks:
+      - default
+
+  glitchtip-postgres:
+    image: postgres:16-alpine
+    container_name: pettahpro-glitchtip-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: glitchtip
+      POSTGRES_PASSWORD: ${GLITCHTIP_PG_PASSWORD:-glitchtip_dev}
+      POSTGRES_DB: glitchtip
+    volumes:
+      - glitchtip_pg_data:/var/lib/postgresql/data
+    networks:
+      - default
+
+  glitchtip:
+    # GlitchTip is a lightweight Sentry-protocol-compatible error tracker.
+    # Same SDKs work — just point SENTRY_DSN at it. Self-hosted OSS (MIT).
+    # Upstream: https://glitchtip.com
+    image: glitchtip/glitchtip:v4.2
+    container_name: pettahpro-glitchtip
+    restart: unless-stopped
+    depends_on:
+      - glitchtip-postgres
+      - redis
+    environment:
+      DATABASE_URL: postgres://glitchtip:${GLITCHTIP_PG_PASSWORD:-glitchtip_dev}@glitchtip-postgres:5432/glitchtip
+      # Reuses the main compose file's redis — GlitchTip only caches session
+      # + task state there, no tenant data collision.
+      REDIS_URL: redis://redis:6379/1
+      SECRET_KEY: ${GLITCHTIP_SECRET_KEY:-change-me-in-prod}
+      PORT: 8000
+      EMAIL_URL: consolemail://
+      GLITCHTIP_DOMAIN: http://localhost:8000
+      DEFAULT_FROM_EMAIL: glitchtip@pettahpro.local
+      CELERY_WORKER_AUTOSCALE: "1,3"
+      CELERY_WORKER_MAX_TASKS_PER_CHILD: "10000"
+    ports:
+      - "127.0.0.1:8000:8000"
+    networks:
+      - default
+
+  glitchtip-worker:
+    image: glitchtip/glitchtip:v4.2
+    container_name: pettahpro-glitchtip-worker
+    restart: unless-stopped
+    depends_on:
+      - glitchtip-postgres
+      - redis
+    environment:
+      DATABASE_URL: postgres://glitchtip:${GLITCHTIP_PG_PASSWORD:-glitchtip_dev}@glitchtip-postgres:5432/glitchtip
+      REDIS_URL: redis://redis:6379/1
+      SECRET_KEY: ${GLITCHTIP_SECRET_KEY:-change-me-in-prod}
+      EMAIL_URL: consolemail://
+      GLITCHTIP_DOMAIN: http://localhost:8000
+      DEFAULT_FROM_EMAIL: glitchtip@pettahpro.local
+      CELERY_WORKER_AUTOSCALE: "1,3"
+      CELERY_WORKER_MAX_TASKS_PER_CHILD: "10000"
+    command: ./bin/run-celery-with-beat.sh
+    networks:
+      - default
+
+volumes:
+  prometheus_data:
+  grafana_data:
+  loki_data:
+  promtail_positions:
+  glitchtip_pg_data:

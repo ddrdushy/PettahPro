@@ -1,0 +1,31 @@
+# Prometheus scrape config for PettahPro (roadmap #46).
+#
+# Scrapes the API + worker /metrics endpoints on the docker-compose network.
+# Container names come from docker-compose.yml ("pettahpro-api",
+# "pettahpro-worker"). Hostnames resolve via docker's internal DNS since
+# this file runs inside the prometheus container on the same network.
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: pettahpro-api
+    static_configs:
+      - targets: ["pettahpro-api:4000"]
+        labels:
+          service: api
+    metrics_path: /metrics
+
+  - job_name: pettahpro-worker
+    static_configs:
+      - targets: ["pettahpro-worker:4100"]
+        labels:
+          service: worker
+    metrics_path: /metrics
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+        labels:
+          service: prometheus
