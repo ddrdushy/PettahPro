@@ -24,18 +24,24 @@ export interface TenantSettings {
   // queue requiring second-pair-of-eyes approval before posting. 0 = no
   // approval required (current default — backward compatible).
   journalApprovalThresholdCents: number;
+  // Master toggle for the purchase-requisitions module (roadmap #30). Off
+  // by default; enabling exposes the sidebar entry, API routes (which
+  // otherwise 403 FEATURE_DISABLED), and the settings-form toggle.
+  purchaseRequisitionsEnabled: boolean;
 }
 
 export const SETTINGS_DEFAULTS: TenantSettings = {
   salaryDaysPerMonth: 30,
   stockRelieveOn: "invoice",
   journalApprovalThresholdCents: 0,
+  purchaseRequisitionsEnabled: false,
 };
 
 const PatchSchema = z.object({
   salaryDaysPerMonth: z.number().int().min(20).max(31).optional(),
   stockRelieveOn: z.enum(["invoice", "delivery_note"]).optional(),
   journalApprovalThresholdCents: z.number().int().min(0).optional(),
+  purchaseRequisitionsEnabled: z.boolean().optional(),
 });
 
 // Used server-side by modules that need a single setting (e.g. payroll).

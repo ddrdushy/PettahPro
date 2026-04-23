@@ -29,6 +29,7 @@ import { proformaInvoicesRoutes } from "./modules/sell/proforma-invoices.js";
 import { salesOrdersRoutes } from "./modules/sell/sales-orders.js";
 import { deliveryNotesRoutes } from "./modules/sell/delivery-notes.js";
 import { purchaseOrdersRoutes } from "./modules/buy/purchase-orders.js";
+import { purchaseRequisitionsRoutes } from "./modules/buy/purchase-requisitions.js";
 import { grnsRoutes } from "./modules/buy/grns.js";
 import { paymentsRoutes } from "./modules/sell/payments.js";
 import { billsRoutes } from "./modules/buy/bills.js";
@@ -145,6 +146,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await server.register(salesOrdersRoutes, { prefix: "/sales-orders" });
   await server.register(deliveryNotesRoutes, { prefix: "/delivery-notes" });
   await server.register(purchaseOrdersRoutes, { prefix: "/purchase-orders" });
+  await server.register(purchaseRequisitionsRoutes, { prefix: "/purchase-requisitions" });
   await server.register(grnsRoutes, { prefix: "/grns" });
   await server.register(paymentsRoutes, { prefix: "/payments" });
   await server.register(billsRoutes, { prefix: "/bills" });

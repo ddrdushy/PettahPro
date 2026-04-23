@@ -312,6 +312,7 @@ function prettyDocType(kind: string): string {
     payroll_run: "Payroll run",
     bonus_run: "Bonus run",
     final_settlement: "Final settlement",
+    purchase_requisition: "Purchase requisition",
     invoice: "Invoice",
   };
   return map[kind] ?? kind.replace(/_/g, " ");
@@ -358,6 +359,11 @@ function deepLinkFor(request: ApprovalRequest): string | null {
     // shows the settlement worksheet + the "Awaiting approval" banner
     // so an approver can see the full exit calc before signing off.
     return `/app/final-settlements/${request.documentId}`;
+  }
+  if (request.documentType === "purchase_requisition") {
+    // roadmap #30 — documentId is purchase_requisitions.id. Detail
+    // page shows the PR lines + the "Awaiting approval" banner.
+    return `/app/purchase-requisitions/${request.documentId}`;
   }
   return null;
 }

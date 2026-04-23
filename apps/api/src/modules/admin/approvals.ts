@@ -12,6 +12,7 @@ import { sendPurchaseOrderCore } from "../buy/purchase-orders.js";
 import { postPayrollRunCore } from "../hr/payroll-runs.js";
 import { postBonusRunCore } from "../hr/bonuses.js";
 import { approveFinalSettlementCore } from "../hr/final-settlement.js";
+import { approvePurchaseRequisitionCore } from "../buy/purchase-requisitions.js";
 import {
   ApprovalEngineError,
   cancelApprovalRequest,
@@ -502,6 +503,40 @@ export const approvalsRoutes: FastifyPluginAsync = async (fastify) => {
                 eq(schema.finalSettlements.id, decision.request.documentId),
               ),
             );
+        } else if (decision.request.documentType === "purchase_requisition") {
+          // Purchase requisitions (roadmap #30). Flip back to 'rejected'
+          // (terminal at engine-reject time) with the reason stamped.
+          // Submitters can edit a rejected PR — the PATCH handler
+          // auto-resets rejected → draft on edit so they can re-submit.
+          const reason = parsed.data.reason?.trim();
+          await tx
+            .update(schema.purchaseRequisitionLines)
+            .set({
+              lineStatus: "rejected",
+              lineRejectedReason: reason ?? null,
+            })
+            .where(
+              eq(
+                schema.purchaseRequisitionLines.purchaseRequisitionId,
+                decision.request.documentId,
+              ),
+            );
+          await tx
+            .update(schema.purchaseRequisitions)
+            .set({
+              status: "rejected",
+              rejectedAt: new Date(),
+              rejectedByUserId: ctx.userId,
+              rejectedReason: reason ?? null,
+              approvalRequestId: null,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(schema.purchaseRequisitions.tenantId, ctx.tenantId),
+                eq(schema.purchaseRequisitions.id, decision.request.documentId),
+              ),
+            );
         }
 
         await recordAuditEvent(tx, {
@@ -768,6 +803,39 @@ export const approvalsRoutes: FastifyPluginAsync = async (fastify) => {
             and(
               eq(schema.finalSettlements.tenantId, ctx.tenantId),
               eq(schema.finalSettlements.id, request.documentId),
+            ),
+          );
+      } else if (request.documentType === "purchase_requisition") {
+        // Purchase requisitions (roadmap #30). Withdraw → draft, detach
+        // engine handle. Same shape as payroll/bonus/final-settlement:
+        // the PR's own /cancel route is terminal; this queue cancel is
+        // "withdraw back to draft so I can edit and resubmit".
+        const reason = parsed.data.reason?.trim() || "Withdrawn by submitter";
+        const [existing] = await tx
+          .select({ notes: schema.purchaseRequisitions.notes })
+          .from(schema.purchaseRequisitions)
+          .where(
+            and(
+              eq(schema.purchaseRequisitions.tenantId, ctx.tenantId),
+              eq(schema.purchaseRequisitions.id, request.documentId),
+            ),
+          )
+          .limit(1);
+        const stampedNotes = existing?.notes
+          ? `${existing.notes}\n\n[Withdrawn] ${reason}`
+          : `[Withdrawn] ${reason}`;
+        await tx
+          .update(schema.purchaseRequisitions)
+          .set({
+            status: "draft",
+            approvalRequestId: null,
+            notes: stampedNotes,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(schema.purchaseRequisitions.tenantId, ctx.tenantId),
+              eq(schema.purchaseRequisitions.id, request.documentId),
             ),
           );
       }
@@ -1050,6 +1118,30 @@ async function finaliseApprovedDocument(
       }
       throw new Error(
         `finaliseApprovedDocument(final_settlement): approveFinalSettlementCore failed — ${result.error}`,
+      );
+    }
+    return;
+  }
+
+  if (request.documentType === "purchase_requisition") {
+    // Purchase requisitions (roadmap #30). Engine path:
+    // draft → pending_approval → approved. Rejected-line details from
+    // the original /approve call aren't carried through the engine —
+    // the policy-matched path is "approve everything" by default. HR
+    // tenants who want line-level partial approval skip the policy
+    // and use the immediate route.
+    const result = await approvePurchaseRequisitionCore(tx, {
+      tenantId: request.tenantId,
+      purchaseRequisitionId: request.documentId,
+      approverUserId: input.deciderUserId,
+      allowStatuses: ["pending_approval"],
+    });
+    if ("error" in result) {
+      if (result.error === "BAD_STATUS" || result.error === "NOT_FOUND") {
+        return;
+      }
+      throw new Error(
+        `finaliseApprovedDocument(purchase_requisition): approvePurchaseRequisitionCore failed — ${result.error}`,
       );
     }
     return;

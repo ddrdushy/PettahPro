@@ -1307,6 +1307,58 @@ export const api = {
       { method: "POST", json: body },
     ),
 
+  // ─── Purchase Requisitions (roadmap #30) ──────────────────────────────
+  listPurchaseRequisitions: () =>
+    request<{ purchaseRequisitions: PurchaseRequisitionRow[] }>(
+      "/purchase-requisitions",
+    ),
+  getPurchaseRequisition: (id: string) =>
+    request<PurchaseRequisitionDetail>(`/purchase-requisitions/${id}`),
+  createPurchaseRequisition: (body: CreatePurchaseRequisition) =>
+    request<{ purchaseRequisition: PurchaseRequisitionRow }>(
+      "/purchase-requisitions",
+      { method: "POST", json: body },
+    ),
+  updatePurchaseRequisition: (id: string, body: UpdatePurchaseRequisition) =>
+    request<{ purchaseRequisition: PurchaseRequisitionRow }>(
+      `/purchase-requisitions/${id}`,
+      { method: "PATCH", json: body },
+    ),
+  submitPurchaseRequisition: (id: string) =>
+    request<{ purchaseRequisition: PurchaseRequisitionRow }>(
+      `/purchase-requisitions/${id}/submit`,
+      { method: "POST" },
+    ),
+  approvePurchaseRequisition: (id: string, body: ApprovePurchaseRequisition = {}) =>
+    request<
+      | {
+          ok: true;
+          parked: true;
+          approvalRequestId: string;
+        }
+      | {
+          ok: true;
+          purchaseRequisition: PurchaseRequisitionRow;
+          finalStatus: "approved" | "rejected";
+        }
+    >(`/purchase-requisitions/${id}/approve`, { method: "POST", json: body }),
+  rejectPurchaseRequisition: (id: string, body: { reason?: string } = {}) =>
+    request<{ purchaseRequisition: PurchaseRequisitionRow }>(
+      `/purchase-requisitions/${id}/reject`,
+      { method: "POST", json: body },
+    ),
+  cancelPurchaseRequisition: (id: string, body: { reason?: string } = {}) =>
+    request<{ purchaseRequisition: PurchaseRequisitionRow }>(
+      `/purchase-requisitions/${id}/cancel`,
+      { method: "POST", json: body },
+    ),
+  convertPurchaseRequisition: (id: string, body: ConvertPurchaseRequisition = {}) =>
+    request<{
+      ok: true;
+      purchaseRequisition: PurchaseRequisitionRow;
+      purchaseOrderId: string;
+    }>(`/purchase-requisitions/${id}/convert`, { method: "POST", json: body }),
+
   // ─── POS ───────────────────────────────────────────────────────────────
   getCurrentPosShift: () =>
     request<{ shift: PosShift | null }>("/pos/shifts/current"),
@@ -3130,6 +3182,104 @@ export interface FinalSettlementPatch {
   notes?: string;
 }
 
+// Purchase Requisitions (roadmap #30) ---------------------------------------
+export type PurchaseRequisitionStatus =
+  | "draft"
+  | "pending_approval"
+  | "approved"
+  | "rejected"
+  | "converted"
+  | "cancelled";
+
+export type PurchaseRequisitionLineStatus =
+  | "pending"
+  | "approved"
+  | "rejected";
+
+export interface PurchaseRequisitionLineRow {
+  id: string;
+  lineNo: number;
+  itemId: string | null;
+  description: string;
+  quantity: number;
+  estimatedUnitPriceCents: number | null;
+  estimatedLineTotalCents: number;
+  lineStatus: PurchaseRequisitionLineStatus;
+  lineRejectedReason: string | null;
+}
+
+export interface PurchaseRequisitionRow {
+  id: string;
+  prNumber: string | null;
+  status: PurchaseRequisitionStatus;
+  branchId: string | null;
+  preferredSupplierId: string | null;
+  neededByDate: string | null;
+  currency: string;
+  estimatedTotalCents: number;
+  purpose: string | null;
+  notes: string | null;
+  submittedAt: string | null;
+  submittedByUserId: string | null;
+  approvedAt: string | null;
+  approvedByUserId: string | null;
+  rejectedAt: string | null;
+  rejectedByUserId: string | null;
+  rejectedReason: string | null;
+  cancelledAt: string | null;
+  cancelledReason: string | null;
+  convertedAt: string | null;
+  convertedPoId: string | null;
+  approvalRequestId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  createdByUserId: string | null;
+}
+
+export interface PurchaseRequisitionDetail {
+  purchaseRequisition: PurchaseRequisitionRow;
+  lines: PurchaseRequisitionLineRow[];
+}
+
+export interface CreatePurchaseRequisitionLine {
+  itemId?: string;
+  description: string;
+  quantity: number;
+  estimatedUnitPriceCents?: number;
+}
+
+export interface CreatePurchaseRequisition {
+  branchId?: string;
+  preferredSupplierId?: string;
+  neededByDate?: string;
+  currency?: string;
+  purpose?: string;
+  notes?: string;
+  lines: CreatePurchaseRequisitionLine[];
+}
+
+export interface UpdatePurchaseRequisition {
+  branchId?: string | null;
+  preferredSupplierId?: string | null;
+  neededByDate?: string | null;
+  currency?: string;
+  purpose?: string | null;
+  notes?: string | null;
+  lines?: CreatePurchaseRequisitionLine[];
+}
+
+export interface ApprovePurchaseRequisition {
+  rejectedLineIds?: string[];
+  lineRejectReasons?: Record<string, string>;
+}
+
+export interface ConvertPurchaseRequisition {
+  supplierId?: string;
+  orderDate?: string;
+  expectedDeliveryDate?: string;
+  notes?: string;
+}
+
 export type LeaveRequestStatus = "draft" | "pending" | "approved" | "rejected" | "cancelled";
 
 export interface LeaveType {
@@ -4137,6 +4287,8 @@ export interface TenantSettings {
   salaryDaysPerMonth: number;
   stockRelieveOn: StockRelieveOn;
   journalApprovalThresholdCents: number;
+  // Master toggle for the purchase-requisitions module (roadmap #30).
+  purchaseRequisitionsEnabled: boolean;
 }
 
 export interface OpeningBalanceState {
@@ -4334,7 +4486,9 @@ export type ApprovalDocumentType =
   | "bonus_run"
   // Roadmap #43e — final settlements (always-approve per spec §7.1,
   // sensitive exit calc).
-  | "final_settlement";
+  | "final_settlement"
+  // Roadmap #30 — purchase requisitions (tenant-toggled module).
+  | "purchase_requisition";
 
 export interface ApprovalStepApprover {
   kind: "role" | "user";
