@@ -29,6 +29,7 @@ import {
   Gift,
   LogOut,
   ShieldCheck,
+  BadgePercent,
   type LucideIcon,
 } from "lucide-react";
 
@@ -53,6 +54,7 @@ const nav: Group[] = [
       { label: "Payments", href: "/app/payments", icon: Wallet },
       { label: "POS terminal", href: "/app/pos", icon: ShoppingCart },
       { label: "POS shifts", href: "/app/pos/shifts", icon: ClipboardCheck },
+      { label: "Commissions", href: "/app/commissions", icon: BadgePercent },
     ],
   },
   {

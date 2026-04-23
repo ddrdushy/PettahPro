@@ -7,6 +7,7 @@ import { postJournal } from "../accounting/journal-posting.js";
 import { emitNotification } from "../notifications/emit.js";
 import { resolveChequeGLAccounts } from "../cheques/accounts.js";
 import { createChequeFromPayment } from "../cheques/create.js";
+import { accrueOnPayment } from "../commissions/engine.js";
 
 const METHOD_VALUES = [
   "cash",
@@ -299,6 +300,20 @@ export const paymentsRoutes: FastifyPluginAsync = async (fastify) => {
           })
           .where(eq(schema.invoices.id, inv.id));
       }
+
+      // Commission accrual on collection (#29) — fires on payment_received
+      // rules, attributes to each allocated invoice's salesperson_user_id.
+      await accrueOnPayment(tx, {
+        tenantId: ctx.tenantId,
+        paymentId: payment.id,
+        paymentNumber,
+        paymentDate: input.paymentDate ?? new Date().toISOString().slice(0, 10),
+        customerId: customer.id,
+        allocations: input.allocations.map((a) => ({
+          invoiceId: a.invoiceId,
+          allocatedCents: a.allocatedCents,
+        })),
+      });
 
       const tenantUsers = await tx.execute(sql`
         SELECT id FROM users WHERE tenant_id = current_tenant_id()

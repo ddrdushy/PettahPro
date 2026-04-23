@@ -39,6 +39,9 @@ const CreateSchema = z.object({
   poNumber: z.string().max(64).optional().or(z.literal("")),
   notes: z.string().optional().or(z.literal("")),
   terms: z.string().optional().or(z.literal("")),
+  // Salesperson attribution (#29) — picks up commission when the invoice posts.
+  // Optional; unattributed sales simply don't accrue commissions.
+  salespersonUserId: z.string().uuid().optional().or(z.literal("")),
   lines: z.array(LineSchema).min(1),
 });
 
@@ -307,6 +310,7 @@ export const invoicesRoutes: FastifyPluginAsync = async (fastify) => {
           poNumber: input.poNumber || null,
           notes: input.notes || null,
           terms: input.terms || null,
+          salespersonUserId: input.salespersonUserId || null,
           createdByUserId: ctx.userId,
         })
         .returning();

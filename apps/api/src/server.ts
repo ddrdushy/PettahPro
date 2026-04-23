@@ -86,6 +86,7 @@ import { approvalPoliciesRoutes } from "./modules/admin/approval-policies.js";
 import { rolesRoutes } from "./modules/admin/roles.js";
 import { posShiftsRoutes } from "./modules/pos/shifts.js";
 import { posSalesRoutes } from "./modules/pos/sales.js";
+import { commissionsRoutes } from "./modules/commissions/routes.js";
 
 export async function buildServer(): Promise<FastifyInstance> {
   const server = Fastify({
@@ -187,6 +188,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await server.register(rolesRoutes, { prefix: "/roles" });
   await server.register(posShiftsRoutes, { prefix: "/pos/shifts" });
   await server.register(posSalesRoutes, { prefix: "/pos/sales" });
+  await server.register(commissionsRoutes, { prefix: "/commissions" });
 
   server.setErrorHandler((err, req, reply) => {
     req.log.error({ err }, "request failed");

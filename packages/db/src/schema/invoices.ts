@@ -49,6 +49,7 @@ export const invoices = pgTable("invoices", {
   writeoffVatReliefCents: bigint("writeoff_vat_relief_cents", { mode: "number" }).notNull().default(0),
   writeoffPrincipalCents: bigint("writeoff_principal_cents", { mode: "number" }).notNull().default(0),
   channel: varchar("channel", { length: 16 }).notNull().default("web"),
+  salespersonUserId: uuid("salesperson_user_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   createdByUserId: uuid("created_by_user_id"),
