@@ -30,9 +30,21 @@ export const fixedAssets = pgTable("fixed_assets", {
   costCents: bigint("cost_cents", { mode: "number" }).notNull(),
   salvageCents: bigint("salvage_cents", { mode: "number" }).notNull().default(0),
   usefulLifeMonths: integer("useful_life_months").notNull(),
-  depreciationMethod: varchar("depreciation_method", { length: 16 }).notNull().default("straight_line"),
+  depreciationMethod: varchar("depreciation_method", { length: 24 }).notNull().default("straight_line"),
   accumulatedDepreciationCents: bigint("accumulated_depreciation_cents", { mode: "number" }).notNull().default(0),
   lastDepreciationRunDate: date("last_depreciation_run_date"),
+  // --- Tax schedule (dual depreciation, #40) -----------------------------
+  // Runs in parallel to the book schedule but never touches the GL. Used by
+  // the tax-computation workflow. Backfilled to mirror the book values; the
+  // CA overrides on a per-asset basis when SL IRD rates differ from book.
+  taxDepreciationMethod: varchar("tax_depreciation_method", { length: 24 }).notNull().default("straight_line"),
+  taxUsefulLifeMonths: integer("tax_useful_life_months").notNull(),
+  taxSalvageCents: bigint("tax_salvage_cents", { mode: "number" }).notNull().default(0),
+  // Annual rate in basis points (2000 = 20.00%) — used by WDV.
+  taxAnnualRateBps: integer("tax_annual_rate_bps"),
+  taxDepreciationStartDate: date("tax_depreciation_start_date").notNull(),
+  taxAccumulatedDepreciationCents: bigint("tax_accumulated_depreciation_cents", { mode: "number" }).notNull().default(0),
+  taxLastDepreciationRunDate: date("tax_last_depreciation_run_date"),
   status: varchar("status", { length: 16 }).notNull().default("active"),
   supplierId: uuid("supplier_id").references(() => suppliers.id, { onDelete: "set null" }),
   billId: uuid("bill_id").references(() => bills.id, { onDelete: "set null" }),
@@ -61,3 +73,21 @@ export const fixedAssetDepreciationEntries = pgTable("fixed_asset_depreciation_e
 
 export type FixedAssetDepreciationEntry = typeof fixedAssetDepreciationEntries.$inferSelect;
 export type NewFixedAssetDepreciationEntry = typeof fixedAssetDepreciationEntries.$inferInsert;
+
+// Tax schedule entries — same shape as book entries minus the JE linkage
+// (tax depreciation is memo-only and never posts to GL). Unique on
+// (tenant, asset, period_year, period_month) so tax runs are idempotent.
+export const fixedAssetTaxDepreciationEntries = pgTable("fixed_asset_tax_depreciation_entries", {
+  id: uuid("id").primaryKey().default(sql`uuid_generate_v7()`),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+  fixedAssetId: uuid("fixed_asset_id").notNull().references(() => fixedAssets.id, { onDelete: "cascade" }),
+  runDate: date("run_date").notNull(),
+  periodYear: smallint("period_year").notNull(),
+  periodMonth: smallint("period_month").notNull(),
+  depreciationCents: bigint("depreciation_cents", { mode: "number" }).notNull(),
+  accumulatedAfterCents: bigint("accumulated_after_cents", { mode: "number" }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type FixedAssetTaxDepreciationEntry = typeof fixedAssetTaxDepreciationEntries.$inferSelect;
+export type NewFixedAssetTaxDepreciationEntry = typeof fixedAssetTaxDepreciationEntries.$inferInsert;

@@ -3,16 +3,23 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { Box, CheckCircle2, Loader2, Plus, TrendingDown } from "lucide-react";
+import { Box, CheckCircle2, Loader2, Plus, TrendingDown, BarChart3 } from "lucide-react";
 import {
   api,
   ApiError,
+  type DepreciationMethod,
   type FixedAssetRow,
   type FixedAssetCategory,
   type FixedAssetStatus,
 } from "@/lib/api";
 import { PageHeader } from "@/components/app/page-header";
 import { formatLKR, formatDate } from "@/lib/format";
+
+const methodLabels: Record<DepreciationMethod, string> = {
+  straight_line: "SLM",
+  wdv: "WDV",
+  sum_of_years_digits: "SOYD",
+};
 
 const categoryLabels: Record<FixedAssetCategory, string> = {
   vehicle: "Vehicle",
@@ -42,14 +49,22 @@ export function FixedAssetsClient({
   totals,
 }: {
   assets: FixedAssetRow[];
-  totals: { costCents: number; accumulatedCents: number; netBookValueCents: number; count: number };
+  totals: {
+    costCents: number;
+    accumulatedCents: number;
+    netBookValueCents: number;
+    taxAccumulatedCents: number;
+    taxNetBookValueCents: number;
+    count: number;
+  };
 }) {
   const router = useRouter();
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth() + 1);
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<"book" | "tax" | null>(null);
   const [result, setResult] = useState<{
+    kind: "book" | "tax";
     processed: number;
     totalDepreciationCents: number;
     entryNumber?: string;
@@ -57,13 +72,14 @@ export function FixedAssetsClient({
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  async function runDepreciation() {
+  async function runBookDepreciation() {
     setError(null);
     setResult(null);
-    setBusy(true);
+    setBusy("book");
     try {
       const res = await api.runDepreciation(year, month);
       setResult({
+        kind: "book",
         processed: res.processed,
         totalDepreciationCents: res.totalDepreciationCents,
         entryNumber: res.entryNumber,
@@ -73,7 +89,27 @@ export function FixedAssetsClient({
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Couldn't run depreciation.");
     } finally {
-      setBusy(false);
+      setBusy(null);
+    }
+  }
+
+  async function runTaxDepreciation() {
+    setError(null);
+    setResult(null);
+    setBusy("tax");
+    try {
+      const res = await api.runTaxDepreciation(year, month);
+      setResult({
+        kind: "tax",
+        processed: res.processed,
+        totalDepreciationCents: res.totalDepreciationCents,
+        skipped: res.skipped,
+      });
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Couldn't run tax depreciation.");
+    } finally {
+      setBusy(null);
     }
   }
 
@@ -82,19 +118,36 @@ export function FixedAssetsClient({
       <PageHeader
         eyebrow="Accounting"
         title="Fixed assets"
-        description="Vehicles, equipment, buildings, and other long-lived assets. Monthly depreciation runs straight-line across the useful life."
+        description="Vehicles, equipment, buildings, and other long-lived assets. Book depreciation posts to the GL; a parallel tax schedule runs memo-only for tax computation."
         action={
-          <Link href="/app/fixed-assets/new" className="btn-primary">
-            <Plus className="h-4 w-4" aria-hidden />
-            Register asset
-          </Link>
+          <div className="flex items-center gap-2">
+            <Link href={`/app/fixed-assets/schedule?year=${year}`} className="btn-secondary">
+              <BarChart3 className="h-4 w-4" aria-hidden />
+              Year schedule
+            </Link>
+            <Link href="/app/fixed-assets/new" className="btn-primary">
+              <Plus className="h-4 w-4" aria-hidden />
+              Register asset
+            </Link>
+          </div>
         }
       />
 
-      <section className="mt-6 grid gap-3 sm:grid-cols-3">
+      <section className="mt-6 grid gap-3 sm:grid-cols-4">
         <SummaryCard label="Total cost" value={formatLKR(totals.costCents)} sub={`${totals.count} ${totals.count === 1 ? "asset" : "assets"}`} />
-        <SummaryCard label="Accumulated depreciation" value={formatLKR(totals.accumulatedCents)} sub="Contra-asset on the balance sheet" />
-        <SummaryCard label="Net book value" value={formatLKR(totals.netBookValueCents)} sub="Cost − accumulated" emphasis />
+        <SummaryCard label="Book NBV" value={formatLKR(totals.netBookValueCents)} sub={`Accumulated ${formatLKR(totals.accumulatedCents)}`} emphasis />
+        <SummaryCard label="Tax NBV (memo)" value={formatLKR(totals.taxNetBookValueCents)} sub={`Accumulated ${formatLKR(totals.taxAccumulatedCents)}`} emphasis />
+        <SummaryCard
+          label="Book ↔ tax gap"
+          value={formatLKR(totals.netBookValueCents - totals.taxNetBookValueCents)}
+          sub={
+            totals.netBookValueCents === totals.taxNetBookValueCents
+              ? "Schedules match"
+              : totals.netBookValueCents > totals.taxNetBookValueCents
+                ? "Tax depreciated faster"
+                : "Book depreciated faster"
+          }
+        />
       </section>
 
       <section className="mt-6 rounded-card border-hairline border-border bg-surface-elevated p-5">
@@ -140,12 +193,22 @@ export function FixedAssetsClient({
             </div>
             <button
               type="button"
-              onClick={runDepreciation}
-              disabled={busy || assets.length === 0}
+              onClick={runBookDepreciation}
+              disabled={busy !== null || assets.length === 0}
               className="btn-secondary disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {busy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <CheckCircle2 className="h-4 w-4" aria-hidden />}
-              Run
+              {busy === "book" ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <CheckCircle2 className="h-4 w-4" aria-hidden />}
+              Run book
+            </button>
+            <button
+              type="button"
+              onClick={runTaxDepreciation}
+              disabled={busy !== null || assets.length === 0}
+              className="btn-secondary disabled:cursor-not-allowed disabled:opacity-50"
+              title="Memo-only: does not post to GL"
+            >
+              {busy === "tax" ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <CheckCircle2 className="h-4 w-4" aria-hidden />}
+              Run tax
             </button>
           </div>
         </div>
@@ -153,9 +216,11 @@ export function FixedAssetsClient({
         {result && (
           <div className="mt-3 rounded-md border-hairline border-mint/40 bg-mint-surface/40 px-4 py-3 text-small">
             <p className="text-charcoal">
-              Depreciated {result.processed} {result.processed === 1 ? "asset" : "assets"} · posted{" "}
+              {result.kind === "tax" ? "Tax (memo) " : "Book "}
+              depreciated {result.processed} {result.processed === 1 ? "asset" : "assets"} ·{" "}
               <span className="tabular-nums font-medium">{formatLKR(result.totalDepreciationCents)}</span>
-              {result.entryNumber && <> as <span className="tabular-nums">{result.entryNumber}</span></>}
+              {result.entryNumber && <> posted as <span className="tabular-nums">{result.entryNumber}</span></>}
+              {result.kind === "tax" && <> · no GL impact</>}
             </p>
             {result.skipped.length > 0 && (
               <details className="mt-2">
@@ -196,12 +261,12 @@ export function FixedAssetsClient({
               <tr>
                 <th className="w-24 px-4 py-3 text-left">Code</th>
                 <th className="px-4 py-3 text-left">Name</th>
-                <th className="w-28 px-4 py-3 text-left">Category</th>
-                <th className="w-28 px-4 py-3 text-left">Acquired</th>
-                <th className="w-20 px-4 py-3 text-right">Life (mo)</th>
-                <th className="w-32 px-4 py-3 text-right">Cost</th>
-                <th className="w-32 px-4 py-3 text-right">Accumulated</th>
-                <th className="w-32 px-4 py-3 text-right">NBV</th>
+                <th className="w-24 px-4 py-3 text-left">Category</th>
+                <th className="w-28 px-4 py-3 text-right">Cost</th>
+                <th className="w-20 px-4 py-3 text-center" title="Book schedule method">Book</th>
+                <th className="w-32 px-4 py-3 text-right">Book NBV</th>
+                <th className="w-20 px-4 py-3 text-center" title="Tax schedule method">Tax</th>
+                <th className="w-32 px-4 py-3 text-right">Tax NBV</th>
                 <th className="w-24 px-4 py-3 text-center">Status</th>
               </tr>
             </thead>
@@ -215,15 +280,21 @@ export function FixedAssetsClient({
                     <Link href={`/app/fixed-assets/${a.id}`} className="text-charcoal underline-offset-4 hover:underline">
                       {a.name}
                     </Link>
+                    <p className="text-caption text-text-tertiary">{formatDate(a.acquisitionDate)}</p>
                   </td>
                   <td className="px-4 py-3 text-text-secondary">{categoryLabels[a.category]}</td>
-                  <td className="px-4 py-3 tabular-nums text-text-secondary">{formatDate(a.acquisitionDate)}</td>
-                  <td className="px-4 py-3 text-right tabular-nums text-text-secondary">{a.usefulLifeMonths}</td>
                   <td className="px-4 py-3 text-right tabular-nums">{formatLKR(a.costCents)}</td>
-                  <td className="px-4 py-3 text-right tabular-nums text-text-secondary">
-                    {formatLKR(a.accumulatedDepreciationCents)}
+                  <td className="px-4 py-3 text-center text-caption text-text-secondary">
+                    {methodLabels[a.depreciationMethod]}
                   </td>
                   <td className="px-4 py-3 text-right tabular-nums text-charcoal">{formatLKR(a.netBookValueCents)}</td>
+                  <td className="px-4 py-3 text-center text-caption text-text-secondary">
+                    {methodLabels[a.taxDepreciationMethod]}
+                    {a.taxDepreciationMethod === "wdv" && a.taxAnnualRateBps != null && (
+                      <span className="ml-1 text-text-tertiary">{(a.taxAnnualRateBps / 100).toFixed(0)}%</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums text-charcoal">{formatLKR(a.taxNetBookValueCents)}</td>
                   <td className="px-4 py-3 text-center">
                     <span className={`rounded-full px-2.5 py-0.5 text-caption font-medium ${statusStyles[a.status]}`}>
                       {statusLabels[a.status]}
