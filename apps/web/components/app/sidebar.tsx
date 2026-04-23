@@ -30,6 +30,7 @@ import {
   LogOut,
   ShieldCheck,
   BadgePercent,
+  Clock,
   type LucideIcon,
 } from "lucide-react";
 
@@ -120,6 +121,7 @@ const nav: Group[] = [
     title: "HR",
     items: [
       { label: "Employees", href: "/app/employees", icon: UserRound },
+      { label: "Attendance", href: "/app/attendance", icon: Clock },
       { label: "Salary components", href: "/app/salary-components", icon: Layers },
       { label: "Payroll runs", href: "/app/payroll", icon: Briefcase },
       { label: "Final settlements", href: "/app/final-settlements", icon: LogOut },

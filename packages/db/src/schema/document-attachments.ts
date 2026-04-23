@@ -65,6 +65,10 @@ export const DOCUMENT_ATTACHMENT_ENTITY_TYPES = [
   // advance / top-up rows attach receipts here via the shared
   // <AttachmentsPanel />.
   "petty_cash_transaction",
+  // Widened in migration 76 (roadmap #39 attendance capture).
+  // Geofence photos and manual muster sheet scans attach to
+  // individual attendance rows.
+  "attendance_record",
 ] as const;
 
 export type DocumentAttachmentEntityType =

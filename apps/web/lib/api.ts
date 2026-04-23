@@ -1630,6 +1630,168 @@ export const api = {
       { method: "POST", json: body },
     ),
 
+  // --- Attendance capture (roadmap #39) ------------------------------
+  // Devices, biometric employee map, daily records, biometric imports,
+  // and a supervisor exceptions queue. See apps/api/src/modules/hr/
+  // attendance.ts for the full server-side design.
+  listAttendanceDevices: () =>
+    request<{ devices: AttendanceDevice[] }>("/attendance/devices"),
+  getAttendanceDevice: (id: string) =>
+    request<{ device: AttendanceDevice }>(`/attendance/devices/${id}`),
+  createAttendanceDevice: (body: {
+    name: string;
+    deviceType: AttendanceDeviceType;
+    branchId?: string | null;
+    exportFormat?: AttendanceDeviceExportFormat | null;
+    columnTemplate?: Record<string, unknown>;
+    notes?: string;
+  }) =>
+    request<{ device: AttendanceDevice }>("/attendance/devices", {
+      method: "POST",
+      json: body,
+    }),
+  updateAttendanceDevice: (
+    id: string,
+    body: {
+      name?: string;
+      deviceType?: AttendanceDeviceType;
+      branchId?: string | null;
+      exportFormat?: AttendanceDeviceExportFormat | null;
+      columnTemplate?: Record<string, unknown>;
+      notes?: string;
+    },
+  ) =>
+    request<{ device: AttendanceDevice }>(`/attendance/devices/${id}`, {
+      method: "PATCH",
+      json: body,
+    }),
+  deleteAttendanceDevice: (id: string) =>
+    request<{ ok: true }>(`/attendance/devices/${id}`, { method: "DELETE" }),
+  getBiometricMap: (deviceId: string) =>
+    request<{ rows: BiometricMapRow[] }>(
+      `/attendance/devices/${deviceId}/map`,
+    ),
+  replaceBiometricMap: (
+    deviceId: string,
+    rows: Array<{ biometricEmployeeId: string; employeeId: string }>,
+  ) =>
+    request<{ ok: true; count: number }>(
+      `/attendance/devices/${deviceId}/map`,
+      { method: "PUT", json: { rows } },
+    ),
+  listAttendanceRecords: (q?: {
+    dateFrom?: string;
+    dateTo?: string;
+    employeeId?: string;
+    branchId?: string;
+    status?: AttendanceStatus;
+    method?: AttendanceMethod;
+    hasConflict?: boolean;
+  }) => {
+    const params = new URLSearchParams();
+    if (q?.dateFrom) params.set("date_from", q.dateFrom);
+    if (q?.dateTo) params.set("date_to", q.dateTo);
+    if (q?.employeeId) params.set("employee_id", q.employeeId);
+    if (q?.branchId) params.set("branch_id", q.branchId);
+    if (q?.status) params.set("status", q.status);
+    if (q?.method) params.set("method", q.method);
+    if (q?.hasConflict !== undefined)
+      params.set("has_conflict", q.hasConflict ? "true" : "false");
+    const qs = params.toString();
+    return request<{ records: AttendanceRecord[] }>(
+      `/attendance/records${qs ? `?${qs}` : ""}`,
+    );
+  },
+  getAttendanceRecord: (id: string) =>
+    request<{ record: AttendanceRecord }>(`/attendance/records/${id}`),
+  createAttendanceRecord: (body: {
+    employeeId: string;
+    attendanceDate: string;
+    branchId?: string | null;
+    checkInAt?: string | null;
+    checkOutAt?: string | null;
+    method: AttendanceMethod;
+    status?: AttendanceStatus;
+    locationLat?: number | null;
+    locationLng?: number | null;
+    notes?: string;
+  }) =>
+    request<{ record: AttendanceRecord; outcome: "created" | "updated" | "conflict" }>(
+      "/attendance/records",
+      { method: "POST", json: body },
+    ),
+  updateAttendanceRecord: (
+    id: string,
+    body: {
+      branchId?: string | null;
+      checkInAt?: string | null;
+      checkOutAt?: string | null;
+      status?: AttendanceStatus;
+      hasConflict?: boolean;
+      conflictReason?: string | null;
+      notes?: string;
+    },
+  ) =>
+    request<{ record: AttendanceRecord }>(`/attendance/records/${id}`, {
+      method: "PATCH",
+      json: body,
+    }),
+  deleteAttendanceRecord: (id: string) =>
+    request<{ ok: true }>(`/attendance/records/${id}`, { method: "DELETE" }),
+  attendanceCheckIn: (body: {
+    locationLat?: number | null;
+    locationLng?: number | null;
+    employeeId?: string;
+  }) =>
+    request<{ record: AttendanceRecord; outcome: "created" | "updated" | "conflict" }>(
+      "/attendance/records/check-in",
+      { method: "POST", json: body },
+    ),
+  attendanceCheckOut: (body: {
+    locationLat?: number | null;
+    locationLng?: number | null;
+    employeeId?: string;
+  }) =>
+    request<{ record: AttendanceRecord; outcome: "created" | "updated" | "conflict" }>(
+      "/attendance/records/check-out",
+      { method: "POST", json: body },
+    ),
+  attendanceMuster: (body: {
+    attendanceDate: string;
+    branchId?: string | null;
+    employeeIds: string[];
+    status?: AttendanceStatus;
+    notes?: string;
+  }) =>
+    request<{
+      created: number;
+      updated: number;
+      conflicts: number;
+    }>("/attendance/records/muster", { method: "POST", json: body }),
+  listAttendanceImports: (deviceId?: string) => {
+    const qs = deviceId ? `?device_id=${encodeURIComponent(deviceId)}` : "";
+    return request<{ imports: AttendanceImport[] }>(`/attendance/imports${qs}`);
+  },
+  getAttendanceImport: (id: string) =>
+    request<{ import: AttendanceImport }>(`/attendance/imports/${id}`),
+  createAttendanceImport: (body: {
+    attendanceDeviceId: string;
+    fileName: string;
+    fileSizeBytes?: number;
+    columnTemplate?: Record<string, unknown>;
+    rows: Array<{
+      biometricEmployeeId: string;
+      punchAt: string;
+      direction?: "in" | "out" | null;
+    }>;
+  }) =>
+    request<{ import: AttendanceImport }>("/attendance/imports", {
+      method: "POST",
+      json: body,
+    }),
+  listAttendanceExceptions: () =>
+    request<{ exceptions: AttendanceException[] }>("/attendance/exceptions"),
+
   // --- Document attachments (roadmap #32) ----------------------------
   // Cross-module file store. Upload goes through a FormData POST so we
   // can stream bytes without base64 bloat. Download / preview return a
@@ -1695,7 +1857,8 @@ export type DocumentAttachmentEntityType =
   | "receipt"
   | "final_settlement"
   | "journal_entry"
-  | "petty_cash_transaction";
+  | "petty_cash_transaction"
+  | "attendance_record";
 
 export interface DocumentAttachmentRow {
   id: string;
@@ -5909,4 +6072,123 @@ export interface PettyCashReconciliationRow {
   notes: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+// Attendance capture (roadmap #39) — rows shared across list/detail
+// screens. Shape mirrors packages/db/src/schema/attendance-*.
+
+export type AttendanceDeviceType =
+  | "zkteco"
+  | "essl"
+  | "suprema"
+  | "other"
+  | "qr"
+  | "manual";
+
+export type AttendanceDeviceExportFormat = "csv" | "xlsx" | "txt";
+
+export interface AttendanceDevice {
+  id: string;
+  name: string;
+  deviceType: AttendanceDeviceType;
+  branchId: string | null;
+  exportFormat: AttendanceDeviceExportFormat | null;
+  columnTemplate: Record<string, unknown>;
+  notes: string | null;
+  lastImportAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt: string | null;
+}
+
+export type AttendanceMethod =
+  | "qr"
+  | "biometric"
+  | "geofence"
+  | "manual_muster"
+  | "self";
+
+export type AttendanceStatus =
+  | "present"
+  | "absent"
+  | "half_day"
+  | "on_leave"
+  | "holiday";
+
+export interface AttendanceRecord {
+  id: string;
+  employeeId: string;
+  attendanceDate: string;
+  branchId: string | null;
+  checkInAt: string | null;
+  checkOutAt: string | null;
+  totalMinutes: number | null;
+  method: AttendanceMethod;
+  status: AttendanceStatus;
+  sourceDeviceId: string | null;
+  supervisorUserId: string | null;
+  locationLat: string | null;
+  locationLng: string | null;
+  hasConflict: boolean;
+  conflictReason: string | null;
+  notes: string | null;
+  createdByUserId: string;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt: string | null;
+  // Join columns added by the list/detail routes.
+  employeeFullName?: string | null;
+  employeeCode?: string | null;
+}
+
+export type AttendanceImportStatus =
+  | "processing"
+  | "completed"
+  | "failed";
+
+export interface AttendanceImportError {
+  row: number;
+  biometricEmployeeId?: string;
+  reason: string;
+}
+
+export interface AttendanceImport {
+  id: string;
+  attendanceDeviceId: string;
+  fileName: string;
+  fileSizeBytes: number | null;
+  rowsTotal: number;
+  rowsImported: number;
+  rowsSkipped: number;
+  rowsErrored: number;
+  errors: AttendanceImportError[];
+  status: AttendanceImportStatus;
+  importedByUserId: string;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+export interface BiometricMapRow {
+  id: string;
+  biometricEmployeeId: string;
+  employeeId: string;
+  employeeFullName: string | null;
+  employeeCode: string | null;
+}
+
+// Exceptions endpoint returns raw attendance_records joined with employee.
+// Shape is a union of AttendanceRecord columns in snake_case (raw SQL)
+// so callers coerce via the helpers below.
+export interface AttendanceException {
+  id: string;
+  employee_id: string;
+  attendance_date: string;
+  check_in_at: string | null;
+  check_out_at: string | null;
+  method: AttendanceMethod;
+  status: AttendanceStatus;
+  has_conflict: boolean;
+  conflict_reason: string | null;
+  employee_full_name: string | null;
+  employee_code: string | null;
 }

@@ -60,6 +60,7 @@ import {
   expenseClaimsRoutes,
 } from "./modules/hr/expense-claims.js";
 import { payrollRunsRoutes } from "./modules/hr/payroll-runs.js";
+import { attendanceRoutes } from "./modules/hr/attendance.js";
 import {
   finalSettlementRoutes,
   finalSettlementByIdRoutes,
@@ -188,6 +189,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await server.register(bonusRunsRoutes, { prefix: "/bonus-runs" });
   await server.register(expenseCategoriesRoutes, { prefix: "/expense-categories" });
   await server.register(expenseClaimsRoutes, { prefix: "/expense-claims" });
+  await server.register(attendanceRoutes, { prefix: "/attendance" });
   await server.register(dashboardRoutes, { prefix: "/dashboard" });
   await server.register(trialBalanceRoutes, { prefix: "/reports/trial-balance" });
   await server.register(profitLossRoutes, { prefix: "/reports/profit-loss" });

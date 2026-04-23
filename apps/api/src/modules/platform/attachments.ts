@@ -70,6 +70,7 @@ const ENTITY_TABLE: Record<EntityType, string> = {
   final_settlement: "final_settlements",
   journal_entry: "journal_entries",
   petty_cash_transaction: "petty_cash_transactions",
+  attendance_record: "attendance_records",
 };
 
 function projectRow(row: typeof schema.documentAttachments.$inferSelect) {
