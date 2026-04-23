@@ -40,7 +40,7 @@ export default async function ApprovalsPage() {
       <PageHeader
         eyebrow="Admin"
         title="Approval workflows"
-        description="Design linear approval chains per document type. Trigger by minimum amount or submitter; route each step to one or more roles or named users. Policies are stored here today — wiring them into posting flows ships in a follow-up."
+        description="Design linear approval chains per document type. Trigger by minimum amount or submitter; route each step to one or more roles or named users. Journal entries are wired — submitters with a matching policy land in the Approvals queue; expense claims, bills, POs, and payroll follow in the next PRs."
       />
       <ApprovalsClient initialPolicies={policies} roles={roles} users={users} />
     </main>

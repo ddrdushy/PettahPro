@@ -1,0 +1,611 @@
+import type { FastifyPluginAsync } from "fastify";
+import { and, eq, desc, inArray, sql } from "drizzle-orm";
+import { z } from "zod";
+import { withTenant, schema, type ApprovalRequest } from "@pettahpro/db";
+import { requireAuth } from "../../lib/with-tenant.js";
+import { requirePermission } from "../../lib/permissions.js";
+import { recordAuditEvent } from "../../lib/audit.js";
+import { emitNotification } from "../notifications/emit.js";
+import { postJournal } from "../accounting/journal-posting.js";
+import {
+  ApprovalEngineError,
+  cancelApprovalRequest,
+  loadUserRoleIds,
+  recordDecision,
+} from "./approval-engine.js";
+
+/**
+ * Cross-domain approval queue routes — roadmap #43 / PR #74.
+ *
+ * The engine lives in approval-engine.ts. These routes are the thin
+ * HTTP surface tenants use to see and decide on in-flight requests
+ * regardless of source document type.
+ *
+ * Permissions:
+ *   - GET /approvals and /approvals/:id           → any authenticated user
+ *     (you can see requests you submitted, and requests where you're
+ *     an approver). A user who sees neither just gets an empty list.
+ *   - POST /approvals/:id/approve|reject|cancel   → approval.decide
+ *     (new permission key, see 55-tenant-admin.sql seed). Owner bypass
+ *     covers existing tenants with no RBAC configured.
+ *
+ * Approve semantics per document type:
+ *   - When the final step of a journal_entry request approves, we
+ *     also post the underlying journal_entry_draft via postJournal
+ *     and flip the draft row. Other document types are follow-up PRs
+ *     and currently 501 on final approval.
+ */
+
+const DecideBodySchema = z.object({
+  reason: z.string().trim().max(2000).optional(),
+});
+
+const CancelBodySchema = z.object({
+  reason: z.string().trim().max(2000).optional(),
+});
+
+const ListQuerySchema = z.object({
+  scope: z.enum(["all", "mine", "submitted_by_me"]).default("all"),
+  status: z.enum(["pending", "approved", "rejected", "cancelled"]).optional(),
+  documentType: z.string().max(64).optional(),
+});
+
+export const approvalsRoutes: FastifyPluginAsync = async (fastify) => {
+  // GET /approvals?scope=mine|submitted_by_me|all
+  //
+  // "mine" = requests where I'm currently the approver on the open
+  // step (i.e. the request is pending AND I'm in the current step's
+  // approvers list either directly or via a role I hold).
+  //
+  // "submitted_by_me" = I created the submission, regardless of who's
+  // deciding.
+  //
+  // "all" = tenant-wide list. Cheap to scope because every row is
+  // already tenant-bound.
+  fastify.get("/", async (req, reply) => {
+    const ctx = requireAuth(req, reply);
+    if (!ctx) return;
+
+    const parsed = ListQuerySchema.safeParse(req.query ?? {});
+    if (!parsed.success) {
+      return reply
+        .status(400)
+        .send({ error: { code: "INVALID_QUERY", issues: parsed.error.issues } });
+    }
+    const { scope, status, documentType } = parsed.data;
+
+    const rows = await withTenant(ctx.tenantId, async (tx) => {
+      if (scope === "mine") {
+        const roleIds = await loadUserRoleIds(tx, ctx.userId);
+        // Build a JSON array of user identifiers the step must match.
+        // We use a raw SQL EXISTS against jsonb_array_elements to
+        // avoid pulling every pending step into memory — the query
+        // returns the requests directly.
+        const idBag = JSON.stringify([
+          { kind: "user", id: ctx.userId },
+          ...roleIds.map((id) => ({ kind: "role", id })),
+        ]);
+        const res = (await tx.execute(sql`
+          SELECT r.*
+          FROM approval_requests r
+          INNER JOIN approval_request_steps s
+            ON s.request_id = r.id
+           AND s.tenant_id = r.tenant_id
+           AND s.step_idx = r.current_step_idx
+           AND s.status = 'pending'
+          WHERE r.tenant_id = current_tenant_id()
+            AND r.status = 'pending'
+            AND r.submitter_user_id <> ${ctx.userId}::uuid
+            AND EXISTS (
+              SELECT 1
+              FROM jsonb_array_elements(s.approvers) AS ap(approver)
+              INNER JOIN jsonb_array_elements(${idBag}::jsonb) AS me(identity)
+                ON (ap.approver ->> 'kind') = (me.identity ->> 'kind')
+               AND (ap.approver ->> 'id')   = (me.identity ->> 'id')
+            )
+          ORDER BY r.created_at DESC
+          LIMIT 200
+        `)) as unknown as Array<Record<string, unknown>>;
+        return res.map(rowToRequest);
+      }
+
+      if (scope === "submitted_by_me") {
+        const q = tx
+          .select()
+          .from(schema.approvalRequests)
+          .where(
+            and(
+              eq(schema.approvalRequests.tenantId, ctx.tenantId),
+              eq(schema.approvalRequests.submitterUserId, ctx.userId),
+              ...(status ? [eq(schema.approvalRequests.status, status)] : []),
+              ...(documentType
+                ? [eq(schema.approvalRequests.documentType, documentType)]
+                : []),
+            ),
+          )
+          .orderBy(desc(schema.approvalRequests.createdAt))
+          .limit(200);
+        return (await q).map((r) => r);
+      }
+
+      // scope === "all"
+      return tx
+        .select()
+        .from(schema.approvalRequests)
+        .where(
+          and(
+            eq(schema.approvalRequests.tenantId, ctx.tenantId),
+            ...(status ? [eq(schema.approvalRequests.status, status)] : []),
+            ...(documentType
+              ? [eq(schema.approvalRequests.documentType, documentType)]
+              : []),
+          ),
+        )
+        .orderBy(desc(schema.approvalRequests.createdAt))
+        .limit(200);
+    });
+
+    return reply.send({ requests: rows });
+  });
+
+  // GET /approvals/:id — request + all steps.
+  fastify.get<{ Params: { id: string } }>("/:id", async (req, reply) => {
+    const ctx = requireAuth(req, reply);
+    if (!ctx) return;
+
+    const data = await withTenant(ctx.tenantId, async (tx) => {
+      const [request] = await tx
+        .select()
+        .from(schema.approvalRequests)
+        .where(
+          and(
+            eq(schema.approvalRequests.tenantId, ctx.tenantId),
+            eq(schema.approvalRequests.id, req.params.id),
+          ),
+        );
+      if (!request) return null;
+
+      const steps = await tx
+        .select()
+        .from(schema.approvalRequestSteps)
+        .where(
+          and(
+            eq(schema.approvalRequestSteps.tenantId, ctx.tenantId),
+            eq(schema.approvalRequestSteps.requestId, request.id),
+          ),
+        )
+        .orderBy(schema.approvalRequestSteps.stepIdx);
+
+      return { request, steps };
+    });
+
+    if (!data) return reply.status(404).send({ error: { code: "NOT_FOUND" } });
+    return reply.send(data);
+  });
+
+  // POST /approvals/:id/approve
+  fastify.post<{ Params: { id: string } }>("/:id/approve", async (req, reply) => {
+    const ctx = await requirePermission(req, reply, "approval.decide");
+    if (!ctx) return;
+
+    const parsed = DecideBodySchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return reply
+        .status(400)
+        .send({ error: { code: "INVALID_INPUT", issues: parsed.error.issues } });
+    }
+
+    try {
+      const result = await withTenant(ctx.tenantId, async (tx) => {
+        const roleIds = await loadUserRoleIds(tx, ctx.userId);
+        const decision = await recordDecision(tx, {
+          tenantId: ctx.tenantId,
+          requestId: req.params.id,
+          deciderUserId: ctx.userId,
+          deciderRoleIds: roleIds,
+          decision: "approve",
+          reason: parsed.data.reason ?? null,
+        });
+
+        // Final-step approved: drive the domain forward.
+        if (decision.finalised === "approved") {
+          await finaliseApprovedDocument(tx, {
+            request: decision.request,
+            deciderUserId: ctx.userId,
+            reqMeta: {
+              ip: req.ip ?? null,
+              ua: req.headers["user-agent"] ?? null,
+            },
+          });
+        }
+
+        await recordAuditEvent(tx, {
+          kind: "approval.decide",
+          summary:
+            decision.finalised === "approved"
+              ? `Approved ${decision.request.documentType} request`
+              : `Advanced ${decision.request.documentType} request to step ${decision.request.currentStepIdx + 1}/${decision.request.stepsTotal}`,
+          refType: "approval_request",
+          refId: decision.request.id,
+          diff: {
+            documentType: decision.request.documentType,
+            documentId: decision.request.documentId,
+            decision: "approve",
+            finalised: decision.finalised,
+            stepIdx: decision.request.currentStepIdx,
+            stepsTotal: decision.request.stepsTotal,
+          },
+          actorUserId: ctx.userId,
+          ipAddress: req.ip ?? null,
+          userAgent: req.headers["user-agent"] ?? null,
+        });
+
+        if (decision.finalised !== "approved") {
+          // Notify the next step's approvers.
+          await notifyNextStepApprovers(tx, decision.request);
+        } else {
+          await emitNotification(tx, {
+            tenantId: ctx.tenantId,
+            userId: decision.request.submitterUserId,
+            kind: "approval_decided",
+            title: `Your ${decision.request.documentType.replace(/_/g, " ")} was approved`,
+            body: parsed.data.reason ?? null,
+            refType: "approval_request",
+            refId: decision.request.id,
+          });
+        }
+
+        return decision;
+      });
+
+      return reply.send({ ok: true, request: result.request });
+    } catch (err) {
+      return handleEngineError(err, reply);
+    }
+  });
+
+  // POST /approvals/:id/reject
+  fastify.post<{ Params: { id: string } }>("/:id/reject", async (req, reply) => {
+    const ctx = await requirePermission(req, reply, "approval.decide");
+    if (!ctx) return;
+
+    const parsed = DecideBodySchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return reply
+        .status(400)
+        .send({ error: { code: "INVALID_INPUT", issues: parsed.error.issues } });
+    }
+
+    try {
+      const result = await withTenant(ctx.tenantId, async (tx) => {
+        const roleIds = await loadUserRoleIds(tx, ctx.userId);
+        const decision = await recordDecision(tx, {
+          tenantId: ctx.tenantId,
+          requestId: req.params.id,
+          deciderUserId: ctx.userId,
+          deciderRoleIds: roleIds,
+          decision: "reject",
+          reason: parsed.data.reason ?? null,
+        });
+
+        // Domain reject handling: for journal_entry, mark the draft
+        // rejected so the UI shows it in the rejected bucket.
+        if (decision.request.documentType === "journal_entry") {
+          await tx
+            .update(schema.journalEntryDrafts)
+            .set({
+              status: "rejected",
+              rejectedByUserId: ctx.userId,
+              rejectedAt: new Date(),
+              rejectionReason: parsed.data.reason ?? null,
+            })
+            .where(
+              and(
+                eq(schema.journalEntryDrafts.tenantId, ctx.tenantId),
+                eq(
+                  schema.journalEntryDrafts.id,
+                  decision.request.documentId,
+                ),
+              ),
+            );
+        }
+
+        await recordAuditEvent(tx, {
+          kind: "approval.decide",
+          summary: `Rejected ${decision.request.documentType} request`,
+          refType: "approval_request",
+          refId: decision.request.id,
+          diff: {
+            documentType: decision.request.documentType,
+            documentId: decision.request.documentId,
+            decision: "reject",
+            reason: parsed.data.reason ?? null,
+          },
+          actorUserId: ctx.userId,
+          ipAddress: req.ip ?? null,
+          userAgent: req.headers["user-agent"] ?? null,
+        });
+
+        await emitNotification(tx, {
+          tenantId: ctx.tenantId,
+          userId: decision.request.submitterUserId,
+          kind: "approval_decided",
+          title: `Your ${decision.request.documentType.replace(/_/g, " ")} was rejected`,
+          body: parsed.data.reason ?? null,
+          refType: "approval_request",
+          refId: decision.request.id,
+        });
+
+        return decision;
+      });
+
+      return reply.send({ ok: true, request: result.request });
+    } catch (err) {
+      return handleEngineError(err, reply);
+    }
+  });
+
+  // POST /approvals/:id/cancel — submitter withdraws their request.
+  // No permission required beyond auth; we check submitter identity
+  // inside the tx.
+  fastify.post<{ Params: { id: string } }>("/:id/cancel", async (req, reply) => {
+    const ctx = requireAuth(req, reply);
+    if (!ctx) return;
+
+    const parsed = CancelBodySchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return reply
+        .status(400)
+        .send({ error: { code: "INVALID_INPUT", issues: parsed.error.issues } });
+    }
+
+    const result = await withTenant(ctx.tenantId, async (tx) => {
+      const [request] = await tx
+        .select()
+        .from(schema.approvalRequests)
+        .where(
+          and(
+            eq(schema.approvalRequests.tenantId, ctx.tenantId),
+            eq(schema.approvalRequests.id, req.params.id),
+          ),
+        );
+      if (!request) return { error: "NOT_FOUND" as const };
+      if (request.status !== "pending") {
+        return { error: "NOT_PENDING" as const, status: request.status };
+      }
+      if (request.submitterUserId !== ctx.userId) {
+        return { error: "NOT_SUBMITTER" as const };
+      }
+
+      await cancelApprovalRequest(tx, {
+        tenantId: ctx.tenantId,
+        requestId: request.id,
+        reason: parsed.data.reason ?? null,
+      });
+
+      // Domain-specific cancel handling.
+      if (request.documentType === "journal_entry") {
+        await tx
+          .update(schema.journalEntryDrafts)
+          .set({
+            status: "rejected",
+            rejectedByUserId: ctx.userId,
+            rejectedAt: new Date(),
+            rejectionReason: parsed.data.reason ?? "Withdrawn by submitter",
+          })
+          .where(
+            and(
+              eq(schema.journalEntryDrafts.tenantId, ctx.tenantId),
+              eq(schema.journalEntryDrafts.id, request.documentId),
+            ),
+          );
+      }
+
+      await recordAuditEvent(tx, {
+        kind: "approval.cancel",
+        summary: `Cancelled ${request.documentType} request`,
+        refType: "approval_request",
+        refId: request.id,
+        diff: {
+          documentType: request.documentType,
+          documentId: request.documentId,
+          reason: parsed.data.reason ?? null,
+        },
+        actorUserId: ctx.userId,
+        ipAddress: req.ip ?? null,
+        userAgent: req.headers["user-agent"] ?? null,
+      });
+
+      return { ok: true as const };
+    });
+
+    if ("error" in result && result.error) {
+      const code = result.error;
+      const map: Record<typeof code, { status: number; message: string }> = {
+        NOT_FOUND: { status: 404, message: "Request not found." },
+        NOT_PENDING: { status: 409, message: "Request is no longer pending." },
+        NOT_SUBMITTER: {
+          status: 403,
+          message: "Only the submitter can cancel a request.",
+        },
+      };
+      const m = map[code];
+      return reply.status(m.status).send({ error: { code, message: m.message } });
+    }
+    return reply.send({ ok: true });
+  });
+};
+
+/**
+ * Domain-specific finalisation when the request's last step approves.
+ * Journal entries are wired here in PR #74; other document types
+ * ship in follow-up PRs (43a–43e).
+ */
+async function finaliseApprovedDocument(
+  tx: Parameters<Parameters<typeof withTenant>[1]>[0],
+  input: {
+    request: ApprovalRequest;
+    deciderUserId: string;
+    reqMeta: { ip: string | null; ua: string | null };
+  },
+): Promise<void> {
+  const { request } = input;
+  if (request.documentType === "journal_entry") {
+    const [draft] = await tx
+      .select()
+      .from(schema.journalEntryDrafts)
+      .where(
+        and(
+          eq(schema.journalEntryDrafts.tenantId, request.tenantId),
+          eq(schema.journalEntryDrafts.id, request.documentId),
+        ),
+      );
+    if (!draft) {
+      throw new Error(
+        `journal_entry draft ${request.documentId} missing at approval`,
+      );
+    }
+    if (draft.status !== "pending_approval") {
+      // Already acted on (e.g. legacy approve route ran first). Idempotent bail.
+      return;
+    }
+
+    const payloadLines = (draft.payload?.lines ?? []) as Array<{
+      accountId: string;
+      drCents: number;
+      crCents: number;
+      description?: string | null;
+      customerId?: string | null;
+      supplierId?: string | null;
+    }>;
+
+    const posted = await postJournal(tx, {
+      tenantId: request.tenantId,
+      entryDate: draft.entryDate,
+      memo: draft.memo ?? undefined,
+      sourceType: "manual",
+      postedByUserId: input.deciderUserId,
+      lines: payloadLines.map((l) => ({
+        accountId: l.accountId,
+        drCents: l.drCents ?? 0,
+        crCents: l.crCents ?? 0,
+        description: l.description ?? undefined,
+        customerId: l.customerId ?? null,
+        supplierId: l.supplierId ?? null,
+      })),
+    });
+
+    await tx
+      .update(schema.journalEntryDrafts)
+      .set({
+        status: "approved",
+        approvedByUserId: input.deciderUserId,
+        approvedAt: new Date(),
+        postedJournalEntryId: posted.entryId,
+      })
+      .where(
+        and(
+          eq(schema.journalEntryDrafts.tenantId, request.tenantId),
+          eq(schema.journalEntryDrafts.id, draft.id),
+        ),
+      );
+    return;
+  }
+
+  // Other domains land in their own follow-up PRs. For now, a final
+  // approval on an unwired document type just leaves the engine in
+  // "approved" state — the domain has its own state machine to
+  // progress separately. We don't throw because the engine contract
+  // is "record the decision"; wiring is the domain's responsibility.
+}
+
+async function notifyNextStepApprovers(
+  tx: Parameters<Parameters<typeof withTenant>[1]>[0],
+  request: ApprovalRequest,
+): Promise<void> {
+  const [nextStep] = await tx
+    .select()
+    .from(schema.approvalRequestSteps)
+    .where(
+      and(
+        eq(schema.approvalRequestSteps.tenantId, request.tenantId),
+        eq(schema.approvalRequestSteps.requestId, request.id),
+        eq(schema.approvalRequestSteps.stepIdx, request.currentStepIdx),
+      ),
+    );
+  if (!nextStep) return;
+
+  // Expand approvers to concrete user ids.
+  const userIds = new Set<string>();
+  const roleIds: string[] = [];
+  for (const a of nextStep.approvers) {
+    if (a.kind === "user") userIds.add(a.id);
+    else roleIds.push(a.id);
+  }
+  if (roleIds.length > 0) {
+    const res = (await tx.execute(sql`
+      SELECT DISTINCT user_id
+      FROM user_roles
+      WHERE tenant_id = current_tenant_id()
+        AND role_id IN (${sql.raw(roleIds.map((id) => `'${id}'::uuid`).join(","))})
+    `)) as unknown as Array<{ user_id: string }>;
+    for (const r of res) userIds.add(r.user_id);
+  }
+
+  for (const userId of userIds) {
+    if (userId === request.submitterUserId) continue; // SOD: don't nag the submitter
+    await emitNotification(tx, {
+      tenantId: request.tenantId,
+      userId,
+      kind: "approval_pending",
+      title: `Approval needed · ${request.documentType.replace(/_/g, " ")}`,
+      body:
+        request.amountCents != null
+          ? `Amount: ${(request.amountCents / 100).toFixed(2)}`
+          : null,
+      refType: "approval_request",
+      refId: request.id,
+    });
+  }
+}
+
+function handleEngineError(err: unknown, reply: import("fastify").FastifyReply) {
+  if (err instanceof ApprovalEngineError) {
+    const status =
+      err.code === "NOT_FOUND"
+        ? 404
+        : err.code === "NOT_AUTHORISED"
+          ? 403
+          : err.code === "SELF_APPROVAL"
+            ? 403
+            : 409;
+    return reply.status(status).send({ error: { code: err.code, message: err.message } });
+  }
+  throw err;
+}
+
+// Shape drizzle-returned rows that came back via tx.execute(sql``) —
+// drizzle's raw execute returns snake_case columns.
+function rowToRequest(r: Record<string, unknown>): ApprovalRequest {
+  return {
+    id: r.id as string,
+    tenantId: r.tenant_id as string,
+    documentType: r.document_type as string,
+    documentId: r.document_id as string,
+    amountCents: r.amount_cents == null ? null : Number(r.amount_cents),
+    policyId: (r.policy_id as string) ?? null,
+    submitterUserId: r.submitter_user_id as string,
+    status: r.status as string,
+    currentStepIdx: Number(r.current_step_idx),
+    stepsTotal: Number(r.steps_total),
+    decidedAt: r.decided_at ? new Date(r.decided_at as string) : null,
+    decidedByUserId: (r.decided_by_user_id as string) ?? null,
+    decisionReason: (r.decision_reason as string) ?? null,
+    createdAt: new Date(r.created_at as string),
+    updatedAt: new Date(r.updated_at as string),
+  } as unknown as ApprovalRequest;
+}
+
+// Keep linter happy — inArray isn't used yet; reserved for a
+// future "approve in bulk" route.
+void inArray;

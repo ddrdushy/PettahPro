@@ -15,9 +15,13 @@ export type AuditEventKind =
   // Accounting posting flow
   | "journal.post"
   | "journal.void"
-  // JE approval workflow
+  // JE approval workflow (legacy per-domain path)
   | "journal.approve"
   | "journal.reject"
+  // Generic approval engine (roadmap #43) — fires from /approvals routes
+  // regardless of source document type. diff carries documentType.
+  | "approval.decide"
+  | "approval.cancel"
   // Period locking
   | "period.close"
   | "period.reopen"

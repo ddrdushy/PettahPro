@@ -122,11 +122,16 @@ Each item has a spec reference, one-sentence description, and rough sizing (**S*
 
 ### Should-have (convenience/polish)
 
-🎉 **All original should-haves shipped + #42 role enforcement closed in PR #64 + #44 FX revaluation closed in PR #65 + #45 digest windows closed in PR #70.** One deferred follow-up remains.
+🎉 **All original should-haves shipped + #42 role enforcement closed in PR #64 + #44 FX revaluation closed in PR #65 + #45 digest windows closed in PR #70.** One deferred follow-up remains, now scoped into six smaller increments.
 
 | # | Feature | Spec | What it does | Size |
 |---|---|---|---|---|
-| 43 | Approval engine wiring | tenant-admin §7 | Route documents (journal entries, expense claims, bills, POs, bonus runs, final settlements) through the `approval_policies` designed in #26 at submit time. Today the designer persists policies but nothing consumes them — existing per-domain `pending_approval` columns keep working but don't know about the new engine. Follow-up to PR #63. | L |
+| 43 | ~~Approval engine core + JE wiring~~ | tenant-admin §7 | **Shipped in PR #74.** `approval_requests` + `approval_request_steps` runtime tables; generic engine (`resolveApplicablePolicy`, `createApprovalRequest`, `recordDecision`) snapshots policy steps on submit so in-flight requests bind to the rules in effect at submit time. Journal entries wired: engine path takes precedence; flat `journalApprovalThresholdCents` retained as back-compat fallback. `/app/approvals` queue with `mine` / `submitted_by_me` / `all` scopes; `approval.decide` permission key seeded on Owner/Admin/Accountant; SOD enforced explicitly (submitter ≠ approver). 43a–43e extend the same wiring to the other five domains. | ~~M~~ |
+| 43a | Approval engine — expense claim routing | tenant-admin §7 | Route `expense_claims` through the engine. Keeps the existing `submitted → approved → paid` state machine; injects an `approval_request` on submit when a policy matches. | S |
+| 43b | Approval engine — bill routing | tenant-admin §7 | Add threshold/policy-driven approval to bill posting. No existing approval flow today — additive. | S |
+| 43c | Approval engine — PO routing | tenant-admin §7 | Add approval to PO submission. Supports the spec's "new-supplier first PO → Owner" trigger (extend `trigger_rule` shape). | S |
+| 43d | Approval engine — payroll + bonus run routing | tenant-admin §7 | Always-approve policy for payroll runs (spec §7.1); threshold for bonus runs. | S |
+| 43e | Approval engine — final settlement routing | tenant-admin §7 | Always-approve for final settlements (sensitive exit calc). | S |
 | 45 | ~~Notification digest windows~~ | tenant-admin §10.2 | **Shipped in PR #70.** See "Employee notification preferences" in shipped list above. | ~~M~~ |
 
 ### Nice-to-have (advanced/niche)
@@ -166,9 +171,9 @@ These are their own workstreams — track separately from this roadmap.
 
 One PR = one feature. Ship, merge, move on. Batched PRs allowed when features are clearly related (e.g. DN + PO PDFs were batched because they follow the same pattern).
 
-Current recommendation: compliance + convenience + role enforcement + FX revaluation + POS + commission engine + digest windows + customer portal + inventory categories all done. Nothing user-visible is a hard gap and the easy-win pile is now empty. Next work falls in two camps:
+Current recommendation: compliance + convenience + role enforcement + FX revaluation + POS + commission engine + digest windows + customer portal + inventory categories + **approval engine core (JE)** all done. Nothing user-visible is a hard gap and the easy-win pile is now empty. Next work falls in two camps:
 
-1. **Close the remaining loop** — **#43 approval engine wiring** (L). Route documents through the `approval_policies` stored by #26 at submit time, replacing the existing per-domain `pending_approval` columns. Architecturally heavier but it's the last tracked follow-up.
+1. **Close the remaining approval wiring** — **#43a–#43e**, one domain per S-sized PR. Engine is live and proven on journal entries; each remaining PR is a thin submit-side call to `resolveApplicablePolicy` + `createApprovalRequest` plus a domain-side `finaliseApprovedDocument` hook.
 2. **Pick from Nice-to-have** — all M/L from here: #30 purchase requisition (M), #32 document attachments (M), #33 document template builder (L), #34 batch/serial/expiry tracking (L), #35 kit/bundle items (M), #38 petty cash float (M), #39 attendance capture (M), #40 dual depreciation (M).
 
-**Up next: operator's choice.** #43 closes the architecture debt; #34 (batch/serial/expiry) compounds nicely on top of the category tree just shipped; #32 (attachments) touches every transaction module and is the most universally-requested. No more S-sized shortcuts available.
+**Up next: #43a expense claim routing.** Smallest integration — expense claims already have a `submitted → approved → paid` state machine, so the engine just injects an `approval_request` on submit and the existing approve path can drain it. Then 43b–43e domain by domain, interleaved with Nice-to-have features as appetite dictates.

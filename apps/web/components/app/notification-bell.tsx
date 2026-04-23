@@ -22,6 +22,9 @@ function refHref(n: AppNotification): string | null {
     fiscal_year: `/app/accounting/periods`,
     journal_entry_draft: `/app/journals/approvals`,
     journal_entry: `/app/journals/${n.refId}`,
+    // Generic approval engine (roadmap #43). The queue is cross-document,
+    // so every approval_request notification lands on /app/approvals.
+    approval_request: `/app/approvals`,
   };
   return map[n.refType] ?? null;
 }

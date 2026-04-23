@@ -170,7 +170,8 @@ DECLARE
     'pos.close',         true,
     'reports.view',      true,
     'settings.manage',   true,
-    'users.manage',      true
+    'users.manage',      true,
+    'approval.decide',   true
   );
   accountant_perms jsonb := jsonb_build_object(
     'accounting.manage', true,
@@ -179,7 +180,8 @@ DECLARE
     'bills.create',      true,
     'bills.post',        true,
     'payments.manage',   true,
-    'reports.view',      true
+    'reports.view',      true,
+    'approval.decide',   true
   );
   sales_perms jsonb := jsonb_build_object(
     'invoices.create',   true,
