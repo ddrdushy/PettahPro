@@ -227,12 +227,25 @@ export const api = {
   listFixedAssets: () =>
     request<{
       assets: FixedAssetRow[];
-      totals: { costCents: number; accumulatedCents: number; netBookValueCents: number; count: number };
+      totals: {
+        costCents: number;
+        accumulatedCents: number;
+        netBookValueCents: number;
+        taxAccumulatedCents: number;
+        taxNetBookValueCents: number;
+        count: number;
+      };
     }>("/fixed-assets"),
   getFixedAsset: (id: string) =>
-    request<{ asset: FixedAssetRow; history: FixedAssetDepreciationEntry[] }>(`/fixed-assets/${id}`),
+    request<{
+      asset: FixedAssetRow;
+      history: FixedAssetDepreciationEntry[];
+      taxHistory: FixedAssetTaxDepreciationEntry[];
+    }>(`/fixed-assets/${id}`),
   createFixedAsset: (body: CreateFixedAsset) =>
     request<{ asset: FixedAssetRow }>("/fixed-assets", { method: "POST", json: body }),
+  updateFixedAsset: (id: string, body: UpdateFixedAsset) =>
+    request<{ asset: FixedAssetRow }>(`/fixed-assets/${id}`, { method: "PATCH", json: body }),
   runDepreciation: (year: number, month: number) =>
     request<{
       ok: true;
@@ -242,6 +255,28 @@ export const api = {
       entryNumber?: string;
       runDate?: string;
     }>("/fixed-assets/run-depreciation", { method: "POST", json: { year, month } }),
+  runTaxDepreciation: (year: number, month: number) =>
+    request<{
+      ok: true;
+      processed: number;
+      skipped: Array<{ id: string; name: string; reason: string }>;
+      totalDepreciationCents: number;
+      runDate?: string;
+    }>("/fixed-assets/run-tax-depreciation", { method: "POST", json: { year, month } }),
+  getFixedAssetSchedule: (year: number) =>
+    request<{
+      year: number;
+      rows: FixedAssetScheduleRow[];
+      totals: {
+        costCents: number;
+        bookYearCents: number;
+        bookAccumulatedCents: number;
+        bookNbvCents: number;
+        taxYearCents: number;
+        taxAccumulatedCents: number;
+        taxNbvCents: number;
+      };
+    }>(`/fixed-assets/schedule?year=${year}`),
 
   listInvoices: (channel?: "web" | "pos" | "all") =>
     request<{ invoices: InvoiceListRow[] }>(
@@ -2475,6 +2510,8 @@ export type FixedAssetCategory =
 
 export type FixedAssetStatus = "active" | "disposed" | "written_off";
 
+export type DepreciationMethod = "straight_line" | "wdv" | "sum_of_years_digits";
+
 export interface FixedAssetRow {
   id: string;
   code: string | null;
@@ -2488,10 +2525,20 @@ export interface FixedAssetRow {
   costCents: number;
   salvageCents: number;
   usefulLifeMonths: number;
-  depreciationMethod: "straight_line";
+  depreciationMethod: DepreciationMethod;
   accumulatedDepreciationCents: number;
   netBookValueCents: number;
   lastDepreciationRunDate: string | null;
+  // Tax schedule (dual depreciation, #40) — mirrors book unless the CA has
+  // overridden it on the asset (e.g. WDV at an IRD rate for tax but SLM for book).
+  taxDepreciationMethod: DepreciationMethod;
+  taxUsefulLifeMonths: number;
+  taxSalvageCents: number;
+  taxAnnualRateBps: number | null;
+  taxDepreciationStartDate: string;
+  taxAccumulatedDepreciationCents: number;
+  taxNetBookValueCents: number;
+  taxLastDepreciationRunDate: string | null;
   status: FixedAssetStatus;
   supplierId: string | null;
   billId: string | null;
@@ -2512,6 +2559,36 @@ export interface FixedAssetDepreciationEntry {
   createdAt: string;
 }
 
+export interface FixedAssetTaxDepreciationEntry {
+  id: string;
+  fixedAssetId: string;
+  runDate: string;
+  periodYear: number;
+  periodMonth: number;
+  depreciationCents: number;
+  accumulatedAfterCents: number;
+  createdAt: string;
+}
+
+export interface FixedAssetScheduleRow {
+  id: string;
+  code: string | null;
+  name: string;
+  category: FixedAssetCategory;
+  costCents: number;
+  bookMethod: DepreciationMethod;
+  bookLifeMonths: number;
+  bookYearCents: number;
+  bookAccumulatedCents: number;
+  bookNbvCents: number;
+  taxMethod: DepreciationMethod;
+  taxLifeMonths: number;
+  taxAnnualRateBps: number | null;
+  taxYearCents: number;
+  taxAccumulatedCents: number;
+  taxNbvCents: number;
+}
+
 export interface CreateFixedAsset {
   code?: string;
   name: string;
@@ -2521,12 +2598,30 @@ export interface CreateFixedAsset {
   costCents: number;
   salvageCents?: number;
   usefulLifeMonths: number;
+  depreciationMethod?: DepreciationMethod;
   assetAccountId?: string;
   accumulatedDepreciationAccountId?: string;
   depreciationExpenseAccountId?: string;
   supplierId?: string;
   billId?: string;
   notes?: string;
+  taxDepreciationMethod?: DepreciationMethod;
+  taxUsefulLifeMonths?: number;
+  taxSalvageCents?: number;
+  taxAnnualRateBps?: number;
+  taxDepreciationStartDate?: string;
+}
+
+export interface UpdateFixedAsset {
+  name?: string;
+  code?: string;
+  category?: FixedAssetCategory;
+  notes?: string;
+  taxDepreciationMethod?: DepreciationMethod;
+  taxUsefulLifeMonths?: number;
+  taxSalvageCents?: number;
+  taxAnnualRateBps?: number | null;
+  taxDepreciationStartDate?: string;
 }
 
 export type InvoiceStatus = "draft" | "posted" | "partially_paid" | "paid" | "void" | "written_off";

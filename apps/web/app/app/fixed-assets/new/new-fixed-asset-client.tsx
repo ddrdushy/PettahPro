@@ -10,6 +10,7 @@ import {
   type Account,
   type Supplier,
   type FixedAssetCategory,
+  type DepreciationMethod,
 } from "@/lib/api";
 import { PageHeader } from "@/components/app/page-header";
 import { formatLKR } from "@/lib/format";
@@ -25,6 +26,12 @@ const CATEGORIES: Array<{ value: FixedAssetCategory; label: string }> = [
   { value: "other", label: "Other" },
 ];
 
+const METHODS: Array<{ value: DepreciationMethod; label: string; hint: string }> = [
+  { value: "straight_line", label: "Straight line (SLM)", hint: "(Cost − salvage) ÷ life" },
+  { value: "wdv", label: "Written down value (WDV)", hint: "NBV × annual rate (common for SL tax)" },
+  { value: "sum_of_years_digits", label: "Sum of years' digits", hint: "Accelerated, rarely used" },
+];
+
 function toInt(s: string): number {
   const v = Number(s);
   return Number.isFinite(v) ? Math.max(0, Math.round(v * 100)) : 0;
@@ -33,6 +40,12 @@ function toInt(s: string): number {
 function toCount(s: string): number {
   const v = Number(s);
   return Number.isFinite(v) ? Math.max(0, Math.floor(v)) : 0;
+}
+
+// Percent string (e.g. "20" or "20.5") → basis points (2000 / 2050).
+function toBps(s: string): number {
+  const v = Number(s);
+  return Number.isFinite(v) ? Math.max(0, Math.round(v * 100)) : 0;
 }
 
 export function NewFixedAssetClient({
@@ -51,11 +64,19 @@ export function NewFixedAssetClient({
   const [cost, setCost] = useState("");
   const [salvage, setSalvage] = useState("0");
   const [lifeMonths, setLifeMonths] = useState("60");
+  const [method, setMethod] = useState<DepreciationMethod>("straight_line");
   const [supplierId, setSupplierId] = useState("");
   const [assetAccountId, setAssetAccountId] = useState("");
   const [accumAccountId, setAccumAccountId] = useState("");
   const [expenseAccountId, setExpenseAccountId] = useState("");
   const [notes, setNotes] = useState("");
+  // Tax schedule — default "mirror book", flip the toggle to diverge.
+  const [taxDiverges, setTaxDiverges] = useState(false);
+  const [taxMethod, setTaxMethod] = useState<DepreciationMethod>("wdv");
+  const [taxLifeMonths, setTaxLifeMonths] = useState("60");
+  const [taxSalvage, setTaxSalvage] = useState("0");
+  const [taxRatePct, setTaxRatePct] = useState("20"); // percent, not bps
+  const [taxStartDate, setTaxStartDate] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -74,7 +95,9 @@ export function NewFixedAssetClient({
   const monthlyDepreciation =
     category === "land" || months === 0
       ? 0
-      : Math.round((costCents - salvageCents) / Math.max(1, months));
+      : method === "wdv"
+        ? Math.round((costCents / Math.max(1, months)) * 2) // rough: 2x SLM for first month
+        : Math.round((costCents - salvageCents) / Math.max(1, months));
 
   async function submit() {
     setError(null);
@@ -94,6 +117,18 @@ export function NewFixedAssetClient({
       setError("Useful life must be at least 1 month.");
       return;
     }
+    const taxLife = toCount(taxLifeMonths);
+    const taxSalv = toInt(taxSalvage);
+    if (taxDiverges) {
+      if (taxLife <= 0) {
+        setError("Tax useful life must be at least 1 month.");
+        return;
+      }
+      if (taxSalv > costCents) {
+        setError("Tax salvage can't exceed cost.");
+        return;
+      }
+    }
 
     setBusy(true);
     try {
@@ -106,11 +141,21 @@ export function NewFixedAssetClient({
         costCents,
         salvageCents,
         usefulLifeMonths: months,
+        depreciationMethod: method,
         supplierId: supplierId || undefined,
         assetAccountId: assetAccountId || undefined,
         accumulatedDepreciationAccountId: accumAccountId || undefined,
         depreciationExpenseAccountId: expenseAccountId || undefined,
         notes: notes.trim() || undefined,
+        ...(taxDiverges
+          ? {
+              taxDepreciationMethod: taxMethod,
+              taxUsefulLifeMonths: taxLife,
+              taxSalvageCents: taxSalv,
+              taxAnnualRateBps: taxMethod === "wdv" ? toBps(taxRatePct) : undefined,
+              taxDepreciationStartDate: taxStartDate || undefined,
+            }
+          : {}),
       });
       router.push(`/app/fixed-assets/${res.asset.id}`);
     } catch (err) {
@@ -131,7 +176,7 @@ export function NewFixedAssetClient({
       <PageHeader
         eyebrow="Accounting"
         title="Register fixed asset"
-        description="Capitalise a long-lived asset. Monthly depreciation runs spread the cost less salvage evenly across its useful life."
+        description="Capitalise a long-lived asset. Monthly depreciation runs charge the book schedule to the GL; a parallel tax schedule runs memo-only for tax computation."
       />
 
       <section className="mt-6 grid gap-4 md:grid-cols-2">
@@ -183,11 +228,94 @@ export function NewFixedAssetClient({
         <Field label="Useful life (months)" required>
           <input type="number" min="1" max="600" step="1" value={lifeMonths} onChange={(e) => setLifeMonths(e.target.value)} className="input text-right tabular-nums" />
         </Field>
-        <div className="rounded-card border-hairline border-border bg-surface-recessed/40 p-4">
-          <p className="text-caption uppercase tracking-wide text-text-tertiary">Monthly depreciation</p>
+        <Field label="Method" required>
+          <select value={method} onChange={(e) => setMethod(e.target.value as DepreciationMethod)} className="input">
+            {METHODS.map((m) => (
+              <option key={m.value} value={m.value}>{m.label}</option>
+            ))}
+          </select>
+        </Field>
+        <div className="rounded-card border-hairline border-border bg-surface-recessed/40 p-4 md:col-span-2">
+          <p className="text-caption uppercase tracking-wide text-text-tertiary">Monthly depreciation (book, first period)</p>
           <p className="tabular-nums mt-1 text-h3 text-charcoal">{formatLKR(monthlyDepreciation)}</p>
-          <p className="mt-1 text-caption text-text-tertiary">Straight-line · (cost − salvage) ÷ life</p>
+          <p className="mt-1 text-caption text-text-tertiary">
+            {METHODS.find((m) => m.value === method)?.hint}
+          </p>
         </div>
+      </section>
+
+      <section className="mt-6 rounded-card border-hairline border-border bg-surface-elevated p-5">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-caption uppercase tracking-wide text-text-tertiary">Tax schedule</p>
+            <p className="mt-1 text-caption text-text-secondary">
+              Memo-only schedule used by the CA for tax computation. Never posts to the GL. By default it mirrors the book schedule — flip this on when the SL IRD rate differs from your accounting policy.
+            </p>
+          </div>
+          <label className="flex cursor-pointer items-center gap-2">
+            <input
+              type="checkbox"
+              checked={taxDiverges}
+              onChange={(e) => setTaxDiverges(e.target.checked)}
+              className="h-4 w-4 accent-mint-dark"
+            />
+            <span className="text-small text-charcoal">Tax differs from book</span>
+          </label>
+        </div>
+
+        {taxDiverges && (
+          <div className="mt-4 grid gap-4 md:grid-cols-2">
+            <Field label="Tax method" required>
+              <select value={taxMethod} onChange={(e) => setTaxMethod(e.target.value as DepreciationMethod)} className="input">
+                {METHODS.map((m) => (
+                  <option key={m.value} value={m.value}>{m.label}</option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Tax useful life (months)" required>
+              <input
+                type="number"
+                min="1"
+                max="600"
+                step="1"
+                value={taxLifeMonths}
+                onChange={(e) => setTaxLifeMonths(e.target.value)}
+                className="input text-right tabular-nums"
+              />
+            </Field>
+            <Field label="Tax salvage value (LKR)">
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={taxSalvage}
+                onChange={(e) => setTaxSalvage(e.target.value)}
+                className="input text-right tabular-nums"
+              />
+            </Field>
+            {taxMethod === "wdv" && (
+              <Field label="Annual rate (%)" hint="SL IRD schedule rate, e.g. 20 for 20%">
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  max="100"
+                  value={taxRatePct}
+                  onChange={(e) => setTaxRatePct(e.target.value)}
+                  className="input text-right tabular-nums"
+                />
+              </Field>
+            )}
+            <Field label="Tax start date" hint="Leave blank to use book start date">
+              <input
+                type="date"
+                value={taxStartDate}
+                onChange={(e) => setTaxStartDate(e.target.value)}
+                className="input"
+              />
+            </Field>
+          </div>
+        )}
       </section>
 
       <section className="mt-6 rounded-card border-hairline border-border bg-surface-elevated p-5">
