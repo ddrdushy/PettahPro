@@ -259,6 +259,24 @@ export default async function BillDetailPage({ params }: { params: { id: string 
             </dl>
           </section>
 
+          {bill.status === "pending_approval" && (
+            <section className="rounded-card border-hairline border-warning/40 bg-warning-bg p-5">
+              <p className="text-caption uppercase tracking-wide text-warning">
+                Awaiting approval
+              </p>
+              <p className="mt-1 text-small text-charcoal">
+                A bill approval policy matched this submission. The bill will
+                post to the ledger once the approver signs off.
+              </p>
+              <Link
+                href="/app/approvals"
+                className="btn-link mt-2 inline-flex text-small"
+              >
+                Open approvals queue →
+              </Link>
+            </section>
+          )}
+
           {bill.journalEntryId && (
             <section className="rounded-card border-hairline border-mint bg-mint-surface/40 p-5">
               <p className="text-caption uppercase tracking-wide text-mint-dark">Ledger</p>

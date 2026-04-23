@@ -15,6 +15,11 @@ import {
   resolveDefaultWarehouse,
   resolveStockGLAccounts,
 } from "../inventory/stock-posting.js";
+import {
+  resolveApplicablePolicy,
+  createApprovalRequest,
+  cancelApprovalRequest,
+} from "../admin/approval-engine.js";
 
 const LineSchema = z.object({
   itemId: z.string().uuid().optional(),
@@ -285,6 +290,320 @@ export async function computeBill(
   };
 }
 
+export type PostBillCoreError =
+  | "NOT_FOUND"
+  | "BAD_STATUS"
+  | "NO_LINES"
+  | "NO_AP_ACCOUNT"
+  | "NO_FREIGHT_ACCOUNT"
+  | "MISSING_EXPENSE_ACCOUNT"
+  | "NO_DEFAULT_WAREHOUSE";
+
+/**
+ * Shared "finish posting a bill" core — single source of truth for AP
+ * journal posting + stock receipts + state flip. Two callers:
+ *
+ *   · `POST /bills/:id/post` — immediate draft → posted for tenants
+ *     with no matching `document_type='bill'` approval policy. Passes
+ *     `allowStatuses: ["draft"]`.
+ *
+ *   · `finaliseApprovedDocument` in admin/approvals.ts — when the
+ *     approval engine's final step approves a bill, the engine drives
+ *     the state forward through this same helper. Passes
+ *     `allowStatuses: ["pending_approval"]`.
+ *
+ * `allowStatuses` is explicit on each caller rather than inferred from
+ * the current row state, so a future race (e.g. two decisions landing
+ * within the same transaction) can't accidentally post a bill twice.
+ *
+ * Returns a tagged union so the immediate caller can map errors to HTTP
+ * status; the engine caller just treats any `error` as an exception
+ * (the finaliser runs inside a tx, so returning an error there rolls
+ * back the approval decision — correct behaviour for missing AP
+ * account, etc.).
+ */
+export async function postBillCore(
+  tx: Parameters<Parameters<typeof withTenant>[1]>[0],
+  input: {
+    tenantId: string;
+    billId: string;
+    postedByUserId: string;
+    allowStatuses: readonly string[];
+  },
+): Promise<
+  | {
+      ok: true;
+      internalReference: string;
+      entryId: string;
+      entryNumber: string;
+      totalCents: number;
+      supplierId: string;
+    }
+  | { error: PostBillCoreError; status?: string }
+> {
+  const { tenantId, billId, postedByUserId, allowStatuses } = input;
+
+  const [bill] = await tx
+    .select()
+    .from(schema.bills)
+    .where(
+      and(
+        eq(schema.bills.tenantId, tenantId),
+        eq(schema.bills.id, billId),
+        isNull(schema.bills.deletedAt),
+      ),
+    )
+    .limit(1);
+  if (!bill) return { error: "NOT_FOUND" };
+  if (!allowStatuses.includes(bill.status)) {
+    return { error: "BAD_STATUS", status: bill.status };
+  }
+
+  const lines = await tx
+    .select()
+    .from(schema.billLines)
+    .where(eq(schema.billLines.billId, bill.id))
+    .orderBy(asc(schema.billLines.lineNo));
+  if (lines.length === 0) return { error: "NO_LINES" };
+
+  const charges = await tx
+    .select()
+    .from(schema.billCharges)
+    .where(eq(schema.billCharges.billId, bill.id))
+    .orderBy(asc(schema.billCharges.lineNo));
+
+  // AP account
+  const apRows = await tx
+    .select()
+    .from(schema.chartOfAccounts)
+    .where(
+      and(
+        eq(schema.chartOfAccounts.tenantId, tenantId),
+        eq(schema.chartOfAccounts.accountSubtype, "ap"),
+        isNull(schema.chartOfAccounts.deletedAt),
+      ),
+    )
+    .limit(1);
+  const apAccount = apRows[0];
+  if (!apAccount) return { error: "NO_AP_ACCOUNT" };
+
+  // Internal reference — allocate on first post. An engine-approved bill
+  // enters here with status='pending_approval' and internalReference=null,
+  // same as a draft, so we allocate now. Preserving a pre-existing value
+  // keeps future re-entry idempotent.
+  const internalReference =
+    bill.internalReference ?? (await nextDocumentNumber(tx, "bill"));
+
+  // Load linked items once — needed both to know which lines are stocked
+  // (for charge allocation) and for the stock-receipt pass below.
+  const trackedLinesForItems = lines.filter((l) => l.itemId !== null);
+  const linkedItems = trackedLinesForItems.length > 0
+    ? await tx
+        .select()
+        .from(schema.items)
+        .where(
+          and(
+            eq(schema.items.tenantId, tenantId),
+            isNull(schema.items.deletedAt),
+          ),
+        )
+    : [];
+  const itemById = new Map(linkedItems.map((i) => [i.id, i]));
+
+  // Allocate charges across stocked lines pro-rata by value (default) or
+  // by quantity. Lines without a tracked item don't receive any charge
+  // allocation; if zero stocked lines exist, the whole charge total is
+  // unallocated and posts to 5130 Freight & handling (fallback).
+  const allocationLines = lines.map((l) => {
+    const item = l.itemId ? itemById.get(l.itemId) : undefined;
+    const isStocked = item?.trackInventory === true;
+    return {
+      lineNetCents: l.lineSubtotalCents - l.discountCents,
+      quantity: Number(l.quantity),
+      isStocked,
+    };
+  });
+  const chargesTotalCents = charges.reduce((s, c) => s + c.amountCents, 0);
+  const allocationMethod =
+    (bill.chargeAllocationMethod as AllocationMethod) ?? "value";
+  const { perLineCents: allocatedPerLine, unallocatedCents } = allocateCharges(
+    allocationLines,
+    chargesTotalCents,
+    allocationMethod,
+  );
+
+  const journalLines: Parameters<typeof postJournal>[1]["lines"] = [];
+
+  // Expense lines grouped by expense account — for stocked lines this is
+  // the inventory account (charges capitalize here); for expense lines
+  // this is the per-line expense account.
+  const expenseByAccount = new Map<string, number>();
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i]!;
+    if (!l.expenseAccountId) return { error: "MISSING_EXPENSE_ACCOUNT" };
+    const net = l.lineSubtotalCents - l.discountCents;
+    const allocated = allocatedPerLine[i] ?? 0;
+    expenseByAccount.set(
+      l.expenseAccountId,
+      (expenseByAccount.get(l.expenseAccountId) ?? 0) + net + allocated,
+    );
+  }
+  // Unallocated charges (bill has no stocked lines) → expense to
+  // 5130 Freight & handling.
+  if (unallocatedCents > 0) {
+    const freightRows = await tx
+      .select()
+      .from(schema.chartOfAccounts)
+      .where(
+        and(
+          eq(schema.chartOfAccounts.tenantId, tenantId),
+          eq(schema.chartOfAccounts.code, "5130"),
+          isNull(schema.chartOfAccounts.deletedAt),
+        ),
+      )
+      .limit(1);
+    const freightAccountId = freightRows[0]?.id;
+    if (!freightAccountId) return { error: "NO_FREIGHT_ACCOUNT" };
+    expenseByAccount.set(
+      freightAccountId,
+      (expenseByAccount.get(freightAccountId) ?? 0) + unallocatedCents,
+    );
+  }
+  for (const [accountId, amount] of expenseByAccount) {
+    if (amount <= 0) continue;
+    journalLines.push({
+      accountId,
+      drCents: amount,
+      description: `Expense · ${internalReference}`,
+      supplierId: bill.supplierId,
+    });
+  }
+
+  // VAT recoverable (input tax), grouped by receivable account
+  const taxRows = await tx
+    .select()
+    .from(schema.taxCodes)
+    .where(eq(schema.taxCodes.tenantId, tenantId));
+  const receivableByTaxCode = new Map(
+    taxRows.map((t) => [t.id, t.receivableAccountId]),
+  );
+  const taxByAccount = new Map<string, number>();
+  for (const l of lines) {
+    if (l.taxCents === 0) continue;
+    const recAcc = receivableByTaxCode.get(l.taxCodeId ?? "");
+    if (!recAcc) continue;
+    taxByAccount.set(recAcc, (taxByAccount.get(recAcc) ?? 0) + l.taxCents);
+  }
+  for (const [accountId, amount] of taxByAccount) {
+    if (amount <= 0) continue;
+    journalLines.push({
+      accountId,
+      drCents: amount,
+      description: `Input tax · ${internalReference}`,
+    });
+  }
+
+  journalLines.push({
+    accountId: apAccount.id,
+    crCents: bill.totalCents,
+    description: `AP · ${internalReference}`,
+    supplierId: bill.supplierId,
+  });
+
+  const { entryId, entryNumber } = await postJournal(tx, {
+    tenantId,
+    entryDate: bill.billDate,
+    memo: `Bill ${internalReference}`,
+    sourceType: "bill",
+    sourceId: bill.id,
+    postedByUserId,
+    lines: journalLines,
+  });
+
+  // Stock receipts for tracked items — one per line with itemId
+  // referencing a tracked item. Unit cost = line net + allocated landed
+  // cost, divided by quantity.
+  if (trackedLinesForItems.length > 0) {
+    const defaultWarehouse = await resolveDefaultWarehouse(tx, tenantId);
+    if (!defaultWarehouse) return { error: "NO_DEFAULT_WAREHOUSE" };
+
+    for (let i = 0; i < lines.length; i++) {
+      const l = lines[i]!;
+      if (!l.itemId) continue;
+      const item = itemById.get(l.itemId);
+      if (!item || !item.trackInventory) continue;
+      const qty = Number(l.quantity);
+      if (qty <= 0) continue;
+      const netCents = l.lineSubtotalCents - l.discountCents;
+      const allocated = allocatedPerLine[i] ?? 0;
+      const unitCost = Math.round((netCents + allocated) / qty);
+      await applyStockReceipt(tx, {
+        tenantId,
+        itemId: item.id,
+        warehouseId: defaultWarehouse.id,
+        quantity: qty,
+        unitCostCents: unitCost,
+        sourceDocumentType: "bill",
+        sourceDocumentId: bill.id,
+        sourceLineId: l.id,
+        journalEntryId: entryId,
+        postedByUserId,
+        memo: `Bill ${internalReference}`,
+      });
+    }
+  }
+
+  await tx
+    .update(schema.bills)
+    .set({
+      status: "posted",
+      internalReference,
+      journalEntryId: entryId,
+      postedAt: new Date(),
+      postedByUserId,
+      updatedAt: new Date(),
+    })
+    .where(eq(schema.bills.id, bill.id));
+
+  const [sup] = await tx
+    .select({ name: schema.suppliers.name })
+    .from(schema.suppliers)
+    .where(eq(schema.suppliers.id, bill.supplierId))
+    .limit(1);
+
+  // Notify every tenant user that this bill was posted. Both paths
+  // (immediate + engine-finalised) land here so the bell feed is
+  // consistent regardless of whether approval was required.
+  const tenantUsers = await tx.execute(sql`
+    SELECT id FROM users WHERE tenant_id = current_tenant_id()
+  `);
+  const formattedTotal = (bill.totalCents / 100).toLocaleString("en-LK", {
+    style: "currency",
+    currency: bill.currency || "LKR",
+    maximumFractionDigits: 2,
+  });
+  for (const u of tenantUsers as unknown as Array<{ id: string }>) {
+    await emitNotification(tx, {
+      tenantId,
+      userId: u.id,
+      kind: "bill_posted",
+      title: `Bill ${internalReference} posted`,
+      body: `${sup?.name ?? "Supplier"} · ${formattedTotal}`,
+      refType: "bill",
+      refId: bill.id,
+    });
+  }
+
+  return {
+    ok: true,
+    internalReference,
+    entryId,
+    entryNumber,
+    totalCents: bill.totalCents,
+    supplierId: bill.supplierId,
+  };
+}
+
 export const billsRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get("/", async (req, reply) => {
     const ctx = requireAuth(req, reply);
@@ -497,7 +816,7 @@ export const billsRoutes: FastifyPluginAsync = async (fastify) => {
     if (!ctx) return;
 
     const result = await withTenant(ctx.tenantId, async (tx) => {
-      const billRows = await tx
+      const [bill] = await tx
         .select()
         .from(schema.bills)
         .where(
@@ -508,250 +827,128 @@ export const billsRoutes: FastifyPluginAsync = async (fastify) => {
           ),
         )
         .limit(1);
-      const bill = billRows[0];
       if (!bill) return { error: "NOT_FOUND" as const };
+      // Engine-owned bills must be decided via /approvals/:id/approve;
+      // the decision lands back in finaliseApprovedDocument which then
+      // runs postBillCore. Refuse here so the two paths don't race.
+      if (bill.approvalRequestId) return { error: "ENGINE_OWNED" as const };
       if (bill.status !== "draft") return { error: "NOT_DRAFT" as const };
 
-      const lines = await tx
-        .select()
-        .from(schema.billLines)
-        .where(eq(schema.billLines.billId, bill.id))
-        .orderBy(asc(schema.billLines.lineNo));
-      if (lines.length === 0) return { error: "NO_LINES" as const };
-
-      const charges = await tx
-        .select()
-        .from(schema.billCharges)
-        .where(eq(schema.billCharges.billId, bill.id))
-        .orderBy(asc(schema.billCharges.lineNo));
-
-      const internalReference = await nextDocumentNumber(tx, "bill");
-
-      // AP account
-      const apRows = await tx
-        .select()
-        .from(schema.chartOfAccounts)
-        .where(
-          and(
-            eq(schema.chartOfAccounts.tenantId, ctx.tenantId),
-            eq(schema.chartOfAccounts.accountSubtype, "ap"),
-            isNull(schema.chartOfAccounts.deletedAt),
-          ),
-        )
-        .limit(1);
-      const apAccount = apRows[0];
-      if (!apAccount) return { error: "NO_AP_ACCOUNT" as const };
-
-      // Load linked items once — needed both to know which lines are stocked
-      // (for charge allocation) and for the stock-receipt pass below.
-      const trackedLinesForItems = lines.filter((l) => l.itemId !== null);
-      const linkedItems = trackedLinesForItems.length > 0
-        ? await tx
-            .select()
-            .from(schema.items)
-            .where(
-              and(
-                eq(schema.items.tenantId, ctx.tenantId),
-                isNull(schema.items.deletedAt),
-              ),
-            )
-        : [];
-      const itemById = new Map(linkedItems.map((i) => [i.id, i]));
-
-      // Allocate charges across stocked lines pro-rata by value (default) or
-      // by quantity. Lines without a tracked item don't receive any charge
-      // allocation; if zero stocked lines exist, the whole charge total is
-      // unallocated and posts to 5130 Freight & handling (fallback).
-      const allocationLines = lines.map((l) => {
-        const item = l.itemId ? itemById.get(l.itemId) : undefined;
-        const isStocked = item?.trackInventory === true;
-        return {
-          lineNetCents: l.lineSubtotalCents - l.discountCents,
-          quantity: Number(l.quantity),
-          isStocked,
-        };
+      // Approval engine hook (roadmap #43b). If a `document_type='bill'`
+      // policy matches this submission's (amount, submitter), park the
+      // bill in `pending_approval` and hand off. finaliseApprovedDocument
+      // in admin/approvals.ts runs postBillCore on final approval.
+      // Tenants with no matching policy fall through to an immediate
+      // post — same as the pre-engine behaviour.
+      const policy = await resolveApplicablePolicy(tx, {
+        documentType: "bill",
+        amountCents: bill.totalCents,
+        submitterUserId: ctx.userId,
       });
-      const chargesTotalCents = charges.reduce((s, c) => s + c.amountCents, 0);
-      const allocationMethod = (bill.chargeAllocationMethod as AllocationMethod) ?? "value";
-      const { perLineCents: allocatedPerLine, unallocatedCents } = allocateCharges(
-        allocationLines,
-        chargesTotalCents,
-        allocationMethod,
-      );
-
-      const journalLines: Parameters<typeof postJournal>[1]["lines"] = [];
-
-      // Expense lines grouped by expense account — for stocked lines this is
-      // the inventory account (charges capitalize here); for expense lines
-      // this is the per-line expense account.
-      const expenseByAccount = new Map<string, number>();
-      for (let i = 0; i < lines.length; i++) {
-        const l = lines[i]!;
-        if (!l.expenseAccountId) return { error: "MISSING_EXPENSE_ACCOUNT" as const };
-        const net = l.lineSubtotalCents - l.discountCents;
-        const allocated = allocatedPerLine[i] ?? 0;
-        expenseByAccount.set(
-          l.expenseAccountId,
-          (expenseByAccount.get(l.expenseAccountId) ?? 0) + net + allocated,
-        );
-      }
-      // Unallocated charges (bill has no stocked lines) → expense to
-      // 5130 Freight & handling. Falls back to any "cogs" account if 5130
-      // isn't seeded yet on this tenant.
-      if (unallocatedCents > 0) {
-        const freightRows = await tx
-          .select()
-          .from(schema.chartOfAccounts)
-          .where(
-            and(
-              eq(schema.chartOfAccounts.tenantId, ctx.tenantId),
-              eq(schema.chartOfAccounts.code, "5130"),
-              isNull(schema.chartOfAccounts.deletedAt),
-            ),
-          )
-          .limit(1);
-        const freightAccountId = freightRows[0]?.id;
-        if (!freightAccountId) return { error: "NO_FREIGHT_ACCOUNT" as const };
-        expenseByAccount.set(
-          freightAccountId,
-          (expenseByAccount.get(freightAccountId) ?? 0) + unallocatedCents,
-        );
-      }
-      for (const [accountId, amount] of expenseByAccount) {
-        if (amount <= 0) continue;
-        journalLines.push({
-          accountId,
-          drCents: amount,
-          description: `Expense · ${internalReference}`,
-          supplierId: bill.supplierId,
-        });
-      }
-
-      // VAT recoverable (input tax), grouped by receivable account
-      const taxRows = await tx
-        .select()
-        .from(schema.taxCodes)
-        .where(eq(schema.taxCodes.tenantId, ctx.tenantId));
-      const receivableByTaxCode = new Map(taxRows.map((t) => [t.id, t.receivableAccountId]));
-      const taxByAccount = new Map<string, number>();
-      for (const l of lines) {
-        if (l.taxCents === 0) continue;
-        const recAcc = receivableByTaxCode.get(l.taxCodeId ?? "");
-        if (!recAcc) continue;
-        taxByAccount.set(recAcc, (taxByAccount.get(recAcc) ?? 0) + l.taxCents);
-      }
-      for (const [accountId, amount] of taxByAccount) {
-        if (amount <= 0) continue;
-        journalLines.push({
-          accountId,
-          drCents: amount,
-          description: `Input tax · ${internalReference}`,
-        });
-      }
-
-      journalLines.push({
-        accountId: apAccount.id,
-        crCents: bill.totalCents,
-        description: `AP · ${internalReference}`,
-        supplierId: bill.supplierId,
-      });
-
-      const { entryId, entryNumber } = await postJournal(tx, {
-        tenantId: ctx.tenantId,
-        entryDate: bill.billDate,
-        memo: `Bill ${internalReference}`,
-        sourceType: "bill",
-        sourceId: bill.id,
-        postedByUserId: ctx.userId,
-        lines: journalLines,
-      });
-
-      // Stock receipts for tracked items — one per line with itemId
-      // referencing a tracked item. Unit cost = line net + allocated landed
-      // cost, divided by quantity. WAVG propagation in applyStockReceipt
-      // picks up the landed figure automatically.
-      if (trackedLinesForItems.length > 0) {
-        const defaultWarehouse = await resolveDefaultWarehouse(tx, ctx.tenantId);
-        if (!defaultWarehouse) return { error: "NO_DEFAULT_WAREHOUSE" as const };
-
-        for (let i = 0; i < lines.length; i++) {
-          const l = lines[i]!;
-          if (!l.itemId) continue;
-          const item = itemById.get(l.itemId);
-          if (!item || !item.trackInventory) continue;
-          const qty = Number(l.quantity);
-          if (qty <= 0) continue;
-          const netCents = l.lineSubtotalCents - l.discountCents;
-          const allocated = allocatedPerLine[i] ?? 0;
-          const unitCost = Math.round((netCents + allocated) / qty);
-          await applyStockReceipt(tx, {
-            tenantId: ctx.tenantId,
-            itemId: item.id,
-            warehouseId: defaultWarehouse.id,
-            quantity: qty,
-            unitCostCents: unitCost,
-            sourceDocumentType: "bill",
-            sourceDocumentId: bill.id,
-            sourceLineId: l.id,
-            journalEntryId: entryId,
-            postedByUserId: ctx.userId,
-            memo: `Bill ${internalReference}`,
-          });
-        }
-      }
-
-      await tx
-        .update(schema.bills)
-        .set({
-          status: "posted",
-          internalReference,
-          journalEntryId: entryId,
-          postedAt: new Date(),
-          postedByUserId: ctx.userId,
-          updatedAt: new Date(),
-        })
-        .where(eq(schema.bills.id, bill.id));
-
-      const [sup] = await tx
-        .select({ name: schema.suppliers.name })
-        .from(schema.suppliers)
-        .where(eq(schema.suppliers.id, bill.supplierId))
-        .limit(1);
-
-      const tenantUsers = await tx.execute(sql`
-        SELECT id FROM users WHERE tenant_id = current_tenant_id()
-      `);
-      const formattedTotal = (bill.totalCents / 100).toLocaleString("en-LK", {
-        style: "currency",
-        currency: bill.currency || "LKR",
-        maximumFractionDigits: 2,
-      });
-      for (const u of tenantUsers as unknown as Array<{ id: string }>) {
-        await emitNotification(tx, {
+      if (policy) {
+        const request = await createApprovalRequest(tx, {
           tenantId: ctx.tenantId,
-          userId: u.id,
-          kind: "bill_posted",
-          title: `Bill ${internalReference} posted`,
-          body: `${sup?.name ?? "Supplier"} · ${formattedTotal}`,
-          refType: "bill",
-          refId: bill.id,
+          documentType: "bill",
+          documentId: bill.id,
+          amountCents: bill.totalCents,
+          policyId: policy.policyId,
+          steps: policy.steps,
+          submitterUserId: ctx.userId,
         });
+
+        await tx
+          .update(schema.bills)
+          .set({
+            status: "pending_approval",
+            approvalRequestId: request.id,
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.bills.id, bill.id));
+
+        // Notify first-step approvers. Mirrors the expense_claim pattern
+        // in hr/expense-claims.ts — expand role ids → user ids, emit one
+        // bell per approver, skip the submitter for SOD hygiene.
+        const firstStep = policy.steps[0];
+        if (firstStep) {
+          const userIds = new Set<string>();
+          const roleIds: string[] = [];
+          for (const a of firstStep.approvers) {
+            if (a.kind === "user") userIds.add(a.id);
+            else roleIds.push(a.id);
+          }
+          if (roleIds.length > 0) {
+            const res = (await tx.execute(sql`
+              SELECT DISTINCT user_id
+              FROM user_roles
+              WHERE tenant_id = current_tenant_id()
+                AND role_id IN (${sql.raw(
+                  roleIds.map((id) => `'${id}'::uuid`).join(","),
+                )})
+            `)) as unknown as Array<{ user_id: string }>;
+            for (const r of res) userIds.add(r.user_id);
+          }
+          const [sup] = await tx
+            .select({ name: schema.suppliers.name })
+            .from(schema.suppliers)
+            .where(eq(schema.suppliers.id, bill.supplierId))
+            .limit(1);
+          const formattedTotal = (bill.totalCents / 100).toLocaleString("en-LK", {
+            style: "currency",
+            currency: bill.currency || "LKR",
+            maximumFractionDigits: 2,
+          });
+          for (const userId of userIds) {
+            if (userId === ctx.userId) continue;
+            await emitNotification(tx, {
+              tenantId: ctx.tenantId,
+              userId,
+              kind: "approval_pending",
+              title: `Approval needed · bill · ${formattedTotal}`,
+              body: sup?.name ?? null,
+              refType: "approval_request",
+              refId: request.id,
+            });
+          }
+        }
+
+        return { ok: true as const, pendingApproval: true as const, requestId: request.id };
       }
 
-      return { ok: true as const, internalReference, entryNumber };
+      // No policy → immediate post (the pre-engine path, unchanged).
+      const posted = await postBillCore(tx, {
+        tenantId: ctx.tenantId,
+        billId: bill.id,
+        postedByUserId: ctx.userId,
+        allowStatuses: ["draft"],
+      });
+      if ("error" in posted) return posted;
+      return {
+        ok: true as const,
+        pendingApproval: false as const,
+        internalReference: posted.internalReference,
+        entryNumber: posted.entryNumber,
+      };
     });
 
     if ("error" in result) {
       const map: Record<string, number> = {
         NOT_FOUND: 404,
         NOT_DRAFT: 409,
+        ENGINE_OWNED: 409,
+        BAD_STATUS: 409,
         NO_LINES: 400,
         NO_AP_ACCOUNT: 500,
         NO_FREIGHT_ACCOUNT: 500,
         MISSING_EXPENSE_ACCOUNT: 500,
         NO_DEFAULT_WAREHOUSE: 500,
       };
-      return reply.status(map[result.error] ?? 500).send({ error: { code: result.error } });
+      const message =
+        result.error === "ENGINE_OWNED"
+          ? "This bill is managed by the approval engine. Decide it from the Approvals queue instead."
+          : undefined;
+      return reply.status(map[result.error] ?? 500).send({
+        error: { code: result.error, ...(message ? { message } : {}) },
+      });
     }
     return reply.send(result);
   });

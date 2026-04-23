@@ -25,7 +25,17 @@ export const bills = pgTable("bills", {
   supplierBillNumber: varchar("supplier_bill_number", { length: 64 }),
   supplierId: uuid("supplier_id").notNull().references(() => suppliers.id, { onDelete: "restrict" }),
   branchId: uuid("branch_id").references(() => branches.id, { onDelete: "set null" }),
+  // Lifecycle: draft → [pending_approval] → posted → partially_paid → void.
+  // `pending_approval` is entered only when a `document_type='bill'`
+  // approval policy matches at post-time (roadmap #43b); tenants with
+  // no matching policy skip straight from draft to posted.
   status: varchar("status", { length: 16 }).notNull().default("draft"),
+
+  // Approval engine linkage (roadmap #43b). Set when the engine owns
+  // the bill; stays null for the immediate draft → posted path. When
+  // set, the domain-local /post route refuses with ENGINE_OWNED and
+  // the decision lands through /approvals.
+  approvalRequestId: uuid("approval_request_id"),
   billDate: date("bill_date").notNull(),
   dueDate: date("due_date").notNull(),
   currency: varchar("currency", { length: 3 }).notNull().default("LKR"),

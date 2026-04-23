@@ -7,6 +7,7 @@ import { requirePermission } from "../../lib/permissions.js";
 import { recordAuditEvent } from "../../lib/audit.js";
 import { emitNotification } from "../notifications/emit.js";
 import { postJournal } from "../accounting/journal-posting.js";
+import { postBillCore } from "../buy/bills.js";
 import {
   ApprovalEngineError,
   cancelApprovalRequest,
@@ -326,6 +327,42 @@ export const approvalsRoutes: FastifyPluginAsync = async (fastify) => {
                 eq(schema.expenseClaims.id, decision.request.documentId),
               ),
             );
+        } else if (decision.request.documentType === "bill") {
+          // Bills (roadmap #43b). No dedicated "rejected" state — flip
+          // back to draft and clear approval_request_id so the submitter
+          // can edit and re-post cleanly. The rejection reason lives on
+          // the approval_request; we also append it to bill notes for
+          // per-bill visibility.
+          const reason = parsed.data.reason?.trim();
+          const [existing] = await tx
+            .select({ notes: schema.bills.notes })
+            .from(schema.bills)
+            .where(
+              and(
+                eq(schema.bills.tenantId, ctx.tenantId),
+                eq(schema.bills.id, decision.request.documentId),
+              ),
+            )
+            .limit(1);
+          const stampedNotes = reason
+            ? existing?.notes
+              ? `${existing.notes}\n\n[Rejected] ${reason}`
+              : `[Rejected] ${reason}`
+            : existing?.notes;
+          await tx
+            .update(schema.bills)
+            .set({
+              status: "draft",
+              approvalRequestId: null,
+              notes: stampedNotes ?? null,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(schema.bills.tenantId, ctx.tenantId),
+                eq(schema.bills.id, decision.request.documentId),
+              ),
+            );
         }
 
         await recordAuditEvent(tx, {
@@ -434,6 +471,39 @@ export const approvalsRoutes: FastifyPluginAsync = async (fastify) => {
             and(
               eq(schema.expenseClaims.tenantId, ctx.tenantId),
               eq(schema.expenseClaims.id, request.documentId),
+            ),
+          );
+      } else if (request.documentType === "bill") {
+        // Bills: cancel flips pending_approval → draft and detaches the
+        // request. Submitter can edit the bill and re-post. The notes
+        // field picks up the reason so the bill carries context when
+        // the submitter comes back to it.
+        const reason = parsed.data.reason?.trim() || "Withdrawn by submitter";
+        const [existing] = await tx
+          .select({ notes: schema.bills.notes })
+          .from(schema.bills)
+          .where(
+            and(
+              eq(schema.bills.tenantId, ctx.tenantId),
+              eq(schema.bills.id, request.documentId),
+            ),
+          )
+          .limit(1);
+        const stampedNotes = existing?.notes
+          ? `${existing.notes}\n\n[Withdrawn] ${reason}`
+          : `[Withdrawn] ${reason}`;
+        await tx
+          .update(schema.bills)
+          .set({
+            status: "draft",
+            approvalRequestId: null,
+            notes: stampedNotes,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(schema.bills.tenantId, ctx.tenantId),
+              eq(schema.bills.id, request.documentId),
             ),
           );
       }
@@ -594,6 +664,35 @@ async function finaliseApprovedDocument(
           eq(schema.expenseClaims.id, claim.id),
         ),
       );
+    return;
+  }
+
+  if (request.documentType === "bill") {
+    // Bills (roadmap #43b). Immediate path: draft → posted. Engine path:
+    // draft → pending_approval → posted. Both land in postBillCore (the
+    // shared helper in buy/bills.ts) so AP posting, stock receipts, and
+    // notifications stay identical regardless of whether approval was
+    // required.
+    //
+    // Engine finalisation expects the bill to be in `pending_approval`.
+    // If something else moved the row (void, or a race) the helper
+    // returns BAD_STATUS and we bail idempotently so the approval still
+    // stamps as 'approved' on the engine side — the domain row's
+    // terminal state wins.
+    const result = await postBillCore(tx, {
+      tenantId: request.tenantId,
+      billId: request.documentId,
+      postedByUserId: input.deciderUserId,
+      allowStatuses: ["pending_approval"],
+    });
+    if ("error" in result) {
+      if (result.error === "BAD_STATUS" || result.error === "NOT_FOUND") {
+        return; // idempotent bail — row was voided / replaced
+      }
+      throw new Error(
+        `finaliseApprovedDocument(bill): postBillCore failed — ${result.error}`,
+      );
+    }
     return;
   }
 
