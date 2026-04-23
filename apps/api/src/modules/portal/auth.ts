@@ -2,13 +2,15 @@ import { createHash, randomInt } from "node:crypto";
 import type { FastifyPluginAsync } from "fastify";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { db } from "@pettahpro/db";
+import { db, withTenant } from "@pettahpro/db";
 import { sendEmail } from "../../lib/email.js";
+import { recordAuditEvent } from "../../lib/audit.js";
 import {
   createPortalSession,
   destroyPortalSession,
   readPortalSession,
   tryConsumeOtpRateBudget,
+  tryConsumeVerifyRateBudget,
 } from "./sessions.js";
 import {
   PORTAL_SESSION_COOKIE,
@@ -230,6 +232,23 @@ export const portalAuthRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.status(400).send({ error: { code: "INVALID_INPUT", issues: parsed.error.issues } });
     }
     const { email, code, tenantSlug } = parsed.data;
+
+    // Rate-limit brute-force attempts. Counted per email regardless of
+    // success, so a legitimate user's typos eat into the same budget —
+    // 10/hour is plenty of headroom while making 1M-combo brute force
+    // infeasible inside the 10-minute OTP expiry.
+    const budget = await tryConsumeVerifyRateBudget(email);
+    if (!budget.ok) {
+      return reply.status(429).send({
+        error: {
+          code: "RATE_LIMITED",
+          message:
+            "Too many sign-in attempts. Please wait and request a fresh code.",
+        },
+        retryAfterSeconds: budget.retryAfterSeconds,
+      });
+    }
+
     const codeHash = hashCode(code);
 
     const otps = (await db.execute(
@@ -237,6 +256,15 @@ export const portalAuthRoutes: FastifyPluginAsync = async (fastify) => {
     )) as unknown as PortalOtpRow[];
 
     if (otps.length === 0) {
+      // We don't know the tenant on a bad-code verify (no OTP matched),
+      // so we can't audit-scope this to a specific tenant. That's fine
+      // — suspicious attempts show up in fastify logs + Redis rate-limit
+      // TTL, and the successful-login audit event downstream is what
+      // tenants actually want ("who logged in as which customer and when").
+      fastify.log.warn(
+        { email, ip: req.ip, userAgent: req.headers["user-agent"] },
+        "portal verify failed: no matching otp",
+      );
       return reply.status(401).send({
         error: {
           code: "INVALID_CODE",
@@ -302,6 +330,22 @@ export const portalAuthRoutes: FastifyPluginAsync = async (fastify) => {
     });
     setPortalSessionCookie(reply, session.id, SESSION_TTL);
 
+    // Audit the successful login. Tenant-scoped because we now know which
+    // (tenant, customer) the session resolves to. actor_user_id stays null
+    // because the actor is a portal customer, not a platform user —
+    // customerId goes into refId / diff instead.
+    await withTenant(chosenOtp.tenant_id, async (tx) => {
+      await recordAuditEvent(tx, {
+        kind: "portal.login",
+        summary: `Customer portal login (${chosenOtp.email})`,
+        refType: "customer",
+        refId: chosenOtp.customer_id,
+        diff: { email: chosenOtp.email, sessionId: session.id },
+        ipAddress: req.ip ?? null,
+        userAgent: req.headers["user-agent"] ?? null,
+      });
+    });
+
     const resolved = (await db.execute(
       sql`SELECT * FROM portal_resolve_session(${chosenOtp.tenant_id}::uuid, ${chosenOtp.customer_id}::uuid)`,
     )) as unknown as PortalSessionResolveRow[];
@@ -330,6 +374,20 @@ export const portalAuthRoutes: FastifyPluginAsync = async (fastify) => {
       const existing = await readPortalSession(unsigned.value);
       if (existing) {
         await destroyPortalSession(unsigned.value);
+        // Tenant-scoped audit. Logout is low-risk but rounds out the
+        // login/logout pair so admins can see the full session window
+        // in the audit-log viewer.
+        await withTenant(existing.tenantId, async (tx) => {
+          await recordAuditEvent(tx, {
+            kind: "portal.logout",
+            summary: `Customer portal logout (${existing.email})`,
+            refType: "customer",
+            refId: existing.customerId,
+            diff: { email: existing.email, sessionId: existing.id },
+            ipAddress: req.ip ?? null,
+            userAgent: req.headers["user-agent"] ?? null,
+          });
+        });
       }
     }
     clearPortalSessionCookie(reply);

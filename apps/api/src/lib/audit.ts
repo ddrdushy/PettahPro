@@ -44,7 +44,12 @@ export type AuditEventKind =
   | "final_settlement.cancelled"
   // Settings
   | "settings.update"
-  | "number_series.update";
+  | "number_series.update"
+  // Customer portal
+  | "portal.login"
+  | "portal.logout"
+  | "portal.verify_failed"
+  | "portal.access_toggled";
 
 export interface RecordAuditInput {
   kind: AuditEventKind;
