@@ -3,6 +3,7 @@ import { and, eq, isNull, desc, asc, sql } from "drizzle-orm";
 import { z } from "zod";
 import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
+import { requirePermission } from "../../lib/permissions.js";
 import { postJournal } from "../accounting/journal-posting.js";
 
 /**
@@ -149,7 +150,7 @@ export const loanTypesRoutes: FastifyPluginAsync = async (fastify) => {
 
   // POST /loan-types
   fastify.post("/", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "hr.manage");
     if (!ctx) return;
 
     const parsed = CreateLoanTypeSchema.safeParse(req.body);
@@ -182,7 +183,7 @@ export const loanTypesRoutes: FastifyPluginAsync = async (fastify) => {
 
   // PATCH /loan-types/:id
   fastify.patch<{ Params: { id: string } }>("/:id", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "hr.manage");
     if (!ctx) return;
 
     const parsed = CreateLoanTypeSchema.partial().safeParse(req.body);
@@ -329,7 +330,7 @@ export const employeeLoansRoutes: FastifyPluginAsync = async (fastify) => {
 
   // POST /employee-loans/apply
   fastify.post("/apply", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "hr.manage");
     if (!ctx) return;
 
     const parsed = ApplySchema.safeParse(req.body);
@@ -419,7 +420,7 @@ export const employeeLoansRoutes: FastifyPluginAsync = async (fastify) => {
 
   // POST /employee-loans/:id/approve
   fastify.post<{ Params: { id: string } }>("/:id/approve", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "hr.manage");
     if (!ctx) return;
 
     const parsed = ApproveSchema.safeParse(req.body ?? {});
@@ -480,7 +481,7 @@ export const employeeLoansRoutes: FastifyPluginAsync = async (fastify) => {
 
   // POST /employee-loans/:id/disburse
   fastify.post<{ Params: { id: string } }>("/:id/disburse", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "hr.manage");
     if (!ctx) return;
 
     const parsed = DisburseSchema.safeParse(req.body);
@@ -644,7 +645,7 @@ export const employeeLoansRoutes: FastifyPluginAsync = async (fastify) => {
 
   // POST /employee-loans/:id/cancel — only pre-disbursement
   fastify.post<{ Params: { id: string } }>("/:id/cancel", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "hr.manage");
     if (!ctx) return;
 
     const parsed = CancelSchema.safeParse(req.body ?? {});
@@ -701,7 +702,7 @@ export const employeeLoansRoutes: FastifyPluginAsync = async (fastify) => {
 
   // POST /employee-loans/:id/write-off — forgive the outstanding balance
   fastify.post<{ Params: { id: string } }>("/:id/write-off", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "hr.manage");
     if (!ctx) return;
 
     const parsed = WriteOffSchema.safeParse(req.body);

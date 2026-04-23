@@ -3,6 +3,7 @@ import { and, eq, isNull, desc } from "drizzle-orm";
 import { z } from "zod";
 import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
+import { requirePermission } from "../../lib/permissions.js";
 import { resolveAndCheckPeriod } from "../accounting/journal-posting.js";
 
 /**
@@ -68,7 +69,7 @@ export const salaryRevisionsRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Params: { id: string } }>(
     "/:id/salary-revisions",
     async (req, reply) => {
-      const ctx = requireAuth(req, reply);
+      const ctx = await requirePermission(req, reply, "hr.manage");
       if (!ctx) return;
 
       const parsed = CreateSchema.safeParse(req.body);

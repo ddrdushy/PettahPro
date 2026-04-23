@@ -7,6 +7,7 @@ import { runDueRecurringBills } from "./modules/buy/recurring-bills.js";
 import { runDueRecurringJournals } from "./modules/accounting/recurring-journals.js";
 import { runScheduledStatementEmails } from "./modules/operations/customer-statement-email-cron.js";
 import { runStaleChequeFlagging } from "./modules/cheques/stale-flag.js";
+import { runMonthlyDepreciationForAllTenants } from "./modules/accounting/fixed-assets.js";
 
 const log = pino({
   level: process.env.LOG_LEVEL ?? "info",
@@ -92,6 +93,22 @@ async function registerSchedules() {
     },
   );
   log.info("scheduled: flag-stale-cheques (daily)");
+
+  // Monthly depreciation run. Fires every 24h but only does work on the
+  // 1st of the month — see runMonthlyDepreciationForAllTenants. Running
+  // daily gives the scheduler a chance to catch up if the worker was down
+  // at the canonical first-of-month moment (idempotent on re-entry via
+  // the fixed_asset_depreciation_entries (year,month) dedup).
+  await scheduledQueue.add(
+    "run-monthly-depreciation",
+    {},
+    {
+      repeat: { every: 24 * 60 * 60 * 1000 }, // 24h
+      removeOnComplete: 50,
+      removeOnFail: 50,
+    },
+  );
+  log.info("scheduled: run-monthly-depreciation (daily; fires on 1st)");
 }
 
 const defaultWorker = new Worker(
@@ -130,6 +147,11 @@ const scheduledWorker = new Worker(
     if (job.name === "flag-stale-cheques") {
       const result = await runStaleChequeFlagging(db, log);
       log.info(result, "stale-cheque flagging run complete");
+      return result;
+    }
+    if (job.name === "run-monthly-depreciation") {
+      const result = await runMonthlyDepreciationForAllTenants(db, log);
+      log.info(result, "monthly depreciation run complete");
       return result;
     }
     log.warn({ name: job.name }, "unknown scheduled job");

@@ -5,6 +5,8 @@ import type { ReactNode } from "react";
 import { LogoutButton } from "@/components/auth/logout-button";
 import { Sidebar } from "@/components/app/sidebar";
 import { NotificationBell } from "@/components/app/notification-bell";
+import { PermissionsProvider } from "@/components/auth/permissions-provider";
+import type { CallerPermissions } from "@/lib/api";
 
 async function fetchMe() {
   const cookieHeader = cookies().toString();
@@ -18,6 +20,7 @@ async function fetchMe() {
     return (await res.json()) as {
       user: { id: string; email: string; fullName: string; isOwner: boolean };
       tenant: { id: string; slug: string; businessName: string };
+      permissions: CallerPermissions;
     };
   } catch {
     return null;
@@ -60,7 +63,9 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
 
       <div className="flex">
         <Sidebar />
-        <div className="min-w-0 flex-1">{children}</div>
+        <div className="min-w-0 flex-1">
+          <PermissionsProvider value={me.permissions}>{children}</PermissionsProvider>
+        </div>
       </div>
     </div>
   );

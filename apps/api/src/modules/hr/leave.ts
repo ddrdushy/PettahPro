@@ -3,6 +3,7 @@ import { and, eq, isNull, asc, desc, sql } from "drizzle-orm";
 import { z } from "zod";
 import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
+import { requirePermission } from "../../lib/permissions.js";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Leave types
@@ -43,7 +44,7 @@ export const leaveTypesRoutes: FastifyPluginAsync = async (fastify) => {
   });
 
   fastify.post("/", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "hr.manage");
     if (!ctx) return;
     const parsed = LeaveTypeCreateSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -81,7 +82,7 @@ export const leaveTypesRoutes: FastifyPluginAsync = async (fastify) => {
   });
 
   fastify.patch<{ Params: { id: string } }>("/:id", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "hr.manage");
     if (!ctx) return;
     const parsed = LeaveTypeUpdateSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -198,7 +199,7 @@ export const employeeLeaveRoutes: FastifyPluginAsync = async (fastify) => {
 
   // POST /employees/:id/leave-allocations — upsert per (employee, type, year)
   fastify.post<{ Params: { id: string } }>("/:id/leave-allocations", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "hr.manage");
     if (!ctx) return;
     const parsed = AllocationUpsertSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -378,7 +379,10 @@ export const leaveRequestsRoutes: FastifyPluginAsync = async (fastify) => {
     return reply.send(data);
   });
 
-  // POST /leave-requests — create draft
+  // POST /leave-requests — create draft. Deliberately NOT gated on hr.manage:
+  // every employee needs to be able to file their own leave request. Creator
+  // authorization (cannot file for someone else) is enforced downstream by
+  // matching employee_id against the caller.
   fastify.post("/", async (req, reply) => {
     const ctx = requireAuth(req, reply);
     if (!ctx) return;
@@ -488,7 +492,7 @@ export const leaveRequestsRoutes: FastifyPluginAsync = async (fastify) => {
 
   // POST /leave-requests/:id/approve — debits allocated balance
   fastify.post<{ Params: { id: string } }>("/:id/approve", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "hr.manage");
     if (!ctx) return;
 
     const result = await withTenant(ctx.tenantId, async (tx) => {
@@ -556,7 +560,7 @@ export const leaveRequestsRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Params: { id: string }; Body: { reason?: string } }>(
     "/:id/reject",
     async (req, reply) => {
-      const ctx = requireAuth(req, reply);
+      const ctx = await requirePermission(req, reply, "hr.manage");
       if (!ctx) return;
 
       const parsed = RejectSchema.safeParse(req.body ?? {});

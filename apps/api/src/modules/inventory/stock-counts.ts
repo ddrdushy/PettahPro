@@ -3,6 +3,7 @@ import { and, eq, isNull, asc, desc, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
+import { requirePermission } from "../../lib/permissions.js";
 import { postJournal } from "../accounting/journal-posting.js";
 import { resolveStockGLAccounts } from "./stock-posting.js";
 
@@ -253,7 +254,7 @@ export const stockCountsRoutes: FastifyPluginAsync = async (fastify) => {
   // Create — snapshots item balances into lines at draft time.
   // ---------------------------------------------------------------------------
   fastify.post("/", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "inventory.manage");
     if (!ctx) return;
 
     const parsed = CreateSchema.safeParse(req.body);
@@ -397,7 +398,7 @@ export const stockCountsRoutes: FastifyPluginAsync = async (fastify) => {
   // while the count is draft.
   // ---------------------------------------------------------------------------
   fastify.patch<{ Params: { id: string } }>("/:id/lines", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "inventory.manage");
     if (!ctx) return;
 
     const parsed = CountLinesSchema.safeParse(req.body);
@@ -454,7 +455,7 @@ export const stockCountsRoutes: FastifyPluginAsync = async (fastify) => {
   // threshold). Reason codes are mandatory on every line with variance ≠ 0.
   // ---------------------------------------------------------------------------
   fastify.post<{ Params: { id: string } }>("/:id/review", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "inventory.manage");
     if (!ctx) return;
 
     const parsed = ReviewSchema.safeParse(req.body ?? {});
@@ -580,7 +581,7 @@ export const stockCountsRoutes: FastifyPluginAsync = async (fastify) => {
   // for post.
   // ---------------------------------------------------------------------------
   fastify.post<{ Params: { id: string } }>("/:id/approve", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "inventory.manage");
     if (!ctx) return;
 
     const result = await withTenant(ctx.tenantId, async (tx) => {
@@ -643,7 +644,7 @@ export const stockCountsRoutes: FastifyPluginAsync = async (fastify) => {
   // negative adjustments remove qty at the current avg cost).
   // ---------------------------------------------------------------------------
   fastify.post<{ Params: { id: string } }>("/:id/post", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "inventory.manage");
     if (!ctx) return;
 
     const result = await withTenant(ctx.tenantId, async (tx) => {
@@ -881,7 +882,7 @@ export const stockCountsRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Params: { id: string }; Body: { reason?: string } }>(
     "/:id/cancel",
     async (req, reply) => {
-      const ctx = requireAuth(req, reply);
+      const ctx = await requirePermission(req, reply, "inventory.manage");
       if (!ctx) return;
 
       const reason = typeof req.body?.reason === "string" ? req.body.reason.trim().slice(0, 1000) : null;

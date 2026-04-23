@@ -7,6 +7,7 @@ import { Drawer } from "@/components/app/drawer";
 import { Field } from "@/components/auth/field";
 import { api, ApiError, type Account } from "@/lib/api";
 import { formatLKR } from "@/lib/format";
+import { useCan } from "@/components/auth/permissions-provider";
 
 type Method = "bank_transfer" | "slips" | "cash" | "cheque" | "other";
 
@@ -34,6 +35,7 @@ export function PayRunButton({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [method, setMethod] = useState<Method>("slips");
+  const canManage = useCan("payroll.manage");
 
   const defaultBank =
     bankAccounts.find((a) => a.accountSubtype === "bank") ?? bankAccounts[0];
@@ -59,6 +61,8 @@ export function PayRunButton({
       setBusy(false);
     }
   }
+
+  if (!canManage) return null;
 
   return (
     <>

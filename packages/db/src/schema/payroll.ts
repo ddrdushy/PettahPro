@@ -41,6 +41,14 @@ export const payrollRuns = pgTable("payroll_runs", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   createdByUserId: uuid("created_by_user_id"),
   deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  // Void metadata — populated by POST /payroll-runs/:id/void. Same shape
+  // as bonus_runs / expense_claims. When voidAt is set, status is flipped
+  // to 'voided', the originating JE is reversed, and every atomic claim
+  // the run made (salary revisions, loan EMI schedule, commission
+  // earnings) is released.
+  voidReason: text("void_reason"),
+  voidAt: timestamp("void_at", { withTimezone: true }),
+  voidByUserId: uuid("void_by_user_id"),
 });
 
 export type PayrollRun = typeof payrollRuns.$inferSelect;

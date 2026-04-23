@@ -353,6 +353,12 @@ export const commissionsRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get("/ledger", async (req, reply) => {
     const ctx = requireAuth(req, reply);
     if (!ctx) return;
+    // `accruedCents` goes negative when clawbacks (CNs against previously-paid
+    // invoices) exceed new accrued earnings. That money was already paid out
+    // in a prior payroll and won't be recovered unless the salesperson
+    // generates enough new commission to offset — flagging those rows via
+    // the `netNegative` field lets ops chase it (manual deduction, write-off,
+    // recovery from final settlement).
     const rows = await withTenant(ctx.tenantId, async (tx) =>
       tx.execute(sql`
         SELECT
@@ -363,12 +369,13 @@ export const commissionsRoutes: FastifyPluginAsync = async (fastify) => {
           COALESCE(SUM(CASE WHEN ce.status = 'paid'        THEN ce.amount_cents ELSE 0 END), 0)::bigint AS "paidCents",
           COALESCE(SUM(CASE WHEN ce.status = 'clawed_back' THEN ce.amount_cents ELSE 0 END), 0)::bigint AS "clawedBackCents",
           COALESCE(SUM(ce.amount_cents), 0)::bigint                                                    AS "totalCents",
+          (COALESCE(SUM(CASE WHEN ce.status = 'accrued' THEN ce.amount_cents ELSE 0 END), 0) < 0) AS "netNegative",
           COUNT(*)::int AS "rowCount"
         FROM commission_earnings ce
         INNER JOIN users u ON u.id = ce.salesperson_user_id AND u.tenant_id = ce.tenant_id
         WHERE ce.tenant_id = current_tenant_id()
         GROUP BY ce.salesperson_user_id, u.full_name, u.email
-        ORDER BY "accruedCents" DESC, u.full_name
+        ORDER BY "accruedCents" ASC, u.full_name
       `),
     );
     return reply.send({ ledger: rows });

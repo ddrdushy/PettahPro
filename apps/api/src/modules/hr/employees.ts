@@ -3,6 +3,7 @@ import { and, eq, isNull, desc, ilike, sql } from "drizzle-orm";
 import { z } from "zod";
 import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
+import { requirePermission } from "../../lib/permissions.js";
 import { recordAuditEvent } from "../../lib/audit.js";
 
 // SL NIC: old 10-char (9 digits + V|X) or new 12-digit
@@ -134,7 +135,7 @@ export const employeesRoutes: FastifyPluginAsync = async (fastify) => {
 
   // POST /employees — create
   fastify.post("/", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "hr.manage");
     if (!ctx) return;
 
     const parsed = CreateSchema.safeParse(req.body);
@@ -222,7 +223,7 @@ export const employeesRoutes: FastifyPluginAsync = async (fastify) => {
     reason: z.string().max(1000).optional().or(z.literal("")),
   });
   fastify.post<{ Params: { id: string } }>("/:id/exit", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "hr.manage");
     if (!ctx) return;
 
     const parsed = ExitSchema.safeParse(req.body);
@@ -329,7 +330,7 @@ export const employeesRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Params: { id: string } }>(
     "/:id/confirm-probation",
     async (req, reply) => {
-      const ctx = requireAuth(req, reply);
+      const ctx = await requirePermission(req, reply, "hr.manage");
       if (!ctx) return;
 
       const parsed = ConfirmSchema.safeParse(req.body);

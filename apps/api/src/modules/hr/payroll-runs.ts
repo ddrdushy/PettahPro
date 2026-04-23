@@ -114,7 +114,7 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
   // POST /payroll-runs — draft for a given period, snapshotting every
   // active employee's pay line
   fastify.post("/", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "payroll.manage");
     if (!ctx) return;
 
     const parsed = CreateSchema.safeParse(req.body);
@@ -434,6 +434,60 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
         commissionByEmployee.set(r.employee_id, bucket);
       }
       const consumedEarningIds: string[] = [];
+
+      // Expense-claim bundling (payroll-module-spec §8). Load approved claims
+      // with disbursement_method='payroll' that haven't been claimed yet and
+      // whose claim_date is on/before periodEnd. Two buckets per employee:
+      //   · taxableCents  — counts for EPF/ETF/PAYE (category.is_taxable=true)
+      //   · exemptCents   — pure reimbursement, doesn't count for statutory
+      // Claim IDs are stamped atomically after the run line is inserted (same
+      // idiom as commissions and loan schedule). Void releases via
+      // applied_in_run_id=NULL in the void endpoint.
+      const expenseClaimRows = eligible.length
+        ? ((await tx.execute(sql`
+            SELECT ec.id                 AS claim_id,
+                   ec.employee_id        AS employee_id,
+                   ec.amount_cents       AS amount_cents,
+                   ec.is_taxable         AS is_taxable,
+                   ec.expense_account_id AS expense_account_id,
+                   ec.claim_number       AS claim_number
+            FROM expense_claims ec
+            WHERE ec.tenant_id = ${ctx.tenantId}::uuid
+              AND ec.status = 'approved'
+              AND ec.disbursement_method = 'payroll'
+              AND ec.applied_in_run_id IS NULL
+              AND ec.claim_date <= ${periodEnd}::date
+              AND ec.void_at IS NULL
+              AND ec.deleted_at IS NULL
+              AND ec.employee_id = ANY(${eligible.map((x) => x.id)}::uuid[])
+          `)) as unknown as Array<{
+            claim_id: string;
+            employee_id: string;
+            amount_cents: number | string;
+            is_taxable: boolean;
+            expense_account_id: string | null;
+            claim_number: string | null;
+          }>)
+        : [];
+      const expenseByEmployee = new Map<
+        string,
+        { taxableCents: number; exemptCents: number; claimIds: string[]; count: number }
+      >();
+      for (const r of expenseClaimRows) {
+        const bucket = expenseByEmployee.get(r.employee_id) ?? {
+          taxableCents: 0,
+          exemptCents: 0,
+          claimIds: [] as string[],
+          count: 0,
+        };
+        const amt = Number(r.amount_cents);
+        if (r.is_taxable) bucket.taxableCents += amt;
+        else bucket.exemptCents += amt;
+        bucket.claimIds.push(r.claim_id);
+        bucket.count += 1;
+        expenseByEmployee.set(r.employee_id, bucket);
+      }
+      const consumedClaimIds: Array<{ claimId: string; runLineId: string }> = [];
 
       // Compute each line and persist
       let gross = 0,
@@ -779,6 +833,59 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
           }
         }
 
+        // Expense-claim reimbursement lines (P1-9). Emit separate components
+        // for taxable vs. exempt so the tax compute sees the right statutory
+        // basis. Exempt reimbursement inflates gross / net cash but doesn't
+        // add to EPF/ETF/PAYE. Claim IDs are stamped after the run line is
+        // inserted below (inside consumedClaimIds).
+        const expBucket = expenseByEmployee.get(e.id);
+        if (expBucket && expBucket.taxableCents > 0) {
+          resolved.push({
+            code: "REIMBURSE_TAX",
+            name: `Expense reimbursement · taxable (${expBucket.count} item${expBucket.count === 1 ? "" : "s"})`,
+            kind: "earning",
+            amountCents: expBucket.taxableCents,
+            countsForEpf: true,
+            countsForEtf: true,
+            countsForPaye: true,
+            sortOrder: 85,
+          });
+          snapshotInputs.push({
+            componentId: null,
+            code: "REIMBURSE_TAX",
+            name: `Expense reimbursement · taxable (${expBucket.count} item${expBucket.count === 1 ? "" : "s"})`,
+            kind: "earning",
+            amountCents: expBucket.taxableCents,
+            countsForEpf: true,
+            countsForEtf: true,
+            countsForPaye: true,
+            sortOrder: 85,
+          });
+        }
+        if (expBucket && expBucket.exemptCents > 0) {
+          resolved.push({
+            code: "REIMBURSE",
+            name: `Expense reimbursement (${expBucket.count} item${expBucket.count === 1 ? "" : "s"})`,
+            kind: "earning",
+            amountCents: expBucket.exemptCents,
+            countsForEpf: false,
+            countsForEtf: false,
+            countsForPaye: false,
+            sortOrder: 86,
+          });
+          snapshotInputs.push({
+            componentId: null,
+            code: "REIMBURSE",
+            name: `Expense reimbursement (${expBucket.count} item${expBucket.count === 1 ? "" : "s"})`,
+            kind: "earning",
+            amountCents: expBucket.exemptCents,
+            countsForEpf: false,
+            countsForEtf: false,
+            countsForPaye: false,
+            sortOrder: 86,
+          });
+        }
+
         const c = computePayrollFromComponents({
           components: resolved,
           epfEligible: e.epfEligible,
@@ -858,6 +965,14 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
           });
         }
 
+        // Queue expense-claim atomic claim. Stamped with the run-line id so
+        // the payslip can correlate. Released by the void endpoint.
+        if (expBucket) {
+          for (const cid of expBucket.claimIds) {
+            consumedClaimIds.push({ claimId: cid, runLineId: line.id });
+          }
+        }
+
         gross += c.grossCents;
         epfEmp += c.epfEmployeeCents;
         epfEr += c.epfEmployerCents;
@@ -920,6 +1035,30 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
            WHERE tenant_id = current_tenant_id()
              AND id = ANY(${consumedEarningIds}::uuid[])
         `);
+      }
+
+      // Claim expense-claim rows that rode on this run (P1-9). Each row
+      // stamps applied_in_run_id + applied_in_run_line_id + applied_at.
+      // The void endpoint releases these by nulling the same three columns.
+      // One UPDATE per row — the runLineId varies, so we can't batch with
+      // ANY() unless we add a CASE. Per-row is fine for the small cardinality
+      // of expense claims per run in practice.
+      if (consumedClaimIds.length > 0) {
+        for (const cc of consumedClaimIds) {
+          await tx
+            .update(schema.expenseClaims)
+            .set({
+              appliedInRunId: run.id,
+              appliedInRunLineId: cc.runLineId,
+              appliedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(schema.expenseClaims.tenantId, ctx.tenantId),
+                eq(schema.expenseClaims.id, cc.claimId),
+              ),
+            );
+        }
       }
 
       // Update run aggregates
@@ -1081,7 +1220,34 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
         0,
         sumEarnings - sumNet - sumEpfEmp - sumPaye - sumNonStat,
       );
-      const wagesExpense = sumEarnings - preTaxDed;
+
+      // Expense reimbursement split (P1-9). The draft stamped
+      // applied_in_run_id on each claim; sum them per expense_account_id
+      // so we can DR the right category account instead of conflating them
+      // with wages. Rows lacking an expense_account_id fall back to
+      // Salaries & wages (equivalent to the legacy non-bundled behaviour).
+      const claimRows = await tx
+        .select({
+          amountCents: schema.expenseClaims.amountCents,
+          expenseAccountId: schema.expenseClaims.expenseAccountId,
+        })
+        .from(schema.expenseClaims)
+        .where(
+          and(
+            eq(schema.expenseClaims.tenantId, ctx.tenantId),
+            eq(schema.expenseClaims.appliedInRunId, run.id),
+          ),
+        );
+      const reimburseByAccount = new Map<string | null, number>();
+      let reimburseTotal = 0;
+      for (const r of claimRows) {
+        const k = r.expenseAccountId;
+        reimburseByAccount.set(k, (reimburseByAccount.get(k) ?? 0) + r.amountCents);
+        reimburseTotal += r.amountCents;
+      }
+      // Wages expense = total earnings − pre-tax deductions − reimbursements
+      // (reimbursements are booked separately to their expense accounts).
+      const wagesExpense = sumEarnings - preTaxDed - reimburseTotal;
 
       // Build balanced journal:
       //   DR Salaries & wages               earnings − pre-tax deductions
@@ -1099,6 +1265,23 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
           description: `Payroll ${runNumber} · wages`,
         },
       ];
+      // DR per-category expense accounts for bundled reimbursements. Rows
+      // without an expense_account_id collapse onto Salaries & wages.
+      for (const [accountId, amount] of reimburseByAccount.entries()) {
+        if (amount <= 0) continue;
+        if (accountId) {
+          journalLines.push({
+            accountId,
+            drCents: amount,
+            description: `Payroll ${runNumber} · reimbursement`,
+          });
+        } else {
+          // No category account — add to the wages DR line rather than
+          // silently dropping. Find the existing wages line and top it up.
+          const wagesLine = journalLines[0];
+          if (wagesLine) wagesLine.drCents = (wagesLine.drCents ?? 0) + amount;
+        }
+      }
       if (run.epfEmployerCents > 0) {
         journalLines.push({
           accountId: epfExpense!.id,
@@ -1273,7 +1456,7 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
   });
 
   fastify.post<{ Params: { id: string } }>("/:id/pay", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "payroll.manage");
     if (!ctx) return;
 
     const parsed = PaySchema.safeParse(req.body);
@@ -1661,5 +1844,305 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
       .header("Content-Type", "text/csv; charset=utf-8")
       .header("Content-Disposition", `attachment; filename="${filename}"`);
     return reply.send(body.join("\r\n") + "\r\n");
+  });
+
+  // POST /payroll-runs/:id/void — reverse a posted or paid run.
+  //
+  // Unwinds every effect the run had, in the same transaction:
+  //   1. Reverse the disbursement JE if one exists (paid runs) — found via
+  //      journal_entries.source_type='payroll_disbursement' + source_id.
+  //   2. Reverse the main payroll JE (posted + paid runs).
+  //   3. Release atomic claims the run grabbed at draft time so they can
+  //      participate in a future run:
+  //        · commission_earnings   → status='accrued', paid_in_run_id=NULL
+  //        · employee_salary_revisions → appliedInRunId=NULL, arrearsPaid=0
+  //        · employee_loan_schedule → status='pending', appliedInRunId=NULL
+  //   4. Undo the loan-header outstanding/repaid deltas applied at post time
+  //      (principalOutstanding += reclaimed, principalRepaid -= reclaimed,
+  //      same for interest), and re-open any loan that post had closed.
+  //   5. Flip run status → 'voided' and stamp void_at / void_reason / user.
+  //
+  // Draft runs: no JE yet, but draft already stamps revision + loan + earning
+  // claims. Delete-draft calls should release them too; this endpoint accepts
+  // 'draft' so a one-shot "abandon this run" path works without a separate
+  // DELETE handler. Already-voided runs return 409.
+  //
+  // Period-lock: the reversing JE(s) are posted through postJournal, which
+  // enforces fiscal-period lock. If the original period is closed, the caller
+  // must reopen it before void can succeed.
+  const VoidSchema = z.object({
+    reason: z.string().min(3).max(500),
+  });
+  fastify.post<{ Params: { id: string } }>("/:id/void", async (req, reply) => {
+    const ctx = await requirePermission(req, reply, "payroll.manage");
+    if (!ctx) return;
+
+    const parsed = VoidSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: { code: "INVALID_INPUT", issues: parsed.error.issues },
+      });
+    }
+    const { reason } = parsed.data;
+
+    const result = await withTenant(ctx.tenantId, async (tx) => {
+      const runRows = await tx
+        .select()
+        .from(schema.payrollRuns)
+        .where(
+          and(
+            eq(schema.payrollRuns.tenantId, ctx.tenantId),
+            eq(schema.payrollRuns.id, req.params.id),
+            isNull(schema.payrollRuns.deletedAt),
+          ),
+        )
+        .limit(1);
+      const run = runRows[0];
+      if (!run) return { error: "NOT_FOUND" as const };
+      if (run.status === "voided") return { error: "ALREADY_VOIDED" as const };
+      if (!["draft", "posted", "paid"].includes(run.status)) {
+        return { error: "NOT_VOIDABLE" as const, status: run.status };
+      }
+
+      const runNumber = run.runNumber ?? run.id.slice(0, 8);
+      const reversalDate = new Date().toISOString().slice(0, 10);
+
+      // 1. Reverse disbursement JE (paid runs). Match on source_type + source_id
+      //    to find it — /pay uses sourceType='payroll_disbursement'.
+      if (run.status === "paid") {
+        const disbursementRows = await tx
+          .select({ id: schema.journalEntries.id })
+          .from(schema.journalEntries)
+          .where(
+            and(
+              eq(schema.journalEntries.tenantId, ctx.tenantId),
+              eq(schema.journalEntries.sourceType, "payroll_disbursement"),
+              eq(schema.journalEntries.sourceId, run.id),
+              eq(schema.journalEntries.isReversed, false),
+            ),
+          );
+        for (const d of disbursementRows) {
+          const lines = await tx
+            .select()
+            .from(schema.journalLines)
+            .where(eq(schema.journalLines.journalEntryId, d.id));
+          if (lines.length === 0) continue;
+          await postJournal(tx, {
+            tenantId: ctx.tenantId,
+            entryDate: reversalDate,
+            memo: `Void payroll ${runNumber} · disbursement reversal · ${reason}`,
+            sourceType: "payroll_void",
+            sourceId: run.id,
+            postedByUserId: ctx.userId,
+            lines: lines.map((l) => ({
+              accountId: l.accountId,
+              drCents: l.crCents,
+              crCents: l.drCents,
+              description: `Reversal · ${l.description ?? ""}`.trim(),
+            })),
+          });
+          // Mark original as reversed (no reversedByEntryId pointer since
+          // the reversal's source_id points at the run, not the JE).
+          await tx
+            .update(schema.journalEntries)
+            .set({ isReversed: true })
+            .where(eq(schema.journalEntries.id, d.id));
+        }
+      }
+
+      // 2. Reverse main payroll JE (posted + paid).
+      if (run.journalEntryId) {
+        const lines = await tx
+          .select()
+          .from(schema.journalLines)
+          .where(eq(schema.journalLines.journalEntryId, run.journalEntryId));
+        if (lines.length > 0) {
+          await postJournal(tx, {
+            tenantId: ctx.tenantId,
+            entryDate: reversalDate,
+            memo: `Void payroll ${runNumber} · ${reason}`,
+            sourceType: "payroll_void",
+            sourceId: run.id,
+            postedByUserId: ctx.userId,
+            lines: lines.map((l) => ({
+              accountId: l.accountId,
+              drCents: l.crCents,
+              crCents: l.drCents,
+              description: `Reversal · ${l.description ?? ""}`.trim(),
+            })),
+          });
+          await tx
+            .update(schema.journalEntries)
+            .set({ isReversed: true })
+            .where(eq(schema.journalEntries.id, run.journalEntryId));
+        }
+      }
+
+      // 3a. Release commission earnings.
+      await tx.execute(sql`
+        UPDATE commission_earnings
+           SET paid_in_run_id = NULL,
+               status         = 'accrued',
+               updated_at     = now()
+         WHERE tenant_id = current_tenant_id()
+           AND paid_in_run_id = ${run.id}::uuid
+      `);
+
+      // 3b. Release salary revisions stamped at draft time.
+      await tx
+        .update(schema.employeeSalaryRevisions)
+        .set({
+          appliedInRunId: null,
+          appliedAt: null,
+          arrearsCentsApplied: 0,
+        })
+        .where(
+          and(
+            eq(schema.employeeSalaryRevisions.tenantId, ctx.tenantId),
+            eq(schema.employeeSalaryRevisions.appliedInRunId, run.id),
+          ),
+        );
+
+      // 3b'. Release expense claims stamped at draft time (P1-9). Reverts
+      // them to status='approved' with applied_in_run_id=NULL so the next
+      // payroll run can pick them up again.
+      await tx
+        .update(schema.expenseClaims)
+        .set({
+          appliedInRunId: null,
+          appliedInRunLineId: null,
+          appliedAt: null,
+        })
+        .where(
+          and(
+            eq(schema.expenseClaims.tenantId, ctx.tenantId),
+            eq(schema.expenseClaims.appliedInRunId, run.id),
+          ),
+        );
+
+      // 3c + 4. Release loan EMI rows AND undo the loan-header deltas.
+      //         Capture per-loan sums BEFORE clearing so we know how much to
+      //         roll back. Only subtract repaid totals if the row was flipped
+      //         to 'paid' (i.e. run had reached 'posted' — draft runs stamp
+      //         applied_in_run_id but leave status='pending').
+      const claimedLoanRows = await tx
+        .select()
+        .from(schema.employeeLoanSchedule)
+        .where(
+          and(
+            eq(schema.employeeLoanSchedule.tenantId, ctx.tenantId),
+            eq(schema.employeeLoanSchedule.appliedInRunId, run.id),
+          ),
+        );
+      type LoanDelta = {
+        principal: number;
+        interest: number;
+        wasPaid: boolean;
+      };
+      const loanDeltas = new Map<string, LoanDelta>();
+      for (const r of claimedLoanRows) {
+        const d = loanDeltas.get(r.loanId) ?? {
+          principal: 0,
+          interest: 0,
+          wasPaid: false,
+        };
+        if (r.status === "paid") {
+          d.principal += r.principalCents;
+          d.interest += r.interestCents;
+          d.wasPaid = true;
+        }
+        loanDeltas.set(r.loanId, d);
+      }
+      // Release the schedule rows.
+      await tx
+        .update(schema.employeeLoanSchedule)
+        .set({
+          appliedInRunId: null,
+          appliedRunLineId: null,
+          appliedAt: null,
+          status: "pending",
+        })
+        .where(
+          and(
+            eq(schema.employeeLoanSchedule.tenantId, ctx.tenantId),
+            eq(schema.employeeLoanSchedule.appliedInRunId, run.id),
+          ),
+        );
+      // Roll back loan-header deltas applied at post.
+      for (const [loanId, d] of loanDeltas) {
+        if (!d.wasPaid) continue;
+        const [lr] = await tx
+          .select()
+          .from(schema.employeeLoans)
+          .where(eq(schema.employeeLoans.id, loanId))
+          .limit(1);
+        if (!lr) continue;
+        const newPrincipalOut = lr.principalOutstandingCents + d.principal;
+        const newInterestOut = lr.interestOutstandingCents + d.interest;
+        const newPrincipalRep = Math.max(
+          0,
+          lr.principalRepaidCents - d.principal,
+        );
+        const newInterestRep = Math.max(
+          0,
+          lr.interestRepaidCents - d.interest,
+        );
+        // Re-open any loan we'd closed at post. Keep original closedReason
+        // blank on re-open so the next true close can stamp a fresh one.
+        const wasClosedByThisRun =
+          lr.status === "closed" && lr.closedReason === "fully_paid";
+        await tx
+          .update(schema.employeeLoans)
+          .set({
+            principalOutstandingCents: newPrincipalOut,
+            interestOutstandingCents: newInterestOut,
+            principalRepaidCents: newPrincipalRep,
+            interestRepaidCents: newInterestRep,
+            ...(wasClosedByThisRun && {
+              status: "disbursed",
+              closedAt: null,
+              closedReason: null,
+            }),
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.employeeLoans.id, loanId));
+      }
+
+      // 5. Stamp the run voided.
+      await tx
+        .update(schema.payrollRuns)
+        .set({
+          status: "voided",
+          voidReason: reason,
+          voidAt: new Date(),
+          voidByUserId: ctx.userId,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.payrollRuns.id, run.id));
+
+      return {
+        ok: true as const,
+        runId: run.id,
+        previousStatus: run.status,
+      };
+    });
+
+    if ("error" in result) {
+      const map: Record<string, number> = {
+        NOT_FOUND: 404,
+        ALREADY_VOIDED: 409,
+        NOT_VOIDABLE: 409,
+      };
+      const messages: Record<string, string> = {
+        ALREADY_VOIDED: "This run is already voided.",
+        NOT_VOIDABLE:
+          "Only draft, posted, or paid runs can be voided. Current status: " +
+          ("status" in result ? result.status : "?"),
+      };
+      return reply.status(map[result.error] ?? 500).send({
+        error: { code: result.error, message: messages[result.error] },
+      });
+    }
+    return reply.send(result);
   });
 };

@@ -3,6 +3,7 @@ import { and, eq, isNull, desc, asc, sql } from "drizzle-orm";
 import { z } from "zod";
 import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
+import { requirePermission } from "../../lib/permissions.js";
 
 const LineSchema = z.object({
   itemId: z.string().uuid(),
@@ -159,7 +160,7 @@ export const stockTransfersRoutes: FastifyPluginAsync = async (fastify) => {
 
   // Create a draft transfer.
   fastify.post("/", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "inventory.manage");
     if (!ctx) return;
 
     const parsed = CreateSchema.safeParse(req.body);
@@ -225,7 +226,7 @@ export const stockTransfersRoutes: FastifyPluginAsync = async (fastify) => {
   // POST /stock-transfers/:id/dispatch — reduce source warehouse stock,
   // allocate transfer number, flip status to 'dispatched'.
   fastify.post<{ Params: { id: string } }>("/:id/dispatch", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    const ctx = await requirePermission(req, reply, "inventory.manage");
     if (!ctx) return;
 
     const result = await withTenant(ctx.tenantId, async (tx) => {
@@ -368,7 +369,7 @@ export const stockTransfersRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Params: { id: string }; Body: { lines: unknown[]; notes?: string } }>(
     "/:id/receive",
     async (req, reply) => {
-      const ctx = requireAuth(req, reply);
+      const ctx = await requirePermission(req, reply, "inventory.manage");
       if (!ctx) return;
 
       const parsed = ReceiveSchema.safeParse(req.body);
@@ -538,7 +539,7 @@ export const stockTransfersRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Params: { id: string }; Body: { reason?: string } }>(
     "/:id/cancel",
     async (req, reply) => {
-      const ctx = requireAuth(req, reply);
+      const ctx = await requirePermission(req, reply, "inventory.manage");
       if (!ctx) return;
       const reason = (req.body?.reason ?? "").trim();
 

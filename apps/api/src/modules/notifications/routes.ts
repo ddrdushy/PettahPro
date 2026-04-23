@@ -12,21 +12,35 @@ import { requireAuth } from "../../lib/with-tenant.js";
 // Keep this aligned with actual emitNotification() call sites. The source
 // of truth is the emitter, not this list — new kinds added to the app
 // become enabled-by-default until someone adds them to the UI dictionary.
+//
+// Naming convention: snake_case (underscore) to match the emit sites.
+// Prior to PR #69 the catalog used dotted form (invoice.posted) while
+// emits used snake_case (invoice_posted) — so every user preference toggle
+// silently failed. Kept as a single canonical style here to prevent
+// regressions; grep `kind: "<name>"` when adding a new notification.
 const NOTIFICATION_KIND_CATALOG: ReadonlyArray<{
   kind: string;
   label: string;
   description: string;
 }> = [
-  { kind: "invoice.posted",         label: "Invoice posted",       description: "An invoice was posted to the ledger." },
-  { kind: "invoice.voided",         label: "Invoice voided",       description: "A posted invoice was reversed." },
-  { kind: "bill.posted",            label: "Bill posted",          description: "A supplier bill was posted." },
-  { kind: "bill.voided",            label: "Bill voided",          description: "A posted bill was reversed." },
-  { kind: "payment.received",       label: "Payment received",     description: "A customer payment was recorded." },
-  { kind: "payment.sent",           label: "Payment sent",         description: "A supplier payment was recorded." },
-  { kind: "journal.pending_review", label: "Journal pending review", description: "A journal entry needs your approval." },
-  { kind: "journal.posted",         label: "Journal posted",       description: "A journal entry was posted." },
-  { kind: "period.closed",          label: "Period closed",        description: "An accounting period was closed." },
-  { kind: "stock.low",              label: "Low stock",            description: "An item dropped below its reorder level." },
+  // Sell
+  { kind: "invoice_posted",        label: "Invoice posted",         description: "An invoice was posted to the ledger." },
+  { kind: "payment_received",      label: "Payment received",       description: "A customer payment was recorded." },
+  { kind: "pos_sale_posted",       label: "POS sale posted",        description: "A sale was rung through the POS terminal." },
+  { kind: "pos_shift_variance",    label: "POS shift variance",     description: "A POS shift closed with a cash over/short." },
+  // Buy
+  { kind: "bill_posted",           label: "Bill posted",            description: "A supplier bill was posted." },
+  // Accounting
+  { kind: "je_approval_pending",   label: "Journal pending review", description: "A journal entry needs your approval." },
+  { kind: "je_approved",           label: "Journal approved",       description: "A journal entry you submitted was approved." },
+  { kind: "je_rejected",           label: "Journal rejected",       description: "A journal entry you submitted was rejected." },
+  { kind: "period_closed",         label: "Period closed",          description: "An accounting period was soft-closed." },
+  { kind: "period_reopened",       label: "Period reopened",        description: "A closed accounting period was reopened." },
+  { kind: "year_closed",           label: "Year closed",            description: "A fiscal year was closed and the closing entry posted." },
+  // Inventory
+  { kind: "low_stock",             label: "Low stock",              description: "An item dropped below its reorder level." },
+  // Cheques
+  { kind: "cheque_stale",          label: "Stale cheque",           description: "A cheque has been unused for 6 months and was auto-flagged." },
 ];
 
 /**

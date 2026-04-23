@@ -212,7 +212,10 @@ export const api = {
       runDate?: string;
     }>("/fixed-assets/run-depreciation", { method: "POST", json: { year, month } }),
 
-  listInvoices: () => request<{ invoices: InvoiceListRow[] }>("/invoices"),
+  listInvoices: (channel?: "web" | "pos" | "all") =>
+    request<{ invoices: InvoiceListRow[] }>(
+      `/invoices${channel ? `?channel=${channel}` : ""}`,
+    ),
   getInvoice: (id: string) =>
     request<{ invoice: InvoiceDetail; lines: InvoiceLine[]; customer: Customer | null }>(
       `/invoices/${id}`,
@@ -2086,6 +2089,7 @@ export interface InvoiceListRow {
   taxCents: number;
   totalCents: number;
   balanceDueCents: number;
+  channel?: string;
   createdAt: string;
 }
 

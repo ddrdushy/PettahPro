@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import { and, eq, isNull, desc, asc, sql } from "drizzle-orm";
 import { z } from "zod";
-import { withTenant, schema } from "@pettahpro/db";
+import { withTenant, schema, type Database } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
 import { postJournal } from "./journal-posting.js";
 
@@ -230,163 +230,249 @@ export const fixedAssetsRoutes: FastifyPluginAsync = async (fastify) => {
         .send({ error: { code: "INVALID_INPUT", issues: parsed.error.issues } });
     }
     const { year, month } = parsed.data;
-    const runDate = monthEndISO(year, month);
 
-    const result = await withTenant(ctx.tenantId, async (tx) => {
-      // Pull every active asset; skip ones without the GL accounts wired.
-      const assets = await tx
-        .select()
-        .from(schema.fixedAssets)
-        .where(
-          and(
-            eq(schema.fixedAssets.tenantId, ctx.tenantId),
-            eq(schema.fixedAssets.status, "active"),
-            isNull(schema.fixedAssets.deletedAt),
-          ),
-        );
-
-      // Existing entries for this period — we skip assets already depreciated
-      // in (year,month) so re-running is idempotent.
-      const existing = await tx
-        .select({ assetId: schema.fixedAssetDepreciationEntries.fixedAssetId })
-        .from(schema.fixedAssetDepreciationEntries)
-        .where(
-          and(
-            eq(schema.fixedAssetDepreciationEntries.tenantId, ctx.tenantId),
-            eq(schema.fixedAssetDepreciationEntries.periodYear, year),
-            eq(schema.fixedAssetDepreciationEntries.periodMonth, month),
-          ),
-        );
-      const alreadyRun = new Set(existing.map((r) => r.assetId));
-
-      // Compute monthly depreciation per asset, build JE lines grouped by
-      // (expense, accumulated) account pair so multiple assets sharing the
-      // same account config condense into fewer journal rows.
-      interface PerAsset {
-        assetId: string;
-        amount: number;
-        newAccumulated: number;
-        expenseAccountId: string;
-        accumAccountId: string;
-      }
-      const perAsset: PerAsset[] = [];
-      const skipped: Array<{ id: string; name: string; reason: string }> = [];
-
-      for (const a of assets) {
-        if (alreadyRun.has(a.id)) {
-          skipped.push({ id: a.id, name: a.name, reason: "already_run_for_period" });
-          continue;
-        }
-        if (!a.depreciationExpenseAccountId || !a.accumulatedDepreciationAccountId) {
-          skipped.push({ id: a.id, name: a.name, reason: "missing_gl_accounts" });
-          continue;
-        }
-        // Don't depreciate before the start date (e.g. asset acquired mid-year
-        // and the user clicks a prior month by accident).
-        if (runDate < a.depreciationStartDate) {
-          skipped.push({ id: a.id, name: a.name, reason: "before_start_date" });
-          continue;
-        }
-
-        const depreciable = a.costCents - a.salvageCents;
-        if (depreciable <= 0) continue;
-        const monthly = Math.round(depreciable / a.usefulLifeMonths);
-
-        // Cap at remaining depreciable amount so we never cross salvage.
-        const remaining = depreciable - a.accumulatedDepreciationCents;
-        if (remaining <= 0) {
-          skipped.push({ id: a.id, name: a.name, reason: "fully_depreciated" });
-          continue;
-        }
-        const amount = Math.min(monthly, remaining);
-        if (amount <= 0) continue;
-
-        perAsset.push({
-          assetId: a.id,
-          amount,
-          newAccumulated: a.accumulatedDepreciationCents + amount,
-          expenseAccountId: a.depreciationExpenseAccountId,
-          accumAccountId: a.accumulatedDepreciationAccountId,
-        });
-      }
-
-      if (perAsset.length === 0) {
-        return { processed: 0, skipped, totalDepreciationCents: 0 };
-      }
-
-      // Post one consolidated journal entry for the whole run.
-      const drByAccount = new Map<string, number>();
-      const crByAccount = new Map<string, number>();
-      for (const p of perAsset) {
-        drByAccount.set(
-          p.expenseAccountId,
-          (drByAccount.get(p.expenseAccountId) ?? 0) + p.amount,
-        );
-        crByAccount.set(
-          p.accumAccountId,
-          (crByAccount.get(p.accumAccountId) ?? 0) + p.amount,
-        );
-      }
-
-      const journalLines: Parameters<typeof postJournal>[1]["lines"] = [];
-      for (const [accountId, amount] of drByAccount) {
-        journalLines.push({
-          accountId,
-          drCents: amount,
-          description: `Depreciation ${year}-${String(month).padStart(2, "0")}`,
-        });
-      }
-      for (const [accountId, amount] of crByAccount) {
-        journalLines.push({
-          accountId,
-          crCents: amount,
-          description: `Accumulated depreciation ${year}-${String(month).padStart(2, "0")}`,
-        });
-      }
-
-      const { entryId, entryNumber } = await postJournal(tx, {
+    const result = await withTenant(ctx.tenantId, async (tx) =>
+      runDepreciationForTenantTx(tx, {
         tenantId: ctx.tenantId,
-        entryDate: runDate,
-        memo: `Depreciation run ${year}-${String(month).padStart(2, "0")}`,
-        sourceType: "depreciation_run",
+        year,
+        month,
         postedByUserId: ctx.userId,
-        lines: journalLines,
-      });
-
-      // Per-asset history rows + update accumulated totals
-      const totalCents = perAsset.reduce((s, p) => s + p.amount, 0);
-      await tx.insert(schema.fixedAssetDepreciationEntries).values(
-        perAsset.map((p) => ({
-          tenantId: ctx.tenantId,
-          fixedAssetId: p.assetId,
-          runDate,
-          periodYear: year,
-          periodMonth: month,
-          depreciationCents: p.amount,
-          accumulatedAfterCents: p.newAccumulated,
-          journalEntryId: entryId,
-        })),
-      );
-      for (const p of perAsset) {
-        await tx
-          .update(schema.fixedAssets)
-          .set({
-            accumulatedDepreciationCents: p.newAccumulated,
-            lastDepreciationRunDate: runDate,
-            updatedAt: new Date(),
-          })
-          .where(eq(schema.fixedAssets.id, p.assetId));
-      }
-
-      return {
-        processed: perAsset.length,
-        skipped,
-        totalDepreciationCents: totalCents,
-        entryNumber,
-        runDate,
-      };
-    });
+      }),
+    );
 
     return reply.send({ ok: true, ...result });
   });
 };
+
+// --- depreciation engine (also used by the monthly cron) -------------------
+
+type DepreciationResult = {
+  processed: number;
+  skipped: Array<{ id: string; name: string; reason: string }>;
+  totalDepreciationCents: number;
+  entryNumber?: string;
+  runDate: string;
+};
+
+// The same compute used by POST /run-depreciation and the monthly cron.
+// Fully idempotent: re-running for (tenantId, year, month) skips assets
+// that already have a depreciation entry for the period.
+export async function runDepreciationForTenantTx(
+  tx: Parameters<Parameters<typeof withTenant>[1]>[0],
+  input: {
+    tenantId: string;
+    year: number;
+    month: number;
+    postedByUserId: string | null;
+  },
+): Promise<DepreciationResult> {
+  const { tenantId, year, month } = input;
+  const runDate = monthEndISO(year, month);
+
+  // Pull every active asset; skip ones without the GL accounts wired.
+  const assets = await tx
+    .select()
+    .from(schema.fixedAssets)
+    .where(
+      and(
+        eq(schema.fixedAssets.tenantId, tenantId),
+        eq(schema.fixedAssets.status, "active"),
+        isNull(schema.fixedAssets.deletedAt),
+      ),
+    );
+
+  // Existing entries for this period — we skip assets already depreciated
+  // in (year,month) so re-running is idempotent.
+  const existing = await tx
+    .select({ assetId: schema.fixedAssetDepreciationEntries.fixedAssetId })
+    .from(schema.fixedAssetDepreciationEntries)
+    .where(
+      and(
+        eq(schema.fixedAssetDepreciationEntries.tenantId, tenantId),
+        eq(schema.fixedAssetDepreciationEntries.periodYear, year),
+        eq(schema.fixedAssetDepreciationEntries.periodMonth, month),
+      ),
+    );
+  const alreadyRun = new Set(existing.map((r) => r.assetId));
+
+  interface PerAsset {
+    assetId: string;
+    amount: number;
+    newAccumulated: number;
+    expenseAccountId: string;
+    accumAccountId: string;
+  }
+  const perAsset: PerAsset[] = [];
+  const skipped: Array<{ id: string; name: string; reason: string }> = [];
+
+  for (const a of assets) {
+    if (alreadyRun.has(a.id)) {
+      skipped.push({ id: a.id, name: a.name, reason: "already_run_for_period" });
+      continue;
+    }
+    if (!a.depreciationExpenseAccountId || !a.accumulatedDepreciationAccountId) {
+      skipped.push({ id: a.id, name: a.name, reason: "missing_gl_accounts" });
+      continue;
+    }
+    if (runDate < a.depreciationStartDate) {
+      skipped.push({ id: a.id, name: a.name, reason: "before_start_date" });
+      continue;
+    }
+
+    const depreciable = a.costCents - a.salvageCents;
+    if (depreciable <= 0) continue;
+    const monthly = Math.round(depreciable / a.usefulLifeMonths);
+
+    const remaining = depreciable - a.accumulatedDepreciationCents;
+    if (remaining <= 0) {
+      skipped.push({ id: a.id, name: a.name, reason: "fully_depreciated" });
+      continue;
+    }
+    const amount = Math.min(monthly, remaining);
+    if (amount <= 0) continue;
+
+    perAsset.push({
+      assetId: a.id,
+      amount,
+      newAccumulated: a.accumulatedDepreciationCents + amount,
+      expenseAccountId: a.depreciationExpenseAccountId,
+      accumAccountId: a.accumulatedDepreciationAccountId,
+    });
+  }
+
+  if (perAsset.length === 0) {
+    return { processed: 0, skipped, totalDepreciationCents: 0, runDate };
+  }
+
+  const drByAccount = new Map<string, number>();
+  const crByAccount = new Map<string, number>();
+  for (const p of perAsset) {
+    drByAccount.set(
+      p.expenseAccountId,
+      (drByAccount.get(p.expenseAccountId) ?? 0) + p.amount,
+    );
+    crByAccount.set(
+      p.accumAccountId,
+      (crByAccount.get(p.accumAccountId) ?? 0) + p.amount,
+    );
+  }
+
+  const journalLines: Parameters<typeof postJournal>[1]["lines"] = [];
+  for (const [accountId, amount] of drByAccount) {
+    journalLines.push({
+      accountId,
+      drCents: amount,
+      description: `Depreciation ${year}-${String(month).padStart(2, "0")}`,
+    });
+  }
+  for (const [accountId, amount] of crByAccount) {
+    journalLines.push({
+      accountId,
+      crCents: amount,
+      description: `Accumulated depreciation ${year}-${String(month).padStart(2, "0")}`,
+    });
+  }
+
+  const { entryId, entryNumber } = await postJournal(tx, {
+    tenantId,
+    entryDate: runDate,
+    memo: `Depreciation run ${year}-${String(month).padStart(2, "0")}`,
+    sourceType: "depreciation_run",
+    postedByUserId: input.postedByUserId ?? undefined,
+    lines: journalLines,
+  });
+
+  const totalCents = perAsset.reduce((s, p) => s + p.amount, 0);
+  await tx.insert(schema.fixedAssetDepreciationEntries).values(
+    perAsset.map((p) => ({
+      tenantId,
+      fixedAssetId: p.assetId,
+      runDate,
+      periodYear: year,
+      periodMonth: month,
+      depreciationCents: p.amount,
+      accumulatedAfterCents: p.newAccumulated,
+      journalEntryId: entryId,
+    })),
+  );
+  for (const p of perAsset) {
+    await tx
+      .update(schema.fixedAssets)
+      .set({
+        accumulatedDepreciationCents: p.newAccumulated,
+        lastDepreciationRunDate: runDate,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.fixedAssets.id, p.assetId));
+  }
+
+  return {
+    processed: perAsset.length,
+    skipped,
+    totalDepreciationCents: totalCents,
+    entryNumber,
+    runDate,
+  };
+}
+
+/**
+ * Monthly depreciation dispatcher — fired from the BullMQ scheduled queue
+ * once a day. Only does work when today is the 1st of the month: runs the
+ * prior month's depreciation for every tenant. Fully idempotent via the
+ * (tenant_id, year, month) uniqueness on fixed_asset_depreciation_entries,
+ * so re-firing the same day is a no-op.
+ */
+export async function runMonthlyDepreciationForAllTenants(
+  dbClient: Database,
+  log: {
+    info: (obj: object, msg?: string) => void;
+    error: (obj: object, msg?: string) => void;
+  },
+): Promise<{ tenantsProcessed: number; entriesPosted: number }> {
+  const today = new Date();
+  // Only fire on the 1st. Keeping this check here (not in worker) means the
+  // cadence is self-contained — adding a test hook to override the check
+  // is a one-line change if we ever need to force-run mid-month.
+  if (today.getUTCDate() !== 1) {
+    log.info({ date: today.toISOString() }, "depreciation cron: not 1st, skipping");
+    return { tenantsProcessed: 0, entriesPosted: 0 };
+  }
+  // Prior calendar month.
+  const y = today.getUTCFullYear();
+  const m = today.getUTCMonth(); // 0-indexed; naturally prior month
+  const priorYear = m === 0 ? y - 1 : y;
+  const priorMonth = m === 0 ? 12 : m;
+
+  const tenantRows = (await dbClient.execute(sql`
+    SELECT id FROM tenants WHERE deleted_at IS NULL
+  `)) as unknown as Array<{ id: string }>;
+
+  let entriesPosted = 0;
+  for (const t of tenantRows) {
+    try {
+      const result = await withTenant(t.id, async (tx) =>
+        runDepreciationForTenantTx(tx, {
+          tenantId: t.id,
+          year: priorYear,
+          month: priorMonth,
+          postedByUserId: null,
+        }),
+      );
+      entriesPosted += result.processed;
+      log.info(
+        {
+          tenantId: t.id,
+          year: priorYear,
+          month: priorMonth,
+          processed: result.processed,
+          totalCents: result.totalDepreciationCents,
+        },
+        "depreciation cron: tenant complete",
+      );
+    } catch (err) {
+      log.error({ tenantId: t.id, err }, "depreciation cron: tenant failed");
+    }
+  }
+
+  return { tenantsProcessed: tenantRows.length, entriesPosted };
+}
