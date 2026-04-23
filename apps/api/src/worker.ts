@@ -8,6 +8,7 @@ import { runDueRecurringJournals } from "./modules/accounting/recurring-journals
 import { runScheduledStatementEmails } from "./modules/operations/customer-statement-email-cron.js";
 import { runStaleChequeFlagging } from "./modules/cheques/stale-flag.js";
 import { runMonthlyDepreciationForAllTenants } from "./modules/accounting/fixed-assets.js";
+import { runNotificationDigests } from "./modules/notifications/digest-cron.js";
 
 const log = pino({
   level: process.env.LOG_LEVEL ?? "info",
@@ -109,6 +110,22 @@ async function registerSchedules() {
     },
   );
   log.info("scheduled: run-monthly-depreciation (daily; fires on 1st)");
+
+  // Notification digest dispatcher (roadmap #45). Fires hourly because the
+  // tenant-local hour gate is checked inside the runner — one cron cadence
+  // across every tenant regardless of timezone. The runner dedupes via
+  // notification_digest_emails so two ticks in the same tenant-local hour
+  // won't double-send.
+  await scheduledQueue.add(
+    "send-notification-digests",
+    {},
+    {
+      repeat: { every: 60 * 60 * 1000 }, // 1h
+      removeOnComplete: 50,
+      removeOnFail: 50,
+    },
+  );
+  log.info("scheduled: send-notification-digests (hourly)");
 }
 
 const defaultWorker = new Worker(
@@ -152,6 +169,11 @@ const scheduledWorker = new Worker(
     if (job.name === "run-monthly-depreciation") {
       const result = await runMonthlyDepreciationForAllTenants(db, log);
       log.info(result, "monthly depreciation run complete");
+      return result;
+    }
+    if (job.name === "send-notification-digests") {
+      const result = await runNotificationDigests(db, log);
+      log.info(result, "notification digest run complete");
       return result;
     }
     log.warn({ name: job.name }, "unknown scheduled job");

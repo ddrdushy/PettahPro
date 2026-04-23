@@ -178,6 +178,7 @@ export const notificationsRoutes: FastifyPluginAsync = async (fastify) => {
         .select({
           kind: schema.notificationPreferences.kind,
           enabled: schema.notificationPreferences.enabled,
+          cadence: schema.notificationPreferences.cadence,
         })
         .from(schema.notificationPreferences)
         .where(
@@ -187,16 +188,34 @@ export const notificationsRoutes: FastifyPluginAsync = async (fastify) => {
           ),
         );
     });
-    const byKind = new Map(overrides.map((o) => [o.kind, o.enabled]));
+    const byKind = new Map(
+      overrides.map((o) => [o.kind, { enabled: o.enabled, cadence: o.cadence }]),
+    );
+
+    // Roadmap #45: cadence is returned alongside enabled. UI treats
+    // `cadence='off'` as equivalent to `enabled=false`; server honours
+    // both so pre-#45 rows (no cadence override → default 'immediate')
+    // keep working without backfill.
+    const resolveCadence = (
+      row?: { enabled: boolean; cadence: string },
+    ): "off" | "immediate" | "daily" | "weekly" => {
+      if (!row) return "immediate";
+      if (!row.enabled) return "off";
+      return (row.cadence as "immediate" | "daily" | "weekly") ?? "immediate";
+    };
 
     const preferences = [
-      ...NOTIFICATION_KIND_CATALOG.map((c) => ({
-        kind: c.kind,
-        label: c.label,
-        description: c.description,
-        enabled: byKind.get(c.kind) ?? true,
-        known: true as const,
-      })),
+      ...NOTIFICATION_KIND_CATALOG.map((c) => {
+        const row = byKind.get(c.kind);
+        return {
+          kind: c.kind,
+          label: c.label,
+          description: c.description,
+          enabled: row?.enabled ?? true,
+          cadence: resolveCadence(row),
+          known: true as const,
+        };
+      }),
       ...overrides
         .filter((o) => !NOTIFICATION_KIND_CATALOG.some((c) => c.kind === o.kind))
         .map((o) => ({
@@ -204,6 +223,7 @@ export const notificationsRoutes: FastifyPluginAsync = async (fastify) => {
           label: o.kind,
           description: "",
           enabled: o.enabled,
+          cadence: resolveCadence({ enabled: o.enabled, cadence: o.cadence }),
           known: false as const,
         })),
     ];
@@ -211,35 +231,76 @@ export const notificationsRoutes: FastifyPluginAsync = async (fastify) => {
     return reply.send({ preferences });
   });
 
-  // PATCH /notifications/preferences/:kind — toggle one kind on/off.
-  fastify.patch<{ Params: { kind: string }; Body: { enabled: boolean } }>(
-    "/preferences/:kind",
-    async (req, reply) => {
-      const ctx = requireAuth(req, reply);
-      if (!ctx) return;
+  // PATCH /notifications/preferences/:kind — update cadence (and derive
+  // enabled). Body accepts either { enabled: boolean } (legacy) or
+  // { cadence: "off"|"immediate"|"daily"|"weekly" } (roadmap #45).
+  // When both are sent, cadence wins and enabled is derived (enabled =
+  // cadence !== 'off'); when only `enabled` is sent we flip it and leave
+  // cadence as-is, falling back to 'immediate' on new rows.
+  fastify.patch<{
+    Params: { kind: string };
+    Body: { enabled?: boolean; cadence?: "off" | "immediate" | "daily" | "weekly" };
+  }>("/preferences/:kind", async (req, reply) => {
+    const ctx = requireAuth(req, reply);
+    if (!ctx) return;
 
-      const parsed = z.object({ enabled: z.boolean() }).safeParse(req.body);
-      if (!parsed.success) {
-        return reply
-          .status(400)
-          .send({ error: { code: "INVALID_INPUT", issues: parsed.error.issues } });
-      }
-      const kind = req.params.kind.trim();
-      if (!kind || kind.length > 64) {
-        return reply.status(400).send({ error: { code: "INVALID_KIND" } });
-      }
+    const parsed = z
+      .object({
+        enabled: z.boolean().optional(),
+        cadence: z.enum(["off", "immediate", "daily", "weekly"]).optional(),
+      })
+      .refine((v) => v.enabled !== undefined || v.cadence !== undefined, {
+        message: "enabled or cadence is required",
+      })
+      .safeParse(req.body);
+    if (!parsed.success) {
+      return reply
+        .status(400)
+        .send({ error: { code: "INVALID_INPUT", issues: parsed.error.issues } });
+    }
+    const kind = req.params.kind.trim();
+    if (!kind || kind.length > 64) {
+      return reply.status(400).send({ error: { code: "INVALID_KIND" } });
+    }
 
-      await withTenant(ctx.tenantId, async (tx) => {
-        // Upsert on (tenant_id, user_id, kind) — unique index enforces.
+    // Derive the authoritative pair. If cadence is explicit we honour it;
+    // otherwise we fall back to the legacy boolean toggle and default cadence.
+    let cadence: "off" | "immediate" | "daily" | "weekly";
+    let enabled: boolean;
+    if (parsed.data.cadence) {
+      cadence = parsed.data.cadence;
+      enabled = cadence !== "off";
+    } else {
+      enabled = parsed.data.enabled ?? true;
+      cadence = enabled ? "immediate" : "off";
+    }
+
+    await withTenant(ctx.tenantId, async (tx) => {
+      // Upsert on (tenant_id, user_id, kind) — unique index enforces.
+      await tx.execute(sql`
+        INSERT INTO notification_preferences (tenant_id, user_id, kind, enabled, cadence)
+        VALUES (${ctx.tenantId}::uuid, ${ctx.userId}::uuid, ${kind}, ${enabled}, ${cadence})
+        ON CONFLICT (tenant_id, user_id, kind)
+        DO UPDATE SET enabled = EXCLUDED.enabled,
+                      cadence = EXCLUDED.cadence,
+                      updated_at = now()
+      `);
+
+      // When a user flips from digest → immediate/off, stale pending
+      // queue rows would otherwise sit forever (cadence='daily' rows
+      // with no one about to fire their digest). Clear them — the bell
+      // notifications already captured the info for future events.
+      if (cadence === "immediate" || cadence === "off") {
         await tx.execute(sql`
-          INSERT INTO notification_preferences (tenant_id, user_id, kind, enabled)
-          VALUES (${ctx.tenantId}::uuid, ${ctx.userId}::uuid, ${kind}, ${parsed.data.enabled})
-          ON CONFLICT (tenant_id, user_id, kind)
-          DO UPDATE SET enabled = EXCLUDED.enabled, updated_at = now()
+          DELETE FROM notification_digest_queue
+          WHERE tenant_id = current_tenant_id()
+            AND user_id = ${ctx.userId}::uuid
+            AND kind = ${kind}
+            AND delivered_at IS NULL
         `);
-      });
+      }
+    });
 
-      return reply.send({ ok: true, kind, enabled: parsed.data.enabled });
-    },
-  );
+    return reply.send({ ok: true, kind, enabled, cadence });
+  });
 };
