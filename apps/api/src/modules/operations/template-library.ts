@@ -1,0 +1,82 @@
+// Template library (roadmap #33) — hard-coded starter templates the
+// tenant admin UI lists under "Browse library". Cloning one copies
+// the layout JSON into a tenant-owned `document_templates` row with
+// `library_key` preserved so the UI can label the origin and a
+// future sync flow can detect library revisions.
+//
+// v1 ships one invoice template ("Classic"). Extending the library
+// means adding more entries here — no DB changes required. Future
+// PRs per doc type will bulk-add PO, GRN, quotation, etc.
+//
+// The JSON shape is the renderer's contract; see
+// apps/web/lib/template-renderer.tsx for the authoritative type
+// definition. Keep the shape in sync when extending.
+
+export type LibraryTemplate = {
+  libraryKey: string;
+  docType: string;
+  name: string;
+  description: string;
+  // Languages this library entry is available in. The UI shows one
+  // card per key and lets the user pick a language at clone time.
+  languages: readonly string[];
+  // Layout JSON — opaque to the API, parsed by the web renderer.
+  layout: Record<string, unknown>;
+};
+
+// The invoice layout mirrors the hard-coded `InvoicePDF` React
+// component so cloning "Classic" gives the same output the tenant
+// already had before switching to template-driven rendering. The
+// renderer falls back to the hard-coded component when no template
+// is configured, so this is also our "what does the fallback look
+// like" source of truth.
+const CLASSIC_INVOICE_LAYOUT: Record<string, unknown> = {
+  pageSize: "a4",
+  theme: {
+    accentColor: "#3D6B52",
+    mutedColor: "#E8EDE9",
+    textPrimary: "#1A1A1A",
+    textSecondary: "#5F5E5A",
+    textTertiary: "#888780",
+    borderColor: "#E5E5E3",
+    surfaceRecessed: "#F1EFE8",
+    fontFamily: "Helvetica",
+    fontSize: 10,
+  },
+  sections: [
+    { type: "header", showLogo: true, showStatusPill: true },
+    {
+      type: "metaRow",
+      fields: ["invoiceDate", "dueDate", "currency", "invoiceNumber"],
+    },
+    { type: "billTo" },
+    { type: "lineItemsTable" },
+    { type: "totals", showTaxBreakdown: true },
+    { type: "notes" },
+    { type: "footer", text: "Thank you for your business." },
+  ],
+};
+
+const LIBRARY: readonly LibraryTemplate[] = [
+  {
+    libraryKey: "invoice_classic",
+    docType: "invoice",
+    name: "Classic invoice",
+    description:
+      "Clean, professional A4 layout with header, meta row, bill-to block, line items table, and totals with tax breakdown.",
+    languages: ["en"],
+    layout: CLASSIC_INVOICE_LAYOUT,
+  },
+] as const;
+
+export function listLibraryTemplates(filters: {
+  docType?: string;
+} = {}): LibraryTemplate[] {
+  return LIBRARY.filter(
+    (t) => !filters.docType || t.docType === filters.docType,
+  ).map((t) => ({ ...t }));
+}
+
+export function findLibraryTemplate(libraryKey: string): LibraryTemplate | null {
+  return LIBRARY.find((t) => t.libraryKey === libraryKey) ?? null;
+}

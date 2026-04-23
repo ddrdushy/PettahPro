@@ -184,6 +184,70 @@ export const api = {
     request<{ batches: ExpiringBatchRow[]; days: number; cutoff: string }>(
       `/items/tracking/expiring?days=${days}`,
     ),
+
+  // --- document templates (roadmap #33) ---
+  listDocumentTemplates: (filters: {
+    docType?: string;
+    language?: string;
+    status?: string;
+  } = {}) => {
+    const params = new URLSearchParams();
+    if (filters.docType) params.set("docType", filters.docType);
+    if (filters.language) params.set("language", filters.language);
+    if (filters.status) params.set("status", filters.status);
+    const q = params.toString();
+    return request<{ templates: DocumentTemplate[] }>(
+      `/document-templates${q ? `?${q}` : ""}`,
+    );
+  },
+  listDocumentTemplateLibrary: (docType?: string) => {
+    const q = docType ? `?docType=${docType}` : "";
+    return request<{ templates: DocumentTemplateLibraryEntry[] }>(
+      `/document-templates/library${q}`,
+    );
+  },
+  getDocumentTemplate: (id: string) =>
+    request<{ template: DocumentTemplate }>(`/document-templates/${id}`),
+  getActiveDocumentTemplate: (docType: string, language = "en") =>
+    request<{ template: DocumentTemplate | null }>(
+      `/document-templates/active?docType=${docType}&language=${language}`,
+    ),
+  createDocumentTemplate: (body: CreateDocumentTemplate) =>
+    request<{ template: DocumentTemplate }>("/document-templates", {
+      method: "POST",
+      json: body,
+    }),
+  cloneDocumentTemplateFromLibrary: (body: {
+    libraryKey: string;
+    language?: string;
+    name?: string;
+  }) =>
+    request<{ template: DocumentTemplate }>(
+      "/document-templates/clone-library",
+      { method: "POST", json: body },
+    ),
+  cloneDocumentTemplate: (id: string) =>
+    request<{ template: DocumentTemplate }>(
+      `/document-templates/${id}/clone`,
+      { method: "POST", json: {} },
+    ),
+  setDefaultDocumentTemplate: (id: string) =>
+    request<{ template: DocumentTemplate }>(
+      `/document-templates/${id}/set-default`,
+      { method: "POST", json: {} },
+    ),
+  publishDocumentTemplate: (id: string) =>
+    request<{ template: DocumentTemplate }>(
+      `/document-templates/${id}/publish`,
+      { method: "POST", json: {} },
+    ),
+  updateDocumentTemplate: (id: string, body: UpdateDocumentTemplate) =>
+    request<{ template: DocumentTemplate }>(`/document-templates/${id}`, {
+      method: "PATCH",
+      json: body,
+    }),
+  deleteDocumentTemplate: (id: string) =>
+    request<{ ok: true }>(`/document-templates/${id}`, { method: "DELETE" }),
   replaceItemComponents: (
     id: string,
     components: Array<{ componentItemId: string; quantity: number }>,
@@ -6429,4 +6493,67 @@ export interface AttendanceException {
   conflict_reason: string | null;
   employee_full_name: string | null;
   employee_code: string | null;
+}
+
+// -----------------------------------------------------------------
+// Document templates (roadmap #33)
+// -----------------------------------------------------------------
+// Allowed doc types for template-driven rendering. Keep in sync with
+// packages/db/src/schema/document-templates.ts DOCUMENT_TEMPLATE_DOC_TYPES
+// and the SQL CHECK constraint in migration 79.
+export type DocumentTemplateDocType =
+  | "invoice"
+  | "quotation"
+  | "credit_note"
+  | "debit_note"
+  | "delivery_note"
+  | "proforma_invoice"
+  | "bill"
+  | "purchase_order"
+  | "goods_received_note"
+  | "stock_transfer"
+  | "payslip"
+  | "settlement_letter";
+
+export type DocumentTemplateStatus = "draft" | "published" | "archived";
+
+export interface DocumentTemplate {
+  id: string;
+  docType: DocumentTemplateDocType;
+  language: string;
+  name: string;
+  description: string | null;
+  // Opaque — shape defined by apps/web/lib/template-renderer.tsx.
+  layoutJson: Record<string, unknown>;
+  version: number;
+  status: DocumentTemplateStatus;
+  isDefault: boolean;
+  libraryKey: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DocumentTemplateLibraryEntry {
+  libraryKey: string;
+  docType: DocumentTemplateDocType;
+  name: string;
+  description: string;
+  languages: string[];
+  layout: Record<string, unknown>;
+}
+
+export interface CreateDocumentTemplate {
+  docType: DocumentTemplateDocType;
+  language?: string;
+  name: string;
+  description?: string;
+  layout?: Record<string, unknown>;
+  libraryKey?: string;
+}
+
+export interface UpdateDocumentTemplate {
+  name?: string;
+  description?: string | null;
+  layout?: Record<string, unknown>;
+  status?: DocumentTemplateStatus;
 }

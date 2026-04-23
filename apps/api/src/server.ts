@@ -45,6 +45,7 @@ import { stockTransfersRoutes } from "./modules/inventory/stock-transfers.js";
 import { itemCategoriesRoutes } from "./modules/inventory/item-categories.js";
 import { stockCountsRoutes } from "./modules/inventory/stock-counts.js";
 import { itemTrackingRoutes } from "./modules/inventory/item-tracking.js";
+import { documentTemplatesRoutes } from "./modules/operations/document-templates.js";
 import { chequesRoutes } from "./modules/cheques/routes.js";
 import { employeesRoutes } from "./modules/hr/employees.js";
 import { salaryRevisionsRoutes } from "./modules/hr/salary-revisions.js";
@@ -144,6 +145,9 @@ export async function buildServer(): Promise<FastifyInstance> {
   // Mounted under /items so tracking URLs read as
   // /items/:id/batches, /items/batches/:id/recall, etc.
   await server.register(itemTrackingRoutes, { prefix: "/items" });
+  await server.register(documentTemplatesRoutes, {
+    prefix: "/document-templates",
+  });
   await server.register(coaRoutes, { prefix: "/coa" });
   await server.register(taxCodesRoutes, { prefix: "/tax-codes" });
   await server.register(journalEntriesRoutes, { prefix: "/journal-entries" });
