@@ -317,14 +317,19 @@ function prettyDocType(kind: string): string {
   return map[kind] ?? kind.replace(/_/g, " ");
 }
 
-// Deep-link the "view document" affordance to the domain route. Only JE
-// is wired today (roadmap #43); other document types return null and
-// the UI simply hides the link until their PRs land.
+// Deep-link the "view document" affordance to the domain route. Wired
+// document types get a route; others return null and the UI hides the
+// link until their PRs land.
 function deepLinkFor(request: ApprovalRequest): string | null {
   if (request.documentType === "journal_entry") {
     // The underlying row is a journal_entry_drafts id, not a posted
     // entry. The JE approvals page already has a per-draft view.
     return `/app/journals/approvals`;
+  }
+  if (request.documentType === "expense_claim") {
+    // documentId is the expense_claims.id — drop straight onto the
+    // per-claim detail page.
+    return `/app/expense-claims/${request.documentId}`;
   }
   return null;
 }
