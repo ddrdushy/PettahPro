@@ -15,6 +15,7 @@ export * from "./payments.js";
 export * from "./suppliers.js";
 export * from "./bills.js";
 export * from "./purchase-orders.js";
+export * from "./purchase-requisitions.js";
 export * from "./grns.js";
 export * from "./debit-notes.js";
 export * from "./supplier-payments.js";

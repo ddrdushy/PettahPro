@@ -33,8 +33,21 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
-type Item = { label: string; href: string; icon: LucideIcon; badge?: string };
+type Item = {
+  label: string;
+  href: string;
+  icon: LucideIcon;
+  badge?: string;
+  // Optional feature-flag gate. When set, the item is only rendered if
+  // flags[requires] === true. Lets the sidebar respect tenant toggles
+  // without the layout having to diff the nav array.
+  requires?: keyof SidebarFeatureFlags;
+};
 type Group = { title?: string; items: Item[] };
+
+export interface SidebarFeatureFlags {
+  purchaseRequisitionsEnabled: boolean;
+}
 
 const nav: Group[] = [
   {
@@ -61,6 +74,12 @@ const nav: Group[] = [
     title: "Buy",
     items: [
       { label: "Suppliers", href: "/app/suppliers", icon: UsersRound },
+      {
+        label: "Purchase requisitions",
+        href: "/app/purchase-requisitions",
+        icon: ClipboardCheck,
+        requires: "purchaseRequisitionsEnabled",
+      },
       { label: "Purchase orders", href: "/app/purchase-orders", icon: ShoppingCart },
       { label: "Goods received", href: "/app/grns", icon: FileText },
       { label: "Bills", href: "/app/bills", icon: Receipt },
@@ -139,8 +158,26 @@ const nav: Group[] = [
   },
 ];
 
-export function Sidebar() {
+export function Sidebar({
+  featureFlags,
+}: {
+  featureFlags?: SidebarFeatureFlags;
+} = {}) {
   const pathname = usePathname();
+  const flags: SidebarFeatureFlags = featureFlags ?? {
+    purchaseRequisitionsEnabled: false,
+  };
+
+  // Filter feature-gated items per tenant toggle. Items without `requires`
+  // always pass through.
+  const visibleNav: Group[] = nav
+    .map((group) => ({
+      ...group,
+      items: group.items.filter((item) =>
+        item.requires ? flags[item.requires] : true,
+      ),
+    }))
+    .filter((group) => group.items.length > 0);
 
   return (
     <aside
@@ -148,7 +185,7 @@ export function Sidebar() {
       className="sticky top-16 hidden h-[calc(100vh-4rem)] w-60 shrink-0 overflow-y-auto border-r-hairline border-border bg-offwhite px-3 py-6 md:block"
     >
       <nav className="space-y-6">
-        {nav.map((group, gi) => (
+        {visibleNav.map((group, gi) => (
           <div key={gi}>
             {group.title && (
               <p className="px-3 pb-2 text-caption font-medium uppercase tracking-wide text-text-tertiary">

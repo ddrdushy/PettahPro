@@ -53,6 +53,12 @@ export const purchaseOrders = pgTable("purchase_orders", {
   // on approve (PO moves to 'sent') and on reject/cancel (PO flips back
   // to 'draft'). The FK has ON DELETE SET NULL.
   approvalRequestId: uuid("approval_request_id"),
+  // Source PR linkage (roadmap #30). Non-null iff the PO was created via
+  // convert-from-PR. No .references() here — the purchase_requisitions
+  // table imports purchase_orders (for converted_po_id), so declaring the
+  // reverse reference in drizzle would introduce a circular import. The
+  // FK is enforced at the database layer (migration 72).
+  sourcePrId: uuid("source_pr_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   createdByUserId: uuid("created_by_user_id"),
@@ -79,6 +85,10 @@ export const purchaseOrderLines = pgTable("purchase_order_lines", {
   taxCents: bigint("tax_cents", { mode: "number" }).notNull().default(0),
   lineTotalCents: bigint("line_total_cents", { mode: "number" }).notNull().default(0),
   expenseAccountId: uuid("expense_account_id").references(() => chartOfAccounts.id, { onDelete: "set null" }),
+  // Source PR line linkage (roadmap #30). No FK at the DB level either —
+  // cascades from the PR header row handle cleanup, and avoiding the FK
+  // keeps the schema acyclic.
+  sourcePrLineId: uuid("source_pr_line_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

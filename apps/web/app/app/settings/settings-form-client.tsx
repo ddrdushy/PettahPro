@@ -18,6 +18,9 @@ export function SettingsFormClient({
   const [jeThresholdInput, setJeThresholdInput] = useState<string>(
     (initial.journalApprovalThresholdCents / 100).toFixed(2),
   );
+  const [purchaseRequisitionsEnabled, setPurchaseRequisitionsEnabled] = useState(
+    initial.purchaseRequisitionsEnabled,
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<Date | null>(null);
@@ -27,7 +30,8 @@ export function SettingsFormClient({
   const dirty =
     salaryDaysPerMonth !== initial.salaryDaysPerMonth ||
     stockRelieveOn !== initial.stockRelieveOn ||
-    jeThresholdCents !== initial.journalApprovalThresholdCents;
+    jeThresholdCents !== initial.journalApprovalThresholdCents ||
+    purchaseRequisitionsEnabled !== initial.purchaseRequisitionsEnabled;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -42,6 +46,7 @@ export function SettingsFormClient({
         salaryDaysPerMonth,
         stockRelieveOn,
         journalApprovalThresholdCents: jeThresholdCents,
+        purchaseRequisitionsEnabled,
       });
       setSavedAt(new Date());
       router.refresh();
@@ -137,6 +142,37 @@ export function SettingsFormClient({
               Heads up: this only affects documents posted <strong>after</strong> you save. Historical invoices and DNs aren't re-posted.
             </p>
           )}
+        </div>
+      </section>
+
+      <section className="rounded-card border-hairline border-border bg-surface-elevated p-6">
+        <h2 className="text-body font-medium text-charcoal">Modules</h2>
+        <p className="mt-1 text-caption text-text-secondary">
+          Optional features that some tenants use. Off by default; turning them on reveals the related sidebar entries and endpoints.
+        </p>
+
+        <div className="mt-5">
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={purchaseRequisitionsEnabled}
+              onChange={(e) => setPurchaseRequisitionsEnabled(e.target.checked)}
+              className="mt-1"
+            />
+            <div className="flex-1">
+              <div className="flex items-center gap-2">
+                <span className="text-small font-medium text-charcoal">Purchase requisitions</span>
+                {!defaults.purchaseRequisitionsEnabled && (
+                  <span className="rounded-full bg-surface-recessed px-2 py-0.5 text-caption text-text-tertiary">
+                    Off by default
+                  </span>
+                )}
+              </div>
+              <p className="mt-0.5 text-caption text-text-secondary">
+                Internal "request to buy" document routed through approval and converted into a Purchase Order. Useful when the person who needs the purchase isn't the one authorised to commit spend.
+              </p>
+            </div>
+          </label>
         </div>
       </section>
 

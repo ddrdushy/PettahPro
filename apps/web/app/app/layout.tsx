@@ -6,7 +6,7 @@ import { LogoutButton } from "@/components/auth/logout-button";
 import { Sidebar } from "@/components/app/sidebar";
 import { NotificationBell } from "@/components/app/notification-bell";
 import { PermissionsProvider } from "@/components/auth/permissions-provider";
-import type { CallerPermissions } from "@/lib/api";
+import type { CallerPermissions, TenantSettings } from "@/lib/api";
 
 async function fetchMe() {
   const cookieHeader = cookies().toString();
@@ -27,8 +27,29 @@ async function fetchMe() {
   }
 }
 
+// Tenant settings drive feature toggles shown in the sidebar (roadmap #30).
+// Failure to load settings isn't fatal — we fall back to all toggles off.
+async function fetchSettings(): Promise<TenantSettings | null> {
+  const cookieHeader = cookies().toString();
+  if (!cookieHeader) return null;
+  try {
+    const res = await fetch(
+      `${process.env.INTERNAL_API_URL ?? "http://api:4000"}/settings`,
+      { headers: { cookie: cookieHeader }, cache: "no-store" },
+    );
+    if (!res.ok) return null;
+    const body = (await res.json()) as {
+      settings: TenantSettings;
+      defaults: TenantSettings;
+    };
+    return body.settings;
+  } catch {
+    return null;
+  }
+}
+
 export default async function AppLayout({ children }: { children: ReactNode }) {
-  const me = await fetchMe();
+  const [me, settings] = await Promise.all([fetchMe(), fetchSettings()]);
   if (!me) redirect("/login");
 
   return (
@@ -62,7 +83,12 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
       </header>
 
       <div className="flex">
-        <Sidebar />
+        <Sidebar
+          featureFlags={{
+            purchaseRequisitionsEnabled:
+              settings?.purchaseRequisitionsEnabled ?? false,
+          }}
+        />
         <div className="min-w-0 flex-1">
           <PermissionsProvider value={me.permissions}>{children}</PermissionsProvider>
         </div>

@@ -30,6 +30,10 @@ const DOCUMENT_TYPES = [
   // payroll: configure a policy with an empty triggerRule and it
   // matches every submission.
   "final_settlement",
+  // Roadmap #30 — purchase requisitions. Tenant-toggled module;
+  // when the toggle is off the PR surface is hidden but the document
+  // type stays registered so any legacy policy rows remain valid.
+  "purchase_requisition",
 ] as const;
 
 const ApproverSchema = z.object({

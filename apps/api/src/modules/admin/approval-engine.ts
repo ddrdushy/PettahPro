@@ -46,6 +46,7 @@ export type ApprovalDocumentType =
   | "payroll_run"
   | "bonus_run"
   | "final_settlement"
+  | "purchase_requisition"
   | "invoice";
 
 export interface PolicyTriggerRule {

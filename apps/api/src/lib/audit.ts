@@ -46,6 +46,13 @@ export type AuditEventKind =
   | "final_settlement.approved"
   | "final_settlement.posted"
   | "final_settlement.cancelled"
+  // Purchase requisitions (roadmap #30)
+  | "purchase_requisition.created"
+  | "purchase_requisition.submitted"
+  | "purchase_requisition.approved"
+  | "purchase_requisition.rejected"
+  | "purchase_requisition.cancelled"
+  | "purchase_requisition.converted"
   // Settings
   | "settings.update"
   | "number_series.update"

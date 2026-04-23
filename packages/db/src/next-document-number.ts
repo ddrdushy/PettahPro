@@ -22,7 +22,8 @@ export type DocumentKind =
   | "bonus_run"
   | "staff_loan"
   | "final_settlement"
-  | "expense_claim";
+  | "expense_claim"
+  | "purchase_requisition";
 
 /**
  * Allocate the next document number for the current tenant.
