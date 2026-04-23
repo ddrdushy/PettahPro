@@ -28,6 +28,28 @@ export class ApiError extends Error {
   }
 }
 
+// Read a non-HttpOnly cookie from document.cookie. Used by the CSRF
+// double-submit flow (#50 / gap A5) — the API sets pp_csrf / pp_portal_csrf
+// as non-HttpOnly companions to the session cookie so we can mirror them
+// into the X-CSRF-Token header on mutating requests. Returns undefined on
+// the server side (no document) or when the cookie is missing; request()
+// falls through without the header and the API's CSRF hook will 403,
+// which is what we want if someone ever calls a mutating endpoint from
+// an RSC without the proper cookie-passing setup.
+function readCookie(name: string): string | undefined {
+  if (typeof document === "undefined") return undefined;
+  const prefix = `${name}=`;
+  for (const raw of document.cookie.split(";")) {
+    const part = raw.trim();
+    if (part.startsWith(prefix)) {
+      return decodeURIComponent(part.slice(prefix.length));
+    }
+  }
+  return undefined;
+}
+
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
 async function request<T>(
   path: string,
   init: RequestInit & { json?: unknown } = {},
@@ -38,11 +60,23 @@ async function request<T>(
   // set to 'application/json'", which broke action POSTs like
   // /invoices/:id/post that take no body.
   const hasBody = json !== undefined || rest.body != null;
+  const method = (rest.method ?? "GET").toUpperCase();
+  // CSRF double-submit (#50 / gap A5). On mutating requests mirror the
+  // pp_csrf / pp_portal_csrf cookie into the X-CSRF-Token header. Portal
+  // routes live under /portal and use a path-scoped cookie so admin and
+  // portal tabs on the same browser don't cross-pollinate tokens — pick
+  // the right one by URL prefix. Pre-session routes (login/signup/OTP
+  // request + verify) are exempted server-side so a missing cookie here
+  // doesn't block sign-in.
+  const csrfToken = SAFE_METHODS.has(method)
+    ? undefined
+    : readCookie(path.startsWith("/portal") ? "pp_portal_csrf" : "pp_csrf");
   const res = await fetch(`${API_BASE}${path}`, {
     ...rest,
     credentials: "include",
     headers: {
       ...(hasBody ? { "Content-Type": "application/json" } : {}),
+      ...(csrfToken ? { "X-CSRF-Token": csrfToken } : {}),
       ...(headers ?? {}),
     },
     body: json !== undefined ? JSON.stringify(json) : rest.body,

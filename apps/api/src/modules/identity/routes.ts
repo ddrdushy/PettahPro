@@ -15,7 +15,13 @@ import {
   destroySession,
   readSession,
 } from "./sessions.js";
-import { SESSION_COOKIE, clearSessionCookie, setSessionCookie } from "./cookies.js";
+import {
+  SESSION_COOKIE,
+  clearCsrfCookie,
+  clearSessionCookie,
+  setCsrfCookie,
+  setSessionCookie,
+} from "./cookies.js";
 import { recordAuditEvent } from "../../lib/audit.js";
 import { getCallerPermissions } from "../../lib/permissions.js";
 
@@ -172,6 +178,7 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       ttlSeconds: SESSION_TTL,
     });
     setSessionCookie(reply, session.id, SESSION_TTL);
+    setCsrfCookie(reply, session.csrfToken, SESSION_TTL);
 
     return reply.status(201).send({
       user: { id: user.id, email: user.email, fullName: user.fullName, isOwner: true },
@@ -209,6 +216,7 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       ttlSeconds: SESSION_TTL,
     });
     setSessionCookie(reply, session.id, SESSION_TTL);
+    setCsrfCookie(reply, session.csrfToken, SESSION_TTL);
 
     // Audit-write runs AFTER session create (the session is the source of
     // truth for "logged in"). Wrapped in withTenant so RLS accepts the
@@ -336,6 +344,7 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       ttlSeconds: SESSION_TTL,
     });
     setSessionCookie(reply, fresh.id, SESSION_TTL);
+    setCsrfCookie(reply, fresh.csrfToken, SESSION_TTL);
 
     return reply.send({ ok: true });
   });
@@ -360,6 +369,7 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       }
     }
     clearSessionCookie(reply);
+    clearCsrfCookie(reply);
     return reply.send({ ok: true });
   });
 
