@@ -12,6 +12,7 @@ import { RecordPaymentButton } from "./record-payment-button";
 import { DuplicateInvoiceButton } from "./duplicate-button";
 import { InvoiceVoidButton } from "@/components/app/void-button";
 import { WriteOffButton, ReverseWriteOffButton } from "./write-off-button";
+import { AttachmentsPanel } from "@/components/app/attachments-panel";
 
 export const metadata: Metadata = { title: "Invoice" };
 
@@ -200,6 +201,8 @@ export default async function InvoiceDetailPage({ params }: { params: { id: stri
               <p className="mt-2 whitespace-pre-wrap text-body text-charcoal">{invoice.notes}</p>
             </section>
           )}
+
+          <AttachmentsPanel entityType="invoice" entityId={invoice.id} />
         </div>
 
         <aside className="space-y-6">

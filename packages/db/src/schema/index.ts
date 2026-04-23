@@ -50,3 +50,4 @@ export * from "./pos-shifts.js";
 export * from "./commissions.js";
 export * from "./portal-otps.js";
 export * from "./item-categories.js";
+export * from "./document-attachments.js";

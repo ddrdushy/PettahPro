@@ -53,6 +53,9 @@ export type AuditEventKind =
   | "purchase_requisition.rejected"
   | "purchase_requisition.cancelled"
   | "purchase_requisition.converted"
+  // Document attachments (roadmap #32)
+  | "attachment.uploaded"
+  | "attachment.deleted"
   // Settings
   | "settings.update"
   | "number_series.update"

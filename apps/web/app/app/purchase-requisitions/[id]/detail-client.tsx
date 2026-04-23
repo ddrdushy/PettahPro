@@ -21,6 +21,7 @@ import {
   type Branch,
 } from "@/lib/api";
 import { PageHeader } from "@/components/app/page-header";
+import { AttachmentsPanel } from "@/components/app/attachments-panel";
 import { formatLKR, formatDate } from "@/lib/format";
 
 const statusStyles: Record<PurchaseRequisitionStatus, string> = {
@@ -372,6 +373,10 @@ export function PurchaseRequisitionDetailClient({
           </p>
         </section>
       )}
+
+      <div className="mt-6">
+        <AttachmentsPanel entityType="purchase_requisition" entityId={pr.id} />
+      </div>
     </main>
   );
 }

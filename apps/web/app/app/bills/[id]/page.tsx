@@ -10,6 +10,7 @@ import { formatLKR, formatDate } from "@/lib/format";
 import { PostBillButton } from "./post-button";
 import { BillVoidButton } from "@/components/app/void-button";
 import { RecordPaymentOutButton } from "./record-payment-out-button";
+import { AttachmentsPanel } from "@/components/app/attachments-panel";
 
 export const metadata: Metadata = { title: "Bill" };
 
@@ -220,6 +221,8 @@ export default async function BillDetailPage({ params }: { params: { id: string 
               <p className="mt-2 whitespace-pre-wrap text-body text-charcoal">{bill.notes}</p>
             </section>
           )}
+
+          <AttachmentsPanel entityType="bill" entityId={bill.id} />
         </div>
 
         <aside className="space-y-6">
