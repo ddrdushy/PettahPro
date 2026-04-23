@@ -12,6 +12,7 @@ export type AuditEventKind =
   // Identity
   | "user.login"
   | "user.logout"
+  | "user.password_changed"
   // Accounting posting flow
   | "journal.post"
   | "journal.void"

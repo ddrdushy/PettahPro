@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { cookies } from "next/headers";
-import { Hash, ArrowRight, Bell, CheckCircle2, UserCog, Coins, FileText } from "lucide-react";
+import { Hash, ArrowRight, Bell, CheckCircle2, UserCog, Coins, FileText, KeyRound } from "lucide-react";
 import type { TenantSettingsResponse } from "@/lib/api";
 import { PageHeader } from "@/components/app/page-header";
 import { SettingsFormClient } from "./settings-form-client";
@@ -110,6 +110,21 @@ export default async function SettingsPage() {
                 <p className="text-small font-medium text-charcoal">Document templates</p>
                 <p className="text-caption text-text-secondary">
                   Customise the printed layout of invoices, quotations, purchase orders and other documents. Start from a library template or build your own; multi-language variants supported.
+                </p>
+              </div>
+            </div>
+            <ArrowRight className="h-4 w-4 text-text-tertiary" aria-hidden />
+          </Link>
+          <Link
+            href="/app/settings/password"
+            className="flex items-center justify-between rounded-md border-hairline border-border px-4 py-3 hover:bg-surface-recessed/40"
+          >
+            <div className="flex items-start gap-3">
+              <KeyRound className="mt-0.5 h-4 w-4 text-text-tertiary" aria-hidden />
+              <div>
+                <p className="text-small font-medium text-charcoal">Change password</p>
+                <p className="text-caption text-text-secondary">
+                  Update your sign-in password. Saving signs out every other session for your account — useful if you think someone else had access.
                 </p>
               </div>
             </div>
