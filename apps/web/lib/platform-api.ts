@@ -360,7 +360,54 @@ export const platformApi = {
       method: "POST",
       json: body,
     }),
+  // #60 — observability read-out for /platform/health.
+  getSystemHealth: () =>
+    request<SystemHealthPayload>("/platform/system-health"),
 };
+
+// #60 — observability payload shape. Mirrors SystemHealthPayload in
+// apps/api/src/plugins/system-health.ts. Keep the two in sync if you
+// add fields — there's no shared types package for this slice (yet).
+export interface SystemHealthRouteStat {
+  route: string;
+  method: string;
+  count: number;
+  errors: number;
+  avgLatencyMs: number;
+}
+
+export interface SystemHealthPayload {
+  server: {
+    uptimeSeconds: number;
+    startedAt: string;
+    nodeVersion: string;
+    pid: number;
+    memory: { rssMb: number; heapUsedMb: number; heapTotalMb: number };
+  };
+  http: {
+    totalRequests: number;
+    errorRequests: number;
+    errorRate5m: number;
+    errorRate1h: number;
+    ratePerMin5m: number;
+    ratePerMin1h: number;
+    timeline: Array<{ tsMs: number; requests: number; errors: number }>;
+    topSlowRoutes: SystemHealthRouteStat[];
+    topErrorRoutes: SystemHealthRouteStat[];
+  };
+  db: {
+    activeConnections: number;
+    idleConnections: number;
+    totalConnections: number;
+    maxConnections: number | null;
+  };
+  redis: {
+    connected: boolean;
+    memoryUsedBytes: number | null;
+    uptimeSeconds: number | null;
+    queueDepths: Record<string, number>;
+  };
+}
 
 // #58 — the global audit feed includes tenantId so the UI can link
 // each row to /platform/tenants/:id; per-tenant audit doesn't need it.
