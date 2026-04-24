@@ -22,6 +22,7 @@ import {
 
 import { api, type Account, type Item, type PosShift, type PosTenderMethod } from "@/lib/api";
 import { formatLKR } from "@/lib/format";
+import { PlanErrorBanner } from "@/components/app/plan-error-banner";
 
 type CartLine = {
   // Stable key for React list rendering — items can repeat, so the id alone
@@ -74,7 +75,15 @@ export function PosTerminal() {
   const [tenderReference, setTenderReference] = useState("");
   const [tenderAmount, setTenderAmount] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // Error state preserves the raw ApiError so PlanErrorBanner can read
+  // the structured plan-gate detail (#69). Shift-open and sale-finalise
+  // share a single `error` because the UI is mutually exclusive — you
+  // only see the shift-open form when no shift is open, and only the
+  // tender panel afterwards — so there's no risk of one flow's error
+  // leaking into the other. Shift opens aren't plan-gated, so banners
+  // there will always hit the fallback text; sale finalises are gated
+  // on `invoices_monthly` and will render the upgrade CTA properly.
+  const [error, setError] = useState<unknown>(null);
   const [lastReceipt, setLastReceipt] = useState<{
     invoiceNumber: string;
     changeCents: number;
@@ -138,7 +147,7 @@ export function PosTerminal() {
       const { shift } = await api.openPosShift({ openingFloatCents: cents });
       setShift(shift);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not open shift");
+      setError(e);
     } finally {
       setOpeningBusy(false);
     }
@@ -215,11 +224,11 @@ export function PosTerminal() {
   const finalise = async () => {
     if (!shift) return;
     if (cart.length === 0) {
-      setError("Cart is empty.");
+      setError(new Error("Cart is empty."));
       return;
     }
     if (tenderedCents < subtotalCents) {
-      setError("Tendered amount is less than the total.");
+      setError(new Error("Tendered amount is less than the total."));
       return;
     }
     setSubmitting(true);
@@ -249,7 +258,7 @@ export function PosTerminal() {
       setCart([]);
       setTenders([]);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not post sale");
+      setError(e);
     } finally {
       setSubmitting(false);
     }
@@ -291,9 +300,11 @@ export function PosTerminal() {
             className="mt-1 w-full rounded-md border border-line px-3 py-2 text-base focus:border-primary focus:outline-none"
             placeholder="0.00"
           />
-          {error && (
-            <p className="mt-3 text-small text-destructive-foreground">{error}</p>
-          )}
+          {error ? (
+            <div className="mt-3">
+              <PlanErrorBanner error={error} fallbackMessage="Could not open shift." />
+            </div>
+          ) : null}
           <button
             type="button"
             onClick={openShift}
@@ -648,9 +659,14 @@ export function PosTerminal() {
               </div>
             )}
 
-            {error && (
-              <p className="mt-3 text-small text-destructive-foreground">{error}</p>
-            )}
+            {error ? (
+              <div className="mt-3">
+                <PlanErrorBanner
+                  error={error}
+                  fallbackMessage="Could not post sale."
+                />
+              </div>
+            ) : null}
           </div>
 
           <div className="border-t border-line p-4">
