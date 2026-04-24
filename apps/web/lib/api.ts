@@ -13,9 +13,11 @@ export class ApiError extends Error {
    */
   reasons?: string[];
   /**
-   * Plan-gate payload from `requireFeature()` — #62. When the API returns
-   * 403 PLAN_REQUIRED these fields carry the context the UI needs to
-   * render a "Upgrade to Growth" CTA instead of a bare "Forbidden".
+   * Plan-gate payload from `requireFeature()` — #62. Populated for
+   * PLAN_REQUIRED (user is on a lower plan) AND SUBSCRIPTION_CANCELLED
+   * (#63 — trial expired, grace elapsed). The UI branches on `code` to
+   * render either an upgrade CTA or a "contact support" dialog;
+   * `currentPlanCode` is useful in both cases.
    */
   feature?: string;
   currentPlanCode?: string | null;
@@ -111,7 +113,7 @@ async function request<T>(
       err?.message ?? res.statusText,
       err?.issues,
       Array.isArray(err?.reasons) ? err.reasons : undefined,
-      err?.code === "PLAN_REQUIRED"
+      err?.code === "PLAN_REQUIRED" || err?.code === "SUBSCRIPTION_CANCELLED"
         ? {
             feature: typeof err.feature === "string" ? err.feature : undefined,
             currentPlanCode:
