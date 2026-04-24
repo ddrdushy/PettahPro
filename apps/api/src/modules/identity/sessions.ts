@@ -33,6 +33,26 @@ export interface Session {
   // revoke button still works).
   ip?: string | null;
   userAgent?: string | null;
+  // #57 / gap L1 v1 — operator impersonation. Populated by the
+  // platform `/platform/impersonation-requests/:id/start` route when
+  // a platform staffer starts an approved session. Presence of
+  // impersonatedByPlatformUserId is the single source of truth for
+  // "this tenant session is actually being driven by a platform
+  // operator." Consumed by:
+  //   1. readSession — refuses sliding-window TTL extension so the
+  //      session dies at the hard deadline (impersonation_sessions.ends_at).
+  //   2. identity/plugin.ts onRequest — populates the AsyncLocalStorage
+  //      context that recordAuditEvent reads for dual-actor attribution.
+  //   3. /auth/me — surfaces the impersonator to the web so it can
+  //      render the red banner.
+  // Stored on the session blob rather than looked up per request so
+  // an impersonation_sessions DB read isn't on the hot path.
+  impersonatedByPlatformUserId?: string | null;
+  impersonatedByPlatformUserEmail?: string | null;
+  // Hard deadline, epoch seconds. Matches impersonation_sessions.ends_at.
+  // Redis TTL at mint time is already sized to fit — this field is the
+  // application-level check that readSession uses to reject sliding.
+  impersonationEndsAt?: number | null;
 }
 
 function genSessionId(): string {
@@ -52,6 +72,12 @@ export async function createSession(input: {
   ttlSeconds?: number;
   ip?: string | null;
   userAgent?: string | null;
+  // #57 / gap L1 v1 — impersonation stamps. Set together or not at
+  // all; callers that aren't the impersonation-start route leave them
+  // undefined and the session behaves like any other tenant session.
+  impersonatedByPlatformUserId?: string | null;
+  impersonatedByPlatformUserEmail?: string | null;
+  impersonationEndsAt?: number | null;
 }): Promise<Session> {
   const id = genSessionId();
   const now = Math.floor(Date.now() / 1000);
@@ -71,6 +97,10 @@ export async function createSession(input: {
     // purely for debug detail. Cap keeps the Redis blob bounded against the
     // occasional bot UA dumping 2 KB of junk into the header.
     userAgent: input.userAgent ? input.userAgent.slice(0, 512) : null,
+    impersonatedByPlatformUserId: input.impersonatedByPlatformUserId ?? null,
+    impersonatedByPlatformUserEmail:
+      input.impersonatedByPlatformUserEmail ?? null,
+    impersonationEndsAt: input.impersonationEndsAt ?? null,
   };
 
   const pipeline = redis.multi();
@@ -96,15 +126,33 @@ export async function readSession(id: string): Promise<Session | null> {
       s.csrfToken = genCsrfToken();
       mutated = true;
     }
-    // Sliding-window refresh: touch if more than a minute old
+    // Sliding-window refresh: touch if more than a minute old.
+    //
+    // #57 — impersonation sessions are HARD-DEADLINED. Refuse to slide
+    // the TTL if this blob is an impersonation; the Redis key TTL was
+    // already sized to fit impersonation_sessions.ends_at at mint time.
+    // If we're past the deadline, destroy the session and return null
+    // so the request is treated as unauthenticated.
     const now = Math.floor(Date.now() / 1000);
-    if (now - s.lastSeenAt > 60) {
+    if (s.impersonatedByPlatformUserId) {
+      if (s.impersonationEndsAt && now >= s.impersonationEndsAt) {
+        await redis.del(SESSION_PREFIX + id);
+        await redis.srem(USER_INDEX_PREFIX + s.userId, id);
+        return null;
+      }
+      // Skip sliding; impersonation sessions don't extend on activity.
+    } else if (now - s.lastSeenAt > 60) {
       s.lastSeenAt = now;
       s.expiresAt = now + DEFAULT_TTL_SECONDS;
       mutated = true;
     }
     if (mutated) {
-      await redis.set(SESSION_PREFIX + id, JSON.stringify(s), "EX", DEFAULT_TTL_SECONDS);
+      // Keep the existing TTL for impersonation sessions; otherwise
+      // rearm the default window.
+      const ttl = s.impersonatedByPlatformUserId
+        ? Math.max(1, (s.impersonationEndsAt ?? now) - now)
+        : DEFAULT_TTL_SECONDS;
+      await redis.set(SESSION_PREFIX + id, JSON.stringify(s), "EX", ttl);
     }
     return s;
   } catch {

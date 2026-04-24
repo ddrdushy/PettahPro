@@ -267,4 +267,74 @@ export const platformApi = {
     request<{ ok: true }>(`/platform/platform-users/${id}`, {
       method: "DELETE",
     }),
+  // #57 / gap L1 v1 — operator impersonation. Platform-side. Tenant-side
+  // sits in lib/api.ts (different cookie realm).
+  createImpersonationRequest: (
+    tenantId: string,
+    body: { requestedMinutes: 15 | 30 | 60; reason: string },
+  ) =>
+    request<{ id: string }>(
+      `/platform/tenants/${tenantId}/impersonation-requests`,
+      { method: "POST", json: body },
+    ),
+  listImpersonationRequests: (params: {
+    status?: string;
+    limit?: number;
+    offset?: number;
+  } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.status) qs.set("status", params.status);
+    if (params.limit != null) qs.set("limit", String(params.limit));
+    if (params.offset != null) qs.set("offset", String(params.offset));
+    const q = qs.toString();
+    return request<{ requests: PlatformImpersonationRequest[] }>(
+      `/platform/impersonation-requests${q ? `?${q}` : ""}`,
+    );
+  },
+  startImpersonation: (id: string) =>
+    request<{ ok: true; sessionId: string; endsAt: string }>(
+      `/platform/impersonation-requests/${id}/start`,
+      { method: "POST" },
+    ),
+  listImpersonationSessions: () =>
+    request<{ sessions: PlatformImpersonationSession[] }>(
+      `/platform/impersonation-sessions`,
+    ),
+  endImpersonationSession: (id: string, body: { reason: string }) =>
+    request<{ ok: true }>(`/platform/impersonation-sessions/${id}/end`, {
+      method: "POST",
+      json: body,
+    }),
 };
+
+export interface PlatformImpersonationRequest {
+  id: string;
+  requestingPlatformUserEmail: string;
+  targetTenantId: string;
+  tenantBusinessName: string | null;
+  tenantSlug: string | null;
+  requestedMinutes: number;
+  reason: string;
+  status: "pending" | "approved" | "refused" | "expired" | "cancelled";
+  approvedByUserEmail: string | null;
+  approvedMinutes: number | null;
+  approvedAt: string | null;
+  refusedAt: string | null;
+  refusedReason: string | null;
+  expiresAt: string;
+  createdAt: string;
+}
+
+export interface PlatformImpersonationSession {
+  id: string;
+  requestId: string;
+  platformUserEmail: string;
+  targetTenantId: string;
+  tenantBusinessName: string | null;
+  tenantSlug: string | null;
+  targetUserEmail: string;
+  startedAt: string;
+  endsAt: string;
+  endedAt: string | null;
+  endedBy: "platform" | "tenant" | "expired" | null;
+}

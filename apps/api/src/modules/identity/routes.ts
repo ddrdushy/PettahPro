@@ -671,6 +671,20 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
     )) as unknown as Array<{ enabled: boolean }>;
     const mfaEnabled = mfaRows[0]?.enabled ?? false;
 
+    // #57 — if this session is an impersonation, leak the operator's
+    // identity + deadline to the layout so <ImpersonationBanner /> can
+    // render without a second round-trip. Tenant-owner Settings →
+    // Security uses the sessions/active endpoint for the richer list
+    // (every concurrent impersonation, not just the caller's).
+    const impersonation = session.impersonatedByPlatformUserId
+      ? {
+          platformUserEmail: session.impersonatedByPlatformUserEmail ?? "unknown",
+          endsAt: session.impersonationEndsAt
+            ? new Date(session.impersonationEndsAt * 1000).toISOString()
+            : null,
+        }
+      : null;
+
     return reply.send({
       user: { id: user.id, email: user.email, fullName: user.full_name, isOwner: user.is_owner },
       tenant,
@@ -680,6 +694,7 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
         granted: perms.permissions,
       },
       mfa: { enabled: mfaEnabled },
+      impersonation,
     });
   });
 

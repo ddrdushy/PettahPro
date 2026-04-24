@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import { PageHeader } from "@/components/app/page-header";
 import { SecurityClient, type MfaStatus } from "./security-client";
 import { ActiveSessionsCard } from "./sessions-client";
+import { ImpersonationOwnerCard } from "@/components/app/impersonation-owner-card";
 
 export const metadata: Metadata = { title: "Two-factor authentication" };
 
@@ -31,8 +32,27 @@ async function fetchStatus(): Promise<MfaStatus> {
   }
 }
 
+// #57 — the Platform access card is Owner-centric but visible to
+// everyone (non-owners see it read-only with an "ask the owner" hint).
+// We read /auth/me purely for the isOwner bit; falling back to false
+// means a transient /auth/me hiccup still renders the page, just with
+// action buttons hidden.
+async function fetchIsOwner(): Promise<boolean> {
+  try {
+    const res = await fetch(
+      `${process.env.INTERNAL_API_URL ?? "http://api:4000"}/auth/me`,
+      { headers: { cookie: cookies().toString() }, cache: "no-store" },
+    );
+    if (!res.ok) return false;
+    const body = (await res.json()) as { user?: { isOwner?: boolean } };
+    return body.user?.isOwner ?? false;
+  } catch {
+    return false;
+  }
+}
+
 export default async function SecurityPage() {
-  const status = await fetchStatus();
+  const [status, isOwner] = await Promise.all([fetchStatus(), fetchIsOwner()]);
   return (
     <main className="container-p py-10">
       <PageHeader
@@ -43,6 +63,7 @@ export default async function SecurityPage() {
       <section className="mt-6 max-w-2xl">
         <SecurityClient initialStatus={status} />
         <ActiveSessionsCard />
+        <ImpersonationOwnerCard isOwner={isOwner} />
       </section>
     </main>
   );

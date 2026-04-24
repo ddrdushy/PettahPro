@@ -1,6 +1,7 @@
 import fp from "fastify-plugin";
 import type { FastifyPluginAsync } from "fastify";
 import { platformAdminRoutes } from "./routes.js";
+import { platformImpersonationRoutes } from "./impersonation-routes.js";
 
 /**
  * Registers all platform-admin routes under `/platform`. Depends on the
@@ -17,6 +18,7 @@ import { platformAdminRoutes } from "./routes.js";
 export const platformAdminPlugin: FastifyPluginAsync = fp(
   async (fastify) => {
     await fastify.register(platformAdminRoutes, { prefix: "/platform" });
+    await fastify.register(platformImpersonationRoutes, { prefix: "/platform" });
   },
   { name: "platform-admin", dependencies: ["identity"] },
 );

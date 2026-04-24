@@ -103,6 +103,7 @@ import { posSalesRoutes } from "./modules/pos/sales.js";
 import { commissionsRoutes } from "./modules/commissions/routes.js";
 import { portalPlugin } from "./modules/portal/plugin.js";
 import { platformAdminPlugin } from "./modules/platform-admin/plugin.js";
+import { impersonationRoutes } from "./modules/impersonation/routes.js";
 
 export async function buildServer(): Promise<FastifyInstance> {
   const server = Fastify({
@@ -260,6 +261,9 @@ export async function buildServer(): Promise<FastifyInstance> {
   await server.register(posSalesRoutes, { prefix: "/pos/sales" });
   await server.register(commissionsRoutes, { prefix: "/commissions" });
   await server.register(attachmentsRoutes, { prefix: "/attachments" });
+  // #57 / gap L1 v1 — operator impersonation tenant-side routes.
+  // Platform-side routes live inside platformAdminPlugin.
+  await server.register(impersonationRoutes, { prefix: "/impersonation" });
   await server.register(portalPlugin);
   await server.register(platformAdminPlugin);
 

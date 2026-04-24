@@ -9,6 +9,7 @@ import type {
 } from "@/lib/platform-api";
 import { TenantActions } from "@/components/platform/tenant-actions";
 import { RevealUsersButton } from "@/components/platform/reveal-users-button";
+import { RequestImpersonationButton } from "@/components/platform/request-impersonation-button";
 
 export const metadata: Metadata = {
   title: "Tenant · Platform",
@@ -118,17 +119,25 @@ export default async function TenantDetailPage({
             /{tenant.slug} · {tenant.country} · {tenant.timezone}
           </p>
         </div>
-        {canMutate ? (
-          <TenantActions
-            tenantId={tenant.id}
-            businessName={tenant.businessName}
-            currentStatus={tenant.status}
-          />
-        ) : (
-          <span className="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-caption text-white/50">
-            Read-only for your role
-          </span>
-        )}
+        <div className="flex items-center gap-3">
+          {canReveal && !isSuspended && (
+            <RequestImpersonationButton
+              tenantId={tenant.id}
+              businessName={tenant.businessName}
+            />
+          )}
+          {canMutate ? (
+            <TenantActions
+              tenantId={tenant.id}
+              businessName={tenant.businessName}
+              currentStatus={tenant.status}
+            />
+          ) : (
+            <span className="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-caption text-white/50">
+              Read-only for your role
+            </span>
+          )}
+        </div>
       </div>
 
       <section className="mt-8 grid grid-cols-1 gap-4 md:grid-cols-4">
