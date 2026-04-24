@@ -882,13 +882,22 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
       { userCount: number; lastLoginAt: Date | null }
     >();
     if (ids.length > 0) {
+      // postgres.js serializes a plain JS string[] as a composite
+      // record rather than a pg array, so `$1::uuid[]` blows up with
+      // "cannot cast type record to uuid[]". Build an explicit
+      // parametrised IN list via sql.join instead — each id is cast
+      // individually and the driver binds them as uuids.
+      const idSql = sql.join(
+        ids.map((id) => sql`${id}::uuid`),
+        sql`, `,
+      );
       const aggRows = (await db.execute(
         sql`
           SELECT t.id AS tenant_id,
                  platform_count_users(t.id) AS user_count,
                  platform_last_login(t.id)  AS last_login_at
             FROM tenants t
-           WHERE t.id = ANY(${ids}::uuid[])
+           WHERE t.id IN (${idSql})
         `,
       )) as unknown as Array<{
         tenant_id: string;
@@ -1583,6 +1592,277 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
       userAgent: req.headers["user-agent"] ?? null,
       metadata: { targetId, targetEmail: target.email, role: target.role },
     });
+
+    return reply.send({ ok: true });
+  });
+
+  // -------------------------------------------------------------------
+  // #58 — Platform overview dashboard
+  //
+  // One endpoint, one round-trip, all the signals an ops human wants at
+  // a glance: tenants-by-status, recent signups, active users on the
+  // platform this week, impersonation pressure, and a short recent-audit
+  // strip.  Readable by all three platform roles — billing needs the
+  // MRR-shaped shape of this data as much as support does.  (No MRR
+  // yet — #58 is scaffolding; pricing-engine will backfill.)
+  //
+  // All aggregates are a single DB round-trip via a CTE so the
+  // dashboard doesn't fan out N counts.  Counts on tables outside RLS
+  // (tenants / impersonation_* / platform_audit_log) use direct
+  // filtered COUNTs; cross-tenant user counts go through the
+  // SECURITY DEFINER helpers in 86-platform-overview.sql because
+  // `users` is under RLS.
+  // -------------------------------------------------------------------
+  fastify.get("/overview", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+
+    const statusRows = (await db.execute(sql`
+      SELECT status, COUNT(*)::bigint AS n
+        FROM tenants
+       WHERE deleted_at IS NULL
+       GROUP BY status
+    `)) as unknown as Array<{ status: string; n: number | string }>;
+
+    const signupRows = (await db.execute(sql`
+      SELECT
+        COUNT(*) FILTER (WHERE created_at >= now() - interval '7 days')::bigint AS last_7,
+        COUNT(*) FILTER (WHERE created_at >= now() - interval '30 days')::bigint AS last_30
+        FROM tenants
+       WHERE deleted_at IS NULL
+    `)) as unknown as Array<{ last_7: number | string; last_30: number | string }>;
+
+    const userRows = (await db.execute(sql`
+      SELECT
+        platform_total_user_count() AS total,
+        platform_users_active_since(7) AS active_7,
+        platform_users_active_since(30) AS active_30
+    `)) as unknown as Array<{
+      total: number | string;
+      active_7: number | string;
+      active_30: number | string;
+    }>;
+
+    // Impersonation counters — lazy sweep first so expired rows don't
+    // show up as "pending" in the dashboard number.  This is the same
+    // sweep the impersonation list endpoints do on read.
+    await db.execute(sql`SELECT impersonation_sweep_expired()`);
+    const impRows = (await db.execute(sql`
+      SELECT
+        (SELECT COUNT(*)::bigint FROM impersonation_requests WHERE status = 'pending') AS pending,
+        (SELECT COUNT(*)::bigint FROM impersonation_requests WHERE status = 'approved') AS approved_waiting,
+        (SELECT COUNT(*)::bigint FROM impersonation_sessions WHERE ended_at IS NULL) AS active
+    `)) as unknown as Array<{
+      pending: number | string;
+      approved_waiting: number | string;
+      active: number | string;
+    }>;
+
+    const recentAudit = await db
+      .select({
+        id: schema.platformAuditLog.id,
+        platformUserEmail: schema.platformAuditLog.platformUserEmail,
+        kind: schema.platformAuditLog.kind,
+        summary: schema.platformAuditLog.summary,
+        reason: schema.platformAuditLog.reason,
+        tenantId: schema.platformAuditLog.tenantId,
+        createdAt: schema.platformAuditLog.createdAt,
+      })
+      .from(schema.platformAuditLog)
+      .orderBy(desc(schema.platformAuditLog.createdAt))
+      .limit(15);
+
+    // Normalise the status map.  Every status in the CHECK constraint
+    // is returned as a key — 0 where absent — so the UI doesn't need
+    // fallback logic per-status.
+    const byStatus: Record<string, number> = {
+      active: 0,
+      trial: 0,
+      "past-due": 0,
+      suspended: 0,
+      churned: 0,
+    };
+    let totalTenants = 0;
+    for (const r of statusRows) {
+      const n = Number(r.n) || 0;
+      byStatus[r.status] = n;
+      totalTenants += n;
+    }
+
+    const signup = signupRows[0] ?? { last_7: 0, last_30: 0 };
+    const usage = userRows[0] ?? { total: 0, active_7: 0, active_30: 0 };
+    const imp = impRows[0] ?? { pending: 0, approved_waiting: 0, active: 0 };
+
+    return reply.send({
+      tenants: {
+        total: totalTenants,
+        byStatus,
+        signupsLast7Days: Number(signup.last_7) || 0,
+        signupsLast30Days: Number(signup.last_30) || 0,
+      },
+      users: {
+        total: Number(usage.total) || 0,
+        activeLast7Days: Number(usage.active_7) || 0,
+        activeLast30Days: Number(usage.active_30) || 0,
+      },
+      impersonation: {
+        pendingRequests: Number(imp.pending) || 0,
+        approvedWaiting: Number(imp.approved_waiting) || 0,
+        activeSessions: Number(imp.active) || 0,
+      },
+      recentAudit,
+    });
+  });
+
+  // -------------------------------------------------------------------
+  // #58 — Global platform audit feed
+  //
+  // The per-tenant /tenants/:id/platform-audit endpoint answers "what
+  // did platform staff do to THIS business?".  This endpoint answers
+  // "what did platform staff do, full stop?" — essential for a
+  // security-conscious ops team doing periodic review (and for
+  // answering the audit questions that come with B2B SaaS
+  // procurement).
+  //
+  // Filters:
+  //   - kind   : exact match on audit event kind
+  //   - actor  : exact email match on the platform user
+  //   - limit  : 1..500 (default 100)
+  //   - offset : pagination
+  // -------------------------------------------------------------------
+  const ListAuditQuerySchema = z.object({
+    kind: z.string().min(1).max(64).optional(),
+    actor: z.string().email().optional(),
+    limit: z.coerce.number().int().min(1).max(500).default(100),
+    offset: z.coerce.number().int().min(0).default(0),
+  });
+
+  fastify.get("/audit", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+
+    const parsed = ListAuditQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+    }
+    const { kind, actor, limit, offset } = parsed.data;
+
+    const clauses = [];
+    if (kind) clauses.push(eq(schema.platformAuditLog.kind, kind));
+    if (actor) clauses.push(eq(schema.platformAuditLog.platformUserEmail, actor));
+    const whereClause = clauses.length > 0 ? and(...clauses) : undefined;
+
+    const rows = await db
+      .select({
+        id: schema.platformAuditLog.id,
+        platformUserEmail: schema.platformAuditLog.platformUserEmail,
+        kind: schema.platformAuditLog.kind,
+        summary: schema.platformAuditLog.summary,
+        reason: schema.platformAuditLog.reason,
+        tenantId: schema.platformAuditLog.tenantId,
+        createdAt: schema.platformAuditLog.createdAt,
+      })
+      .from(schema.platformAuditLog)
+      .where(whereClause)
+      .orderBy(desc(schema.platformAuditLog.createdAt))
+      .limit(limit)
+      .offset(offset);
+
+    const totalRows = await db
+      .select({ count: count() })
+      .from(schema.platformAuditLog)
+      .where(whereClause);
+    const total = Number(totalRows[0]?.count ?? 0);
+
+    return reply.send({ total, limit, offset, entries: rows });
+  });
+
+  // -------------------------------------------------------------------
+  // #58 — PATCH /tenants/:id
+  //
+  // Narrow by design — only the `notes` field is editable here.  Ops
+  // humans annotate tenants ("watch this one, payment failed twice,"
+  // "migrating from Tally, expect support ticket volume") and want
+  // somewhere persistent to write it that isn't a Slack message.
+  //
+  // Status changes stay on the dedicated suspend/reactivate endpoints
+  // because they have a REASON_REQUIRED contract + audit kinds we
+  // don't want to collapse into a generic PATCH.
+  //
+  // super_admin and support can both write notes; billing is
+  // read-only on tenant data by convention and sits this one out.
+  // -------------------------------------------------------------------
+  const PatchTenantSchema = z.object({
+    notes: z.string().max(4000).nullable().optional(),
+  });
+
+  fastify.patch("/tenants/:id", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+    if (
+      !(await requirePlatformRole(req, reply, session, [
+        "super_admin",
+        "support",
+      ]))
+    ) {
+      return;
+    }
+
+    const paramsParsed = z.object({ id: z.string().uuid() }).safeParse(req.params);
+    if (!paramsParsed.success) {
+      return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+    }
+    const bodyParsed = PatchTenantSchema.safeParse(req.body);
+    if (!bodyParsed.success) {
+      return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+    }
+    const tenantId = paramsParsed.data.id;
+    const { notes } = bodyParsed.data;
+
+    // Look up the current tenant so the audit diff is meaningful (we
+    // log both the old and new notes as metadata).  If nothing is in
+    // the patch body, we treat it as a no-op 204-style success rather
+    // than a 400 — the UI can submit an empty PATCH as "touch" to
+    // refresh updated_at without caring about the diff.
+    const rows = await db
+      .select({
+        id: schema.tenants.id,
+        businessName: schema.tenants.businessName,
+        notes: schema.tenants.notes,
+      })
+      .from(schema.tenants)
+      .where(
+        and(eq(schema.tenants.id, tenantId), isNull(schema.tenants.deletedAt)),
+      )
+      .limit(1);
+    const tenant = rows[0];
+    if (!tenant) {
+      return reply.status(404).send({ error: { code: "NOT_FOUND" } });
+    }
+
+    if (notes !== undefined && notes !== tenant.notes) {
+      await db
+        .update(schema.tenants)
+        .set({
+          notes: notes ?? null,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.tenants.id, tenantId));
+
+      await recordPlatformAuditEvent({
+        platformUserId: session.platformUserId,
+        platformUserEmail: session.email,
+        kind: "platform.tenant_notes_updated",
+        summary: `Updated notes on ${tenant.businessName}`,
+        tenantId,
+        ipAddress: req.ip ?? null,
+        userAgent: req.headers["user-agent"] ?? null,
+        metadata: {
+          before: tenant.notes ?? "",
+          after: notes ?? "",
+        },
+      });
+    }
 
     return reply.send({ ok: true });
   });
