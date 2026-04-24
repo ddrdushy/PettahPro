@@ -43,6 +43,12 @@ type Item = {
   // flags[requires] === true. Lets the sidebar respect tenant toggles
   // without the layout having to diff the nav array.
   requires?: keyof SidebarFeatureFlags;
+  // Plan-feature gate (#67). Item stays in the nav but renders in a
+  // locked state — padlock icon, greyed text, click routes to the plan
+  // picker instead of the gated page. Shows users what's available on
+  // higher tiers without exposing them to a 403. The feature-code
+  // strings match the API's `plans.features` JSONB payload.
+  requiresPlanFeature?: "payroll" | "approval_workflows" | "supplier_portal" | "ai_bill_entry";
 };
 type Group = { title?: string; items: Item[] };
 
@@ -123,7 +129,12 @@ const nav: Group[] = [
       { label: "Employees", href: "/app/employees", icon: UserRound },
       { label: "Attendance", href: "/app/attendance", icon: Clock },
       { label: "Salary components", href: "/app/salary-components", icon: Layers },
-      { label: "Payroll runs", href: "/app/payroll", icon: Briefcase },
+      {
+        label: "Payroll runs",
+        href: "/app/payroll",
+        icon: Briefcase,
+        requiresPlanFeature: "payroll",
+      },
       { label: "Final settlements", href: "/app/final-settlements", icon: LogOut },
       { label: "Leave types", href: "/app/leave-types", icon: Layers },
       { label: "Leave requests", href: "/app/leave-requests", icon: Briefcase },
@@ -154,25 +165,51 @@ const nav: Group[] = [
     title: "Admin",
     items: [
       { label: "Branches", href: "/app/branches", icon: Building2 },
-      { label: "Approvals", href: "/app/approvals", icon: ClipboardCheck },
+      {
+        label: "Approvals",
+        href: "/app/approvals",
+        icon: ClipboardCheck,
+        requiresPlanFeature: "approval_workflows",
+      },
       { label: "Audit log", href: "/app/audit-log", icon: ShieldCheck },
       { label: "Settings", href: "/app/settings", icon: Settings },
     ],
   },
 ];
 
+// Human-readable labels for the plan-gate tooltip. We could derive this
+// from the server catalogue at runtime, but a static map is both
+// cheaper (no extra fetch) and lets the tooltip copy live next to the
+// nav item it describes. When we add a new gated feature, TS's
+// `requiresPlanFeature` union forces us to remember to update this map.
+const PLAN_FEATURE_COPY: Record<
+  NonNullable<Item["requiresPlanFeature"]>,
+  { upgradeTo: string }
+> = {
+  payroll: { upgradeTo: "Growth" },
+  approval_workflows: { upgradeTo: "Scale" },
+  supplier_portal: { upgradeTo: "Scale" },
+  ai_bill_entry: { upgradeTo: "Growth" },
+};
+
 export function Sidebar({
   featureFlags,
+  planFeatures,
 }: {
   featureFlags?: SidebarFeatureFlags;
+  planFeatures?: string[];
 } = {}) {
   const pathname = usePathname();
   const flags: SidebarFeatureFlags = featureFlags ?? {
     purchaseRequisitionsEnabled: false,
   };
+  const activeFeatures = new Set(planFeatures ?? []);
 
-  // Filter feature-gated items per tenant toggle. Items without `requires`
-  // always pass through.
+  // Filter tenant-toggle items (stay hidden when disabled). Plan-gated
+  // items are NOT filtered out — they render in a locked state so users
+  // can see what's available one tier up. That's a deliberate design
+  // choice: hiding them would make the product look smaller than it is
+  // and give zero path to the upgrade conversation.
   const visibleNav: Group[] = nav
     .map((group) => ({
       ...group,
@@ -200,28 +237,59 @@ export function Sidebar({
                 const Icon = item.icon;
                 const active = pathname === item.href || (item.href !== "/app" && pathname.startsWith(item.href));
                 const disabled = !!item.badge;
+                // Plan lock: feature required AND not in the tenant's
+                // plan feature list. Clicks route to /app/settings/plan
+                // so the user can see the upgrade path, not to the
+                // gated page where they'd hit a 403.
+                const planLocked =
+                  item.requiresPlanFeature !== undefined &&
+                  !activeFeatures.has(item.requiresPlanFeature);
+                const lockCopy = planLocked
+                  ? PLAN_FEATURE_COPY[item.requiresPlanFeature!]
+                  : null;
+                const href = planLocked
+                  ? "/app/settings/plan"
+                  : disabled
+                    ? "#"
+                    : item.href;
                 return (
                   <li key={item.href}>
                     <Link
-                      href={disabled ? "#" : item.href}
+                      href={href}
                       aria-disabled={disabled || undefined}
                       aria-current={active ? "page" : undefined}
+                      title={
+                        lockCopy
+                          ? `${lockCopy.upgradeTo} plan — click to upgrade`
+                          : undefined
+                      }
                       className={`group flex items-center gap-3 rounded-md px-3 py-2 text-small transition-colors ${
                         active
                           ? "bg-mint-surface text-charcoal"
-                          : disabled
-                            ? "text-text-tertiary"
-                            : "text-text-secondary hover:bg-mint-surface/50 hover:text-charcoal"
+                          : planLocked
+                            ? "text-text-tertiary hover:bg-surface-recessed/40 hover:text-text-secondary"
+                            : disabled
+                              ? "text-text-tertiary"
+                              : "text-text-secondary hover:bg-mint-surface/50 hover:text-charcoal"
                       }`}
                     >
                       <Icon
-                        className={`h-4 w-4 ${active ? "text-mint-dark" : ""}`}
+                        className={`h-4 w-4 ${active ? "text-mint-dark" : ""} ${planLocked ? "opacity-60" : ""}`}
                         aria-hidden
                       />
                       <span className="flex-1">{item.label}</span>
                       {item.badge && (
                         <span className="rounded-full border-hairline border-border px-1.5 py-0.5 text-micro uppercase text-text-tertiary">
                           {item.badge}
+                        </span>
+                      )}
+                      {planLocked && (
+                        <span
+                          className="inline-flex items-center gap-1 rounded-full border-hairline border-border bg-surface-elevated px-1.5 py-0.5 text-micro font-medium text-text-tertiary"
+                          aria-label={`Requires ${lockCopy?.upgradeTo} plan`}
+                        >
+                          <Lock className="h-2.5 w-2.5" aria-hidden />
+                          {lockCopy?.upgradeTo}
                         </span>
                       )}
                     </Link>
