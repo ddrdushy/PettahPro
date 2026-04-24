@@ -4,6 +4,7 @@ import { z } from "zod";
 import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
 import { requirePermission } from "../../lib/permissions.js";
+import { requireFeature } from "../../lib/plan-gate.js";
 
 // Approval workflow designer — roadmap #26 (tenant-admin §7).
 //
@@ -107,6 +108,7 @@ export const approvalPoliciesRoutes: FastifyPluginAsync = async (fastify) => {
 
   // POST /approval-policies
   fastify.post("/", async (req, reply) => {
+    if (!(await requireFeature(req, reply, "approval_workflows"))) return;
     const ctx = await requirePermission(req, reply, "settings.manage");
     if (!ctx) return;
 
@@ -138,6 +140,7 @@ export const approvalPoliciesRoutes: FastifyPluginAsync = async (fastify) => {
 
   // PATCH /approval-policies/:id
   fastify.patch<{ Params: { id: string } }>("/:id", async (req, reply) => {
+    if (!(await requireFeature(req, reply, "approval_workflows"))) return;
     const ctx = await requirePermission(req, reply, "settings.manage");
     if (!ctx) return;
 
@@ -182,6 +185,7 @@ export const approvalPoliciesRoutes: FastifyPluginAsync = async (fastify) => {
 
   // DELETE /approval-policies/:id — soft delete
   fastify.delete<{ Params: { id: string } }>("/:id", async (req, reply) => {
+    if (!(await requireFeature(req, reply, "approval_workflows"))) return;
     const ctx = await requirePermission(req, reply, "settings.manage");
     if (!ctx) return;
 
