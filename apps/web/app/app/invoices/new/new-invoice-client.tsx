@@ -14,6 +14,7 @@ import {
 } from "@/lib/api";
 import { formatLKR } from "@/lib/format";
 import { PageHeader } from "@/components/app/page-header";
+import { PlanErrorBanner } from "@/components/app/plan-error-banner";
 
 interface LineDraft {
   id: string;
@@ -86,7 +87,12 @@ export function NewInvoiceClient({
   const [fxRate, setFxRate] = useState("1");
   const [lines, setLines] = useState<LineDraft[]>([emptyLine()]);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // Error state is `unknown` (not string) so we can stash the raw
+  // ApiError and hand it to PlanErrorBanner — which branches on
+  // `code` to render inline upgrade CTAs for QUOTA_EXCEEDED /
+  // PLAN_REQUIRED. Plain strings still work for client-side
+  // validation ("Pick a customer first.").
+  const [error, setError] = useState<unknown>(null);
 
   const selectedCustomer = useMemo(
     () => customers.find((c) => c.id === customerId) ?? null,
@@ -207,7 +213,10 @@ export function NewInvoiceClient({
       router.push(`/app/invoices/${invoice.id}`);
       router.refresh();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Couldn't save the invoice.");
+      // Hand the raw error to the banner — it branches on ApiError.code
+      // so QUOTA_EXCEEDED (tenant hit their monthly invoice cap) renders
+      // an upgrade CTA instead of a generic message.
+      setError(err instanceof ApiError ? err : "Couldn't save the invoice.");
     } finally {
       setBusy(false);
     }
@@ -537,11 +546,14 @@ export function NewInvoiceClient({
               </div>
             </dl>
 
-            {error && (
-              <div className="mt-5 rounded-md border-hairline border-danger/40 bg-danger-bg/50 p-3 text-small text-danger">
-                {error}
+            {error ? (
+              <div className="mt-5">
+                <PlanErrorBanner
+                  error={error}
+                  fallbackMessage="Couldn't save the invoice."
+                />
               </div>
-            )}
+            ) : null}
 
             <div className="mt-6 flex flex-col gap-2">
               <button

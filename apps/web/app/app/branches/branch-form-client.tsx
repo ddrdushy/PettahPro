@@ -6,6 +6,7 @@ import { useState } from "react";
 import { ArrowLeft, Loader2 } from "lucide-react";
 import { api, ApiError, type Branch } from "@/lib/api";
 import { PageHeader } from "@/components/app/page-header";
+import { PlanErrorBanner } from "@/components/app/plan-error-banner";
 
 export function BranchFormClient({
   mode,
@@ -25,7 +26,10 @@ export function BranchFormClient({
   const [postalCode, setPostalCode] = useState(initial?.postalCode ?? "");
   const [phone, setPhone] = useState(initial?.phone ?? "");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // Error is `unknown` (not string) so PlanErrorBanner can branch on
+  // ApiError.code — QUOTA_EXCEEDED on create-branch surfaces an inline
+  // upgrade CTA instead of a bare "403 Forbidden" message.
+  const [error, setError] = useState<unknown>(null);
 
   async function submit() {
     setError(null);
@@ -54,7 +58,7 @@ export function BranchFormClient({
         router.push("/app/branches");
       }
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Couldn't save. Try again.");
+      setError(err instanceof ApiError ? err : "Couldn't save. Try again.");
       setBusy(false);
     }
   }
@@ -164,8 +168,16 @@ export function BranchFormClient({
         )}
       </section>
 
+      {/* Error banner is its own block above the action row — the
+          quota banner includes an upgrade CTA button which doesn't fit
+          inline next to Cancel/Save. */}
+      {error ? (
+        <section className="mt-6">
+          <PlanErrorBanner error={error} fallbackMessage="Couldn't save. Try again." />
+        </section>
+      ) : null}
+
       <section className="mt-8 flex items-center justify-end gap-3">
-        {error && <span className="text-small text-danger">{error}</span>}
         <Link href="/app/branches" className="btn-secondary">Cancel</Link>
         <button type="button" onClick={submit} disabled={busy} className="btn-primary disabled:cursor-not-allowed disabled:opacity-50">
           {busy && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
