@@ -2088,7 +2088,60 @@ export const api = {
     ),
   attachmentDownloadUrl: (id: string) => `${API_BASE}/attachments/${id}`,
   attachmentPreviewUrl: (id: string) => `${API_BASE}/attachments/${id}/preview`,
+
+  // #57 / gap L1 v1 — operator impersonation, tenant side. The Owner is
+  // the consent-granter; non-owners can list but not act (API enforces).
+  listImpersonationRequests: () =>
+    request<{ requests: TenantImpersonationRequest[] }>(
+      "/impersonation/requests",
+    ),
+  approveImpersonationRequest: (id: string, body: { minutes: 15 | 30 | 60 }) =>
+    request<{ ok: true; approvedMinutes: 15 | 30 | 60 }>(
+      `/impersonation/requests/${id}/approve`,
+      { method: "POST", json: body },
+    ),
+  refuseImpersonationRequest: (id: string, body: { reason: string }) =>
+    request<{ ok: true }>(`/impersonation/requests/${id}/refuse`, {
+      method: "POST",
+      json: body,
+    }),
+  listActiveImpersonationSessions: () =>
+    request<{ sessions: TenantImpersonationSession[] }>(
+      "/impersonation/sessions/active",
+    ),
+  revokeImpersonationSession: (id: string, body: { reason: string }) =>
+    request<{ ok: true }>(`/impersonation/sessions/${id}/revoke`, {
+      method: "POST",
+      json: body,
+    }),
 };
+
+// #57 — tenant-side projections of the impersonation tables. Narrow
+// (intentionally omitting target_tenant_id since the route scopes to
+// the caller's tenant) because the UI never needs to think about any
+// other tenant.
+export interface TenantImpersonationRequest {
+  id: string;
+  requestingPlatformUserEmail: string;
+  requestedMinutes: number;
+  reason: string;
+  status: "pending" | "approved" | "refused" | "expired" | "cancelled";
+  approvedByUserEmail: string | null;
+  approvedMinutes: number | null;
+  approvedAt: string | null;
+  refusedAt: string | null;
+  refusedReason: string | null;
+  expiresAt: string;
+  createdAt: string;
+}
+
+export interface TenantImpersonationSession {
+  id: string;
+  platformUserEmail: string;
+  targetUserEmail: string;
+  startedAt: string;
+  endsAt: string;
+}
 
 // Attachment entity types — must stay in sync with the server-side
 // DOCUMENT_ATTACHMENT_ENTITY_TYPES constant and the DB CHECK constraint.

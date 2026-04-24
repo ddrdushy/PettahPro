@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import type { Database } from "@pettahpro/db";
+import { getImpersonationContext } from "./impersonation-context.js";
 
 /**
  * Audit event kinds.
@@ -95,7 +96,16 @@ export type AuditEventKind =
   | "portal.login"
   | "portal.logout"
   | "portal.verify_failed"
-  | "portal.access_toggled";
+  | "portal.access_toggled"
+  // Impersonation (#57 / gap L1 v1) — tenant-side audit rows.
+  // Platform-side rows live on platform_audit_log with the
+  // 'platform.impersonation_*' kinds; these tenant rows are what
+  // shows up in /app/settings/audit-log for the tenant itself.
+  | "impersonation.requested"
+  | "impersonation.approved"
+  | "impersonation.refused"
+  | "impersonation.started"
+  | "impersonation.ended";
 
 export interface RecordAuditInput {
   kind: AuditEventKind;
@@ -132,10 +142,20 @@ export async function recordAuditEvent(
   input: RecordAuditInput,
 ): Promise<void> {
   try {
+    // #57 / gap L1 v1 — dual-actor attribution during impersonation.
+    // If this request is inside an impersonation AsyncLocalStorage
+    // scope (set by identity/plugin.ts onRequest), stamp the platform
+    // operator alongside the tenant actor. No call-site changes needed
+    // at dozens of existing audit writers — the ALS read here is the
+    // single central point that gets it right.
+    const impersonator = getImpersonationContext();
+
     await tx.execute(sql`
       INSERT INTO audit_events (
         tenant_id, actor_user_id, kind, ref_type, ref_id,
-        summary, diff, ip_address, user_agent
+        summary, diff, ip_address, user_agent,
+        impersonated_by_platform_user_id,
+        impersonated_by_platform_user_email
       )
       VALUES (
         current_tenant_id(),
@@ -146,7 +166,9 @@ export async function recordAuditEvent(
         ${input.summary}::text,
         ${input.diff ? JSON.stringify(input.diff) : null}::jsonb,
         ${input.ipAddress ?? null}::inet,
-        ${input.userAgent ?? null}::varchar
+        ${input.userAgent ?? null}::varchar,
+        ${impersonator?.platformUserId ?? null}::uuid,
+        ${impersonator?.platformUserEmail ?? null}::varchar
       )
     `);
   } catch (err) {

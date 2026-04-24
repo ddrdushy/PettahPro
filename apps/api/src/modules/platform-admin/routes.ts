@@ -103,7 +103,7 @@ const PLATFORM_ROLE_VALUES: readonly PlatformRole[] = [
  * for TypeScript). If you ever see "super_admin" where you expected
  * another role, chase the CHECK constraint — the column got bypassed.
  */
-function asPlatformRole(value: string): PlatformRole {
+export function asPlatformRole(value: string): PlatformRole {
   return (PLATFORM_ROLE_VALUES as readonly string[]).includes(value)
     ? (value as PlatformRole)
     : "super_admin";
@@ -116,7 +116,7 @@ function asPlatformRole(value: string): PlatformRole {
  * spot a compromised support-role credential probing higher-privilege
  * endpoints.
  */
-async function requirePlatformRole(
+export async function requirePlatformRole(
   req: FastifyRequest,
   reply: FastifyReply,
   session: PlatformSession,
@@ -146,7 +146,7 @@ async function requirePlatformRole(
  * Pull the platform session off the signed cookie. Returns null and
  * writes the 401 for the caller so routes read top-to-bottom.
  */
-async function requirePlatformSession(
+export async function requirePlatformSession(
   req: FastifyRequest,
   reply: FastifyReply,
 ): Promise<PlatformSession | null> {

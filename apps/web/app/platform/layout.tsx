@@ -39,6 +39,10 @@ async function fetchRole(): Promise<string | null> {
 export default async function PlatformLayout({ children }: { children: ReactNode }) {
   const role = await fetchRole();
   const isSuperAdmin = role === "super_admin";
+  // #57 — /platform/impersonation is the request queue + active session
+  // dashboard. super_admin + support both live there (support sees own
+  // only, super_admin sees all); billing never operates impersonation.
+  const canImpersonate = role === "super_admin" || role === "support";
 
   return (
     <div className="min-h-screen bg-charcoal text-white">
@@ -55,6 +59,11 @@ export default async function PlatformLayout({ children }: { children: ReactNode
             <Link href="/platform" className="hover:text-white">
               Tenants
             </Link>
+            {canImpersonate && (
+              <Link href="/platform/impersonation" className="hover:text-white">
+                Impersonation
+              </Link>
+            )}
             {isSuperAdmin && (
               <Link href="/platform/staff" className="hover:text-white">
                 Staff

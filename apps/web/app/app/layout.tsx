@@ -6,6 +6,7 @@ import { LogoutButton } from "@/components/auth/logout-button";
 import { Sidebar } from "@/components/app/sidebar";
 import { NotificationBell } from "@/components/app/notification-bell";
 import { PermissionsProvider } from "@/components/auth/permissions-provider";
+import { ImpersonationBanner } from "@/components/app/impersonation-banner";
 import type { CallerPermissions, TenantSettings } from "@/lib/api";
 
 async function fetchMe() {
@@ -21,6 +22,10 @@ async function fetchMe() {
       user: { id: string; email: string; fullName: string; isOwner: boolean };
       tenant: { id: string; slug: string; businessName: string };
       permissions: CallerPermissions;
+      impersonation: {
+        platformUserEmail: string;
+        endsAt: string | null;
+      } | null;
     };
   } catch {
     return null;
@@ -54,6 +59,12 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
 
   return (
     <div className="min-h-screen bg-offwhite">
+      {me.impersonation && (
+        <ImpersonationBanner
+          platformUserEmail={me.impersonation.platformUserEmail}
+          endsAt={me.impersonation.endsAt}
+        />
+      )}
       <header className="sticky top-0 z-30 border-b-hairline border-border bg-offwhite/95 backdrop-blur">
         <div className="flex h-16 items-center justify-between px-6">
           <Link href="/app" className="flex items-center gap-3">
