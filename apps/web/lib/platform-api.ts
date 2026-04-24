@@ -293,6 +293,35 @@ export const platformApi = {
       method: "PATCH",
       json: body,
     }),
+  // #59 — ops density. Bulk suspend/reactivate + per-user saved views.
+  bulkTenantAction: (body: {
+    action: "suspend" | "reactivate";
+    tenantIds: string[];
+    reason: string;
+  }) =>
+    request<PlatformBulkTenantActionResponse>("/platform/tenants/bulk-action", {
+      method: "POST",
+      json: body,
+    }),
+  listSavedViews: (scope: PlatformSavedViewScope) => {
+    const qs = new URLSearchParams({ scope });
+    return request<{ views: PlatformSavedView[] }>(
+      `/platform/saved-views?${qs.toString()}`,
+    );
+  },
+  createSavedView: (body: {
+    scope: PlatformSavedViewScope;
+    name: string;
+    queryString: string;
+  }) =>
+    request<{ view: PlatformSavedView }>("/platform/saved-views", {
+      method: "POST",
+      json: body,
+    }),
+  deleteSavedView: (id: string) =>
+    request<{ ok: true }>(`/platform/saved-views/${id}`, {
+      method: "DELETE",
+    }),
   // #57 / gap L1 v1 — operator impersonation. Platform-side. Tenant-side
   // sits in lib/api.ts (different cookie realm).
   createImpersonationRequest: (
@@ -337,6 +366,33 @@ export const platformApi = {
 // each row to /platform/tenants/:id; per-tenant audit doesn't need it.
 export interface PlatformAuditEntryWithTenant extends PlatformAuditEntry {
   tenantId: string | null;
+}
+
+// #59 — saved views and bulk tenant actions.
+export const PLATFORM_SAVED_VIEW_SCOPES = ["tenants", "audit"] as const;
+export type PlatformSavedViewScope =
+  (typeof PLATFORM_SAVED_VIEW_SCOPES)[number];
+
+export interface PlatformSavedView {
+  id: string;
+  scope: PlatformSavedViewScope;
+  name: string;
+  queryString: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PlatformBulkTenantActionResult {
+  tenantId: string;
+  outcome: "ok" | "noop" | "not_found";
+  status?: string;
+}
+
+export interface PlatformBulkTenantActionResponse {
+  ok: true;
+  batchId: string;
+  counts: { ok: number; noop: number; notFound: number };
+  results: PlatformBulkTenantActionResult[];
 }
 
 // #58 — shape of the GET /platform/overview payload.  Deliberately

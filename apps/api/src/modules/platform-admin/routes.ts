@@ -1113,6 +1113,72 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
   // Reactivate flips back to 'active'. Idempotent on both sides.
   // -------------------------------------------------------------------
 
+  // #59 — Core status-flip used by the single /suspend + /reactivate
+  // endpoints AND the /tenants/bulk-action endpoint. Returns an outcome
+  // rather than writing the response so the caller can aggregate
+  // results across many tenants. All audit writes happen in here so
+  // the single/bulk callers emit identical audit rows per tenant.
+  type ApplyStatusOutcome =
+    | { outcome: "ok"; status: "suspended" | "active" }
+    | { outcome: "noop"; status: "suspended" | "active" | string }
+    | { outcome: "not_found" };
+
+  async function applyStatusToTenant(
+    session: PlatformSession,
+    tenantId: string,
+    reason: string,
+    nextStatus: "suspended" | "active",
+    kind: "platform.tenant_suspended" | "platform.tenant_reactivated",
+    summaryVerb: string,
+    reqMeta: { ip: string | null; userAgent: string | null },
+  ): Promise<ApplyStatusOutcome> {
+    const rows = await db
+      .select()
+      .from(schema.tenants)
+      .where(
+        and(eq(schema.tenants.id, tenantId), isNull(schema.tenants.deletedAt)),
+      )
+      .limit(1);
+    const tenant = rows[0];
+    if (!tenant) return { outcome: "not_found" };
+
+    // Idempotent — if already in the target state, audit the attempt
+    // and return success. Avoids UI flicker on a double-click and keeps
+    // the bulk endpoint honest (we want an audit row for every tenant
+    // the operator thought they were acting on, even the no-ops).
+    if (tenant.status === nextStatus) {
+      await recordPlatformAuditEvent({
+        platformUserId: session.platformUserId,
+        platformUserEmail: session.email,
+        kind: `${kind}.noop` as string,
+        summary: `${summaryVerb} (no-op, already ${nextStatus}): ${tenant.businessName}`,
+        reason,
+        tenantId,
+        ipAddress: reqMeta.ip,
+        userAgent: reqMeta.userAgent,
+      });
+      return { outcome: "noop", status: tenant.status };
+    }
+
+    await db
+      .update(schema.tenants)
+      .set({ status: nextStatus, updatedAt: new Date() })
+      .where(eq(schema.tenants.id, tenantId));
+
+    await recordPlatformAuditEvent({
+      platformUserId: session.platformUserId,
+      platformUserEmail: session.email,
+      kind,
+      summary: `${summaryVerb}: ${tenant.businessName}`,
+      reason,
+      tenantId,
+      ipAddress: reqMeta.ip,
+      userAgent: reqMeta.userAgent,
+    });
+
+    return { outcome: "ok", status: nextStatus };
+  }
+
   async function applyStatus(
     req: FastifyRequest,
     reply: FastifyReply,
@@ -1146,52 +1212,21 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
         },
       });
     }
-    const tenantId = paramsParsed.data.id;
-    const reason = bodyParsed.data.reason;
 
-    const rows = await db
-      .select()
-      .from(schema.tenants)
-      .where(and(eq(schema.tenants.id, tenantId), isNull(schema.tenants.deletedAt)))
-      .limit(1);
-    const tenant = rows[0];
-    if (!tenant) {
+    const outcome = await applyStatusToTenant(
+      session,
+      paramsParsed.data.id,
+      bodyParsed.data.reason,
+      nextStatus,
+      kind,
+      summaryVerb,
+      { ip: req.ip ?? null, userAgent: req.headers["user-agent"] ?? null },
+    );
+
+    if (outcome.outcome === "not_found") {
       return reply.status(404).send({ error: { code: "NOT_FOUND" } });
     }
-
-    // Idempotent — if already in the target state, audit the attempt
-    // and return success. Avoids UI flicker on a double-click.
-    if (tenant.status === nextStatus) {
-      await recordPlatformAuditEvent({
-        platformUserId: session.platformUserId,
-        platformUserEmail: session.email,
-        kind: `${kind}.noop` as string,
-        summary: `${summaryVerb} (no-op, already ${nextStatus}): ${tenant.businessName}`,
-        reason,
-        tenantId,
-        ipAddress: req.ip ?? null,
-        userAgent: req.headers["user-agent"] ?? null,
-      });
-      return reply.send({ ok: true, status: tenant.status });
-    }
-
-    await db
-      .update(schema.tenants)
-      .set({ status: nextStatus, updatedAt: new Date() })
-      .where(eq(schema.tenants.id, tenantId));
-
-    await recordPlatformAuditEvent({
-      platformUserId: session.platformUserId,
-      platformUserEmail: session.email,
-      kind,
-      summary: `${summaryVerb}: ${tenant.businessName}`,
-      reason,
-      tenantId,
-      ipAddress: req.ip ?? null,
-      userAgent: req.headers["user-agent"] ?? null,
-    });
-
-    return reply.send({ ok: true, status: nextStatus });
+    return reply.send({ ok: true, status: outcome.status });
   }
 
   fastify.post("/tenants/:id/suspend", async (req, reply) => {
@@ -1200,6 +1235,121 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.post("/tenants/:id/reactivate", async (req, reply) => {
     return applyStatus(req, reply, "active", "platform.tenant_reactivated", "Reactivated tenant");
+  });
+
+  // -------------------------------------------------------------------
+  // #59 — POST /tenants/bulk-action
+  //
+  // Operator ergonomics. Ticking 20 rows in the tenant list and hitting
+  // "Suspend selected" is table stakes for a platform console. We fan
+  // out to applyStatusToTenant for each id so the audit trail, idempotency,
+  // and role check are identical to the single-tenant endpoint — no
+  // parallel code path.
+  //
+  // A single reason covers the whole batch. The batch itself also gets
+  // a dedicated audit row (`platform.tenants_bulk_acted`) so if anyone
+  // later wonders "why did 14 tenants get suspended in the same minute?"
+  // there's one row to anchor the investigation, plus 14 per-tenant
+  // rows linked to it via a batchId in metadata.
+  //
+  // Limits: up to 100 ids per call. Larger than that is almost certainly
+  // a mistake (or scripted — use the DB for that).
+  // -------------------------------------------------------------------
+  const BulkActionSchema = z.object({
+    action: z.enum(["suspend", "reactivate"]),
+    tenantIds: z.array(z.string().uuid()).min(1).max(100),
+    reason: z.string().min(3).max(500),
+  });
+
+  fastify.post("/tenants/bulk-action", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+    // Same gate as the single endpoints.
+    if (!(await requirePlatformRole(req, reply, session, ["super_admin"]))) {
+      return;
+    }
+
+    const parsed = BulkActionSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: { code: "INVALID_INPUT", message: parsed.error.message },
+      });
+    }
+    const { action, tenantIds, reason } = parsed.data;
+    const nextStatus = action === "suspend" ? "suspended" : "active";
+    const kind =
+      action === "suspend"
+        ? "platform.tenant_suspended"
+        : "platform.tenant_reactivated";
+    const summaryVerb =
+      action === "suspend" ? "Suspended tenant" : "Reactivated tenant";
+
+    // Dedupe ids so the operator can't accidentally double-count one
+    // tenant as both a success and a no-op just because the UI let a
+    // duplicate slip through.
+    const uniqueIds = Array.from(new Set(tenantIds));
+    const batchId = randomBytes(12).toString("hex");
+    const reqMeta = {
+      ip: req.ip ?? null,
+      userAgent: req.headers["user-agent"] ?? null,
+    };
+
+    const results: Array<{
+      tenantId: string;
+      outcome: "ok" | "noop" | "not_found";
+      status?: string;
+    }> = [];
+
+    // Serial. These are short UPDATEs, 100 of them at the absolute max,
+    // and we'd rather preserve per-tenant audit ordering than parallelise
+    // and race the audit writes.
+    for (const id of uniqueIds) {
+      const res = await applyStatusToTenant(
+        session,
+        id,
+        `[batch ${batchId}] ${reason}`,
+        nextStatus,
+        kind,
+        summaryVerb,
+        reqMeta,
+      );
+      results.push({
+        tenantId: id,
+        outcome: res.outcome,
+        status: res.outcome === "not_found" ? undefined : res.status,
+      });
+    }
+
+    const okCount = results.filter((r) => r.outcome === "ok").length;
+    const noopCount = results.filter((r) => r.outcome === "noop").length;
+    const missingCount = results.filter((r) => r.outcome === "not_found").length;
+
+    // Batch-level audit anchor — metadata carries the per-tenant
+    // outcomes so the full picture is reconstructible without joining
+    // every individual tenant row.
+    await recordPlatformAuditEvent({
+      platformUserId: session.platformUserId,
+      platformUserEmail: session.email,
+      kind: "platform.tenants_bulk_acted",
+      summary: `Bulk ${action}: ${okCount} ok, ${noopCount} no-op, ${missingCount} missing`,
+      reason,
+      tenantId: null,
+      ipAddress: reqMeta.ip,
+      userAgent: reqMeta.userAgent,
+      metadata: {
+        batchId,
+        action,
+        requested: uniqueIds.length,
+        results,
+      },
+    });
+
+    return reply.send({
+      ok: true,
+      batchId,
+      counts: { ok: okCount, noop: noopCount, notFound: missingCount },
+      results,
+    });
   });
 
   // -------------------------------------------------------------------
@@ -1864,6 +2014,140 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
       });
     }
 
+    return reply.send({ ok: true });
+  });
+
+  // -------------------------------------------------------------------
+  // #59 — Per-user saved views for /platform/tenants + /platform/audit.
+  //
+  // Just named querystrings, pinned to one platform user. Strictly
+  // scoped: every query filters by platform_user_id so nobody sees
+  // another operator's views, and every mutation is gated to the same.
+  // No audit — these are personal preferences, not state changes anyone
+  // else cares about.
+  //
+  // The list is small (humans create, at most, a dozen views each) so
+  // we don't paginate. One call returns them all for a scope.
+  // -------------------------------------------------------------------
+  const SavedViewScopeSchema = z.enum(["tenants", "audit"]);
+
+  const CreateSavedViewSchema = z.object({
+    scope: SavedViewScopeSchema,
+    name: z.string().trim().min(1).max(80),
+    queryString: z.string().max(2000).default(""),
+  });
+
+  fastify.get("/saved-views", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+
+    const parsed = z
+      .object({ scope: SavedViewScopeSchema })
+      .safeParse(req.query);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+    }
+
+    const rows = await db
+      .select({
+        id: schema.platformUserSavedViews.id,
+        scope: schema.platformUserSavedViews.scope,
+        name: schema.platformUserSavedViews.name,
+        queryString: schema.platformUserSavedViews.queryString,
+        createdAt: schema.platformUserSavedViews.createdAt,
+        updatedAt: schema.platformUserSavedViews.updatedAt,
+      })
+      .from(schema.platformUserSavedViews)
+      .where(
+        and(
+          eq(
+            schema.platformUserSavedViews.platformUserId,
+            session.platformUserId,
+          ),
+          eq(schema.platformUserSavedViews.scope, parsed.data.scope),
+        ),
+      )
+      .orderBy(schema.platformUserSavedViews.name);
+
+    return reply.send({ views: rows });
+  });
+
+  fastify.post("/saved-views", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+
+    const parsed = CreateSavedViewSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: { code: "INVALID_INPUT", message: parsed.error.message },
+      });
+    }
+    const { scope, name, queryString } = parsed.data;
+
+    // Strip a leading `?` if the client pasted a full URL's search part.
+    const qs = queryString.startsWith("?") ? queryString.slice(1) : queryString;
+
+    try {
+      const rows = await db
+        .insert(schema.platformUserSavedViews)
+        .values({
+          platformUserId: session.platformUserId,
+          scope,
+          name,
+          queryString: qs,
+        })
+        .returning({
+          id: schema.platformUserSavedViews.id,
+          scope: schema.platformUserSavedViews.scope,
+          name: schema.platformUserSavedViews.name,
+          queryString: schema.platformUserSavedViews.queryString,
+          createdAt: schema.platformUserSavedViews.createdAt,
+          updatedAt: schema.platformUserSavedViews.updatedAt,
+        });
+      return reply.send({ view: rows[0] });
+    } catch (err: unknown) {
+      // Treat the unique-constraint violation as a soft conflict — the
+      // user probably meant to update the existing view. We surface
+      // NAME_TAKEN so the UI can prompt for a different name (or offer
+      // overwrite). An explicit PUT endpoint is overkill for this list
+      // size; delete-then-create is enough.
+      const code = (err as { code?: string } | null)?.code;
+      if (code === "23505") {
+        return reply
+          .status(409)
+          .send({ error: { code: "NAME_TAKEN", message: "Name in use." } });
+      }
+      throw err;
+    }
+  });
+
+  fastify.delete("/saved-views/:id", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+
+    const parsed = z.object({ id: z.string().uuid() }).safeParse(req.params);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+    }
+
+    // Scope the delete by platformUserId so a crafted id from another
+    // operator's view can never be removed. Returning no row = 404.
+    const deleted = await db
+      .delete(schema.platformUserSavedViews)
+      .where(
+        and(
+          eq(schema.platformUserSavedViews.id, parsed.data.id),
+          eq(
+            schema.platformUserSavedViews.platformUserId,
+            session.platformUserId,
+          ),
+        ),
+      )
+      .returning({ id: schema.platformUserSavedViews.id });
+
+    if (deleted.length === 0) {
+      return reply.status(404).send({ error: { code: "NOT_FOUND" } });
+    }
     return reply.send({ ok: true });
   });
 };
