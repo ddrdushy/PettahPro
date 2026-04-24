@@ -12,6 +12,14 @@ export class ApiError extends Error {
    * WEAK_PASSWORD from #49). UI surfaces these verbatim as a bullet list.
    */
   reasons?: string[];
+  /**
+   * Plan-gate payload from `requireFeature()` — #62. When the API returns
+   * 403 PLAN_REQUIRED these fields carry the context the UI needs to
+   * render a "Upgrade to Growth" CTA instead of a bare "Forbidden".
+   */
+  feature?: string;
+  currentPlanCode?: string | null;
+  upgradeToPlanCodes?: string[];
 
   constructor(
     status: number,
@@ -19,12 +27,22 @@ export class ApiError extends Error {
     message: string,
     issues?: unknown,
     reasons?: string[],
+    planMeta?: {
+      feature?: string;
+      currentPlanCode?: string | null;
+      upgradeToPlanCodes?: string[];
+    },
   ) {
     super(message);
     this.status = status;
     this.code = code;
     this.issues = issues;
     this.reasons = reasons;
+    if (planMeta) {
+      this.feature = planMeta.feature;
+      this.currentPlanCode = planMeta.currentPlanCode;
+      this.upgradeToPlanCodes = planMeta.upgradeToPlanCodes;
+    }
   }
 }
 
@@ -93,6 +111,18 @@ async function request<T>(
       err?.message ?? res.statusText,
       err?.issues,
       Array.isArray(err?.reasons) ? err.reasons : undefined,
+      err?.code === "PLAN_REQUIRED"
+        ? {
+            feature: typeof err.feature === "string" ? err.feature : undefined,
+            currentPlanCode:
+              typeof err.currentPlanCode === "string"
+                ? err.currentPlanCode
+                : null,
+            upgradeToPlanCodes: Array.isArray(err.upgradeToPlanCodes)
+              ? err.upgradeToPlanCodes
+              : [],
+          }
+        : undefined,
     );
   }
 
@@ -902,6 +932,12 @@ export const api = {
   getSettings: () => request<TenantSettingsResponse>("/settings"),
   updateSettings: (body: Partial<TenantSettings>) =>
     request<TenantSettingsResponse>("/settings", { method: "PATCH", json: body }),
+
+  // Tenant-side view of the current subscription (#62). Used by the
+  // "Your plan" card on /app/settings and by upgrade-CTA dialogs that
+  // need to render "Upgrade to <plan>" copy.
+  getSubscription: () =>
+    request<{ subscription: TenantSubscriptionResponse }>("/subscription"),
 
   listFxRates: (filter?: { from?: string; to?: string }) => {
     const qs = new URLSearchParams();
@@ -5273,6 +5309,32 @@ export interface FiscalPeriod {
 export interface TenantSettingsResponse {
   settings: TenantSettings;
   defaults: TenantSettings;
+}
+
+// Subscription shape returned by GET /subscription (#62). Mirrors the
+// richer shape returned by the platform-admin endpoint so the types
+// can be shared by UI components that render either side.
+export interface TenantSubscriptionResponse {
+  id: string;
+  status: "trial" | "active" | "past_due" | "cancelled";
+  billingCycle: "monthly" | "yearly";
+  trialEndsAt: string | null;
+  currentPeriodStart: string;
+  currentPeriodEnd: string;
+  plan: {
+    id: string;
+    code: string;
+    name: string;
+    tagline: string;
+    monthlyPriceCents: number;
+    yearlyPriceCents: number;
+    currency: string;
+    maxUsers: number | null;
+    maxInvoicesMonthly: number | null;
+    maxBranches: number | null;
+    maxWarehouses: number | null;
+    features: string[];
+  };
 }
 
 export interface FxRate {
