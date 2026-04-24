@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { cookies } from "next/headers";
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 
@@ -12,7 +13,33 @@ export const metadata: Metadata = {
   description: "PettahPro platform administration.",
 };
 
-export default function PlatformLayout({ children }: { children: ReactNode }) {
+const API = process.env.INTERNAL_API_URL ?? "http://api:4000";
+
+// #56 — the header fetches the current session role purely to decide
+// whether to show the "Staff" link (super-admin-only). Failures are
+// swallowed: on /platform/login the session doesn't exist yet, and
+// we'd rather render the header without the staff entry than crash the
+// layout for the login page.
+async function fetchRole(): Promise<string | null> {
+  const cookieHeader = cookies().toString();
+  if (!cookieHeader) return null;
+  try {
+    const res = await fetch(`${API}/platform/auth/me`, {
+      headers: { cookie: cookieHeader },
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { user?: { role?: string } };
+    return body.user?.role ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export default async function PlatformLayout({ children }: { children: ReactNode }) {
+  const role = await fetchRole();
+  const isSuperAdmin = role === "super_admin";
+
   return (
     <div className="min-h-screen bg-charcoal text-white">
       <header className="border-b border-white/10 bg-black/40 backdrop-blur">
@@ -28,6 +55,11 @@ export default function PlatformLayout({ children }: { children: ReactNode }) {
             <Link href="/platform" className="hover:text-white">
               Tenants
             </Link>
+            {isSuperAdmin && (
+              <Link href="/platform/staff" className="hover:text-white">
+                Staff
+              </Link>
+            )}
             <Link href="/platform/account" className="hover:text-white">
               Account
             </Link>

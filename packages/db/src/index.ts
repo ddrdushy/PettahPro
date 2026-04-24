@@ -16,3 +16,9 @@ export type {
   ApprovalRequestStatus,
   ApprovalRequestStepStatus,
 } from "./schema/approval-requests.js";
+
+// #56 — platform-user role enum is needed in a couple of non-api
+// surfaces (CLI, web type imports via the api package), so hoist both
+// the const + type to the package root.
+export { PLATFORM_ROLES } from "./schema/platform-users.js";
+export type { PlatformRole } from "./schema/platform-users.js";

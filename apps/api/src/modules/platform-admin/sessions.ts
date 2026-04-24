@@ -16,10 +16,18 @@ const USER_INDEX_PREFIX = "platform-user-sessions:";
 // with "don't leave a goldmine on an unlocked laptop overnight."
 const DEFAULT_TTL_SECONDS = 60 * 60 * 12;
 
+// #56 — role is cached on the session so every request can gate via
+// `session.role` without a DB round-trip. The trade-off: role changes
+// don't take effect until the session is re-issued. We mitigate that by
+// invalidating all of a user's sessions (see destroyAllPlatformSessionsForUser)
+// whenever their role is changed from the staff-management API.
+export type PlatformRole = "super_admin" | "support" | "billing";
+
 export interface PlatformSession {
   id: string;
   platformUserId: string;
   email: string;
+  role: PlatformRole;
   createdAt: number;
   lastSeenAt: number;
   expiresAt: number;
@@ -39,6 +47,7 @@ function genCsrfToken(): string {
 export async function createPlatformSession(input: {
   platformUserId: string;
   email: string;
+  role: PlatformRole;
   ttlSeconds?: number;
   ip?: string | null;
   userAgent?: string | null;
@@ -50,6 +59,7 @@ export async function createPlatformSession(input: {
     id,
     platformUserId: input.platformUserId,
     email: input.email,
+    role: input.role,
     createdAt: now,
     lastSeenAt: now,
     expiresAt: now + ttl,
@@ -75,6 +85,13 @@ export async function readPlatformSession(id: string): Promise<PlatformSession |
     let mutated = false;
     if (!s.csrfToken) {
       s.csrfToken = genCsrfToken();
+      mutated = true;
+    }
+    // #56 — sessions minted before the roles migration have no `role`
+    // key. Treat them as super_admin (matches the column default +
+    // preserves the v0 behaviour that every staff member was full-access).
+    if (!s.role) {
+      s.role = "super_admin";
       mutated = true;
     }
     const now = Math.floor(Date.now() / 1000);
@@ -103,4 +120,22 @@ export async function destroyPlatformSession(id: string): Promise<void> {
     }
   }
   await redis.del(SESSION_PREFIX + id);
+}
+
+// #56 — invalidate every active session for a single platform user.
+// Called whenever an admin changes someone's role or deactivates them:
+// the cached role on in-flight sessions would otherwise stay stale for
+// up to 12 hours (the session TTL), so we nuke them and force a fresh
+// login that reads the new role from the DB.
+export async function destroyAllPlatformSessionsForUser(
+  platformUserId: string,
+): Promise<number> {
+  const indexKey = USER_INDEX_PREFIX + platformUserId;
+  const ids = await redis.smembers(indexKey);
+  if (ids.length === 0) return 0;
+  const pipeline = redis.multi();
+  for (const id of ids) pipeline.del(SESSION_PREFIX + id);
+  pipeline.del(indexKey);
+  await pipeline.exec();
+  return ids.length;
 }

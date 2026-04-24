@@ -23,8 +23,10 @@ import {
 } from "./mfa-challenge.js";
 import {
   createPlatformSession,
+  destroyAllPlatformSessionsForUser,
   destroyPlatformSession,
   readPlatformSession,
+  type PlatformRole,
   type PlatformSession,
 } from "./sessions.js";
 import {
@@ -86,6 +88,59 @@ const ListTenantsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).optional().default(50),
   offset: z.coerce.number().int().min(0).optional().default(0),
 });
+
+const PLATFORM_ROLE_VALUES: readonly PlatformRole[] = [
+  "super_admin",
+  "support",
+  "billing",
+];
+
+/**
+ * Narrow a string off the DB into the PlatformRole union. Unknown values
+ * fall back to super_admin so a corrupt row never silently strips
+ * privileges (fail-open on the role column is deliberate — the CHECK
+ * constraint on the column is the real enforcement, this is belt-and-braces
+ * for TypeScript). If you ever see "super_admin" where you expected
+ * another role, chase the CHECK constraint — the column got bypassed.
+ */
+function asPlatformRole(value: string): PlatformRole {
+  return (PLATFORM_ROLE_VALUES as readonly string[]).includes(value)
+    ? (value as PlatformRole)
+    : "super_admin";
+}
+
+/**
+ * #56 — role gate. `requireRole(session, ["super_admin"])` etc. Returns
+ * true if the session's role is in the allowlist, otherwise writes a
+ * 403 and returns false. Also audits the denied attempt so we can
+ * spot a compromised support-role credential probing higher-privilege
+ * endpoints.
+ */
+async function requirePlatformRole(
+  req: FastifyRequest,
+  reply: FastifyReply,
+  session: PlatformSession,
+  allowed: readonly PlatformRole[],
+): Promise<boolean> {
+  if (allowed.includes(session.role)) return true;
+  await recordPlatformAuditEvent({
+    platformUserId: session.platformUserId,
+    platformUserEmail: session.email,
+    kind: "platform.forbidden",
+    summary: `Role ${session.role} denied on ${req.method} ${req.url}`,
+    tenantId: null,
+    ipAddress: req.ip ?? null,
+    userAgent: req.headers["user-agent"] ?? null,
+    metadata: { allowed: [...allowed], role: session.role, path: req.url },
+  });
+  reply.status(403).send({
+    error: {
+      code: "FORBIDDEN",
+      message: "Your role can't perform this action.",
+    },
+  });
+  return false;
+}
 
 /**
  * Pull the platform session off the signed cookie. Returns null and
@@ -188,6 +243,7 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
       const session = await createPlatformSession({
         platformUserId: user.id,
         email: user.email,
+        role: asPlatformRole(user.role),
         ttlSeconds: SESSION_TTL,
         ip: req.ip ?? null,
         userAgent: req.headers["user-agent"] ?? null,
@@ -304,6 +360,18 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
           remainingBackupHashes
         }::text[])`,
       );
+      // #56 — pull the current role off the DB so the session is minted
+      // with the latest value (a role change between challenge-issue
+      // and MFA-verify would otherwise stamp a stale role onto the
+      // session). The row is guaranteed to exist + be active because
+      // /auth/login already checked.
+      const roleRows = await db
+        .select({ role: schema.platformUsers.role })
+        .from(schema.platformUsers)
+        .where(eq(schema.platformUsers.id, challenge.platformUserId))
+        .limit(1);
+      const userRole = asPlatformRole(roleRows[0]?.role ?? "super_admin");
+
       await db
         .update(schema.platformUsers)
         .set({ lastLoginAt: new Date() })
@@ -312,6 +380,7 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
       const session = await createPlatformSession({
         platformUserId: challenge.platformUserId,
         email: challenge.email,
+        role: userRole,
         ttlSeconds: SESSION_TTL,
         ip: req.ip ?? null,
         userAgent: req.headers["user-agent"] ?? null,
@@ -403,8 +472,21 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
     )) as unknown as Array<{ enabled: boolean }>;
     const mfaEnabled = mfaRows[0]?.enabled ?? false;
 
+    // #56 — role is returned so the web shell can render role-aware UI
+    // (hide suspend buttons for support/billing, show/hide the Staff
+    // sidebar for non-super_admin). We deliberately read the role from
+    // the *session* rather than re-querying the DB: the session cache
+    // is invalidated on role change, so it can't go stale in a way that
+    // upgrades privilege. Worst case the UI shows a stale *narrower*
+    // role for up to one request, then the server 403s and the client
+    // refetches.
     return reply.send({
-      user: { id: user.id, email: user.email, fullName: user.fullName },
+      user: {
+        id: user.id,
+        email: user.email,
+        fullName: user.fullName,
+        role: session.role,
+      },
       mfa: { enabled: mfaEnabled },
     });
   });
@@ -924,6 +1006,17 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
       });
     }
 
+    // #56 — reveal is the PII-sensitive mode. Only super_admin + support
+    // can see raw emails; billing is locked to the anonymised list. The
+    // role gate here is in addition to the audit trail — billing
+    // shouldn't even be able to touch raw PII accidentally.
+    if (
+      reveal &&
+      !(await requirePlatformRole(req, reply, session, ["super_admin", "support"]))
+    ) {
+      return;
+    }
+
     const rows = (await db.execute(
       sql`SELECT * FROM platform_list_tenant_users(${tenantId}::uuid)`,
     )) as unknown as Array<{
@@ -1021,6 +1114,15 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
     const session = await requirePlatformSession(req, reply);
     if (!session) return;
 
+    // #56 — suspend/reactivate is a super_admin-only mutation. Support
+    // and billing can read status via /tenants but cannot flip it; they
+    // escalate to a super_admin for that. The role gate also audits the
+    // denied attempt so we can spot a compromised support credential
+    // probing privileged endpoints.
+    if (!(await requirePlatformRole(req, reply, session, ["super_admin"]))) {
+      return;
+    }
+
     const paramsParsed = z.object({ id: z.string().uuid() }).safeParse(req.params);
     if (!paramsParsed.success) {
       return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
@@ -1089,5 +1191,399 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.post("/tenants/:id/reactivate", async (req, reply) => {
     return applyStatus(req, reply, "active", "platform.tenant_reactivated", "Reactivated tenant");
+  });
+
+  // -------------------------------------------------------------------
+  // #56 — Platform staff management. Super-admin-only. Creates /
+  // lists / edits / soft-deletes rows in `platform_users`. Role changes
+  // and deactivations immediately invalidate the target user's active
+  // sessions so the new gate takes effect without waiting for the
+  // 12-hour session TTL to expire.
+  //
+  // Deliberately narrow scope:
+  //   * no password *reset* endpoint — users change their own via
+  //     /auth/change-password. An admin-forced reset is a "locked out
+  //     operator" recovery flow that belongs to the CLI (+ a rotation
+  //     story, gap K3) rather than a console button.
+  //   * no email editing — email is the identity. Delete and recreate
+  //     if someone's email actually changes. Prevents accidental
+  //     identity swaps.
+  // -------------------------------------------------------------------
+
+  const PlatformUserCreateSchema = z.object({
+    email: z.string().email().toLowerCase(),
+    fullName: z.string().trim().min(1).max(255),
+    password: z.string().min(12).max(256),
+    role: z.enum(["super_admin", "support", "billing"]),
+  });
+
+  const PlatformUserPatchSchema = z
+    .object({
+      fullName: z.string().trim().min(1).max(255).optional(),
+      role: z.enum(["super_admin", "support", "billing"]).optional(),
+      isActive: z.boolean().optional(),
+    })
+    .refine((v) => Object.keys(v).length > 0, {
+      message: "No fields to update.",
+    });
+
+  fastify.get("/platform-users", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+    if (!(await requirePlatformRole(req, reply, session, ["super_admin"]))) return;
+
+    const rows = await db
+      .select({
+        id: schema.platformUsers.id,
+        email: schema.platformUsers.email,
+        fullName: schema.platformUsers.fullName,
+        role: schema.platformUsers.role,
+        isActive: schema.platformUsers.isActive,
+        lastLoginAt: schema.platformUsers.lastLoginAt,
+        createdAt: schema.platformUsers.createdAt,
+      })
+      .from(schema.platformUsers)
+      .where(isNull(schema.platformUsers.deletedAt))
+      .orderBy(desc(schema.platformUsers.createdAt));
+
+    return reply.send({
+      users: rows.map((r) => ({
+        id: r.id,
+        email: r.email,
+        fullName: r.fullName,
+        role: asPlatformRole(r.role),
+        isActive: r.isActive,
+        lastLoginAt: r.lastLoginAt,
+        createdAt: r.createdAt,
+      })),
+    });
+  });
+
+  fastify.post(
+    "/platform-users",
+    { config: { rateLimit: { max: 10, timeWindow: "10 minutes" } } },
+    async (req, reply) => {
+      const session = await requirePlatformSession(req, reply);
+      if (!session) return;
+      if (!(await requirePlatformRole(req, reply, session, ["super_admin"]))) return;
+
+      const parsed = PlatformUserCreateSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+      }
+      const { email, fullName, password, role } = parsed.data;
+
+      // Uniqueness check on email (live rows only — soft-deleted rows
+      // don't block re-use because the unique index is partial).
+      const existing = await db
+        .select({ id: schema.platformUsers.id })
+        .from(schema.platformUsers)
+        .where(
+          and(
+            eq(schema.platformUsers.email, email),
+            isNull(schema.platformUsers.deletedAt),
+          ),
+        )
+        .limit(1);
+      if (existing.length > 0) {
+        return reply.status(409).send({
+          error: {
+            code: "EMAIL_IN_USE",
+            message: "A platform user with this email already exists.",
+          },
+        });
+      }
+
+      const passwordHash = await hashPassword(password);
+      const inserted = await db
+        .insert(schema.platformUsers)
+        .values({
+          email,
+          fullName,
+          passwordHash,
+          role,
+          isActive: true,
+        })
+        .returning({
+          id: schema.platformUsers.id,
+          email: schema.platformUsers.email,
+          fullName: schema.platformUsers.fullName,
+          role: schema.platformUsers.role,
+          isActive: schema.platformUsers.isActive,
+          createdAt: schema.platformUsers.createdAt,
+        });
+      const user = inserted[0];
+
+      await recordPlatformAuditEvent({
+        platformUserId: session.platformUserId,
+        platformUserEmail: session.email,
+        kind: "platform.user.created",
+        summary: `Created platform user ${email} (${role})`,
+        tenantId: null,
+        ipAddress: req.ip ?? null,
+        userAgent: req.headers["user-agent"] ?? null,
+        metadata: { targetId: user?.id, targetEmail: email, role },
+      });
+
+      return reply.status(201).send({
+        user: {
+          id: user?.id,
+          email: user?.email,
+          fullName: user?.fullName,
+          role: user ? asPlatformRole(user.role) : role,
+          isActive: user?.isActive ?? true,
+          createdAt: user?.createdAt,
+        },
+      });
+    },
+  );
+
+  fastify.patch("/platform-users/:id", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+    if (!(await requirePlatformRole(req, reply, session, ["super_admin"]))) return;
+
+    const paramsParsed = z.object({ id: z.string().uuid() }).safeParse(req.params);
+    if (!paramsParsed.success) {
+      return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+    }
+    const bodyParsed = PlatformUserPatchSchema.safeParse(req.body);
+    if (!bodyParsed.success) {
+      return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+    }
+    const targetId = paramsParsed.data.id;
+    const patch = bodyParsed.data;
+
+    const rows = await db
+      .select()
+      .from(schema.platformUsers)
+      .where(
+        and(
+          eq(schema.platformUsers.id, targetId),
+          isNull(schema.platformUsers.deletedAt),
+        ),
+      )
+      .limit(1);
+    const target = rows[0];
+    if (!target) {
+      return reply.status(404).send({ error: { code: "NOT_FOUND" } });
+    }
+
+    // Guardrails against locking yourself out of the console:
+    //   * can't demote your own role (would 403 you off the staff page
+    //     on the next click — a super_admin who wants to demote themself
+    //     should have another super_admin do it).
+    //   * can't deactivate yourself.
+    // These are soft rails — a determined operator can ask another
+    // super_admin to flip the switch.
+    if (targetId === session.platformUserId) {
+      if (patch.role && patch.role !== asPlatformRole(target.role)) {
+        return reply.status(400).send({
+          error: {
+            code: "CANNOT_DEMOTE_SELF",
+            message: "Ask another super-admin to change your role.",
+          },
+        });
+      }
+      if (patch.isActive === false) {
+        return reply.status(400).send({
+          error: {
+            code: "CANNOT_DEACTIVATE_SELF",
+            message: "You can't deactivate your own account.",
+          },
+        });
+      }
+    }
+
+    // If demoting the last remaining super_admin, refuse — otherwise
+    // the platform has no one who can manage staff or suspend tenants.
+    // Cheaper than a DB constraint and far easier to explain in the
+    // error message.
+    const demotingFromSuperAdmin =
+      target.role === "super_admin" && patch.role && patch.role !== "super_admin";
+    const deactivatingSuperAdmin =
+      target.role === "super_admin" && patch.isActive === false;
+    if (demotingFromSuperAdmin || deactivatingSuperAdmin) {
+      const otherSuperAdmins = await db
+        .select({ count: count() })
+        .from(schema.platformUsers)
+        .where(
+          and(
+            eq(schema.platformUsers.role, "super_admin"),
+            eq(schema.platformUsers.isActive, true),
+            isNull(schema.platformUsers.deletedAt),
+          ),
+        );
+      const total = Number(otherSuperAdmins[0]?.count ?? 0);
+      // target counts in `total` — we need at least one OTHER super_admin
+      // to remain active and undeleted.
+      if (total <= 1) {
+        return reply.status(400).send({
+          error: {
+            code: "LAST_SUPER_ADMIN",
+            message:
+              "This is the last active super-admin. Promote someone else first.",
+          },
+        });
+      }
+    }
+
+    const updates: Record<string, unknown> = { updatedAt: new Date() };
+    if (patch.fullName !== undefined) updates.fullName = patch.fullName;
+    if (patch.role !== undefined) updates.role = patch.role;
+    if (patch.isActive !== undefined) updates.isActive = patch.isActive;
+
+    await db
+      .update(schema.platformUsers)
+      .set(updates)
+      .where(eq(schema.platformUsers.id, targetId));
+
+    const roleChanged = patch.role !== undefined && patch.role !== asPlatformRole(target.role);
+    const deactivated = patch.isActive === false && target.isActive;
+    const reactivated = patch.isActive === true && !target.isActive;
+
+    // #56 — any change that narrows the target's privilege (role change
+    // either way, deactivation) MUST invalidate their active sessions so
+    // the cached role / cached active-flag can't serve one more request
+    // at the old level. Reactivation doesn't need it (no session exists
+    // to refresh anyway). Name changes are cosmetic — no invalidation.
+    if (roleChanged || deactivated) {
+      await destroyAllPlatformSessionsForUser(targetId);
+    }
+
+    if (roleChanged) {
+      await recordPlatformAuditEvent({
+        platformUserId: session.platformUserId,
+        platformUserEmail: session.email,
+        kind: "platform.user.role_changed",
+        summary: `Changed role of ${target.email} from ${target.role} to ${patch.role}`,
+        tenantId: null,
+        ipAddress: req.ip ?? null,
+        userAgent: req.headers["user-agent"] ?? null,
+        metadata: {
+          targetId,
+          targetEmail: target.email,
+          fromRole: target.role,
+          toRole: patch.role,
+        },
+      });
+    }
+    if (deactivated) {
+      await recordPlatformAuditEvent({
+        platformUserId: session.platformUserId,
+        platformUserEmail: session.email,
+        kind: "platform.user.deactivated",
+        summary: `Deactivated platform user ${target.email}`,
+        tenantId: null,
+        ipAddress: req.ip ?? null,
+        userAgent: req.headers["user-agent"] ?? null,
+        metadata: { targetId, targetEmail: target.email },
+      });
+    }
+    if (reactivated) {
+      await recordPlatformAuditEvent({
+        platformUserId: session.platformUserId,
+        platformUserEmail: session.email,
+        kind: "platform.user.reactivated",
+        summary: `Reactivated platform user ${target.email}`,
+        tenantId: null,
+        ipAddress: req.ip ?? null,
+        userAgent: req.headers["user-agent"] ?? null,
+        metadata: { targetId, targetEmail: target.email },
+      });
+    }
+
+    return reply.send({ ok: true });
+  });
+
+  fastify.delete("/platform-users/:id", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+    if (!(await requirePlatformRole(req, reply, session, ["super_admin"]))) return;
+
+    const paramsParsed = z.object({ id: z.string().uuid() }).safeParse(req.params);
+    if (!paramsParsed.success) {
+      return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+    }
+    const targetId = paramsParsed.data.id;
+
+    if (targetId === session.platformUserId) {
+      return reply.status(400).send({
+        error: {
+          code: "CANNOT_DELETE_SELF",
+          message: "You can't delete your own account.",
+        },
+      });
+    }
+
+    const rows = await db
+      .select()
+      .from(schema.platformUsers)
+      .where(
+        and(
+          eq(schema.platformUsers.id, targetId),
+          isNull(schema.platformUsers.deletedAt),
+        ),
+      )
+      .limit(1);
+    const target = rows[0];
+    if (!target) {
+      return reply.status(404).send({ error: { code: "NOT_FOUND" } });
+    }
+
+    // Same last-super_admin guardrail as PATCH — deleting the final
+    // super_admin would brick the console.
+    if (target.role === "super_admin") {
+      const otherSuperAdmins = await db
+        .select({ count: count() })
+        .from(schema.platformUsers)
+        .where(
+          and(
+            eq(schema.platformUsers.role, "super_admin"),
+            eq(schema.platformUsers.isActive, true),
+            isNull(schema.platformUsers.deletedAt),
+          ),
+        );
+      const total = Number(otherSuperAdmins[0]?.count ?? 0);
+      if (total <= 1) {
+        return reply.status(400).send({
+          error: {
+            code: "LAST_SUPER_ADMIN",
+            message:
+              "This is the last active super-admin. Promote someone else first.",
+          },
+        });
+      }
+    }
+
+    // Soft-delete. Keep the email intact on the row so the audit log
+    // remains readable; the partial unique index on email is `WHERE
+    // deleted_at IS NULL`, so a new user can be created with the same
+    // email later. `isActive = false` as belt-and-braces so any stale
+    // query that forgets the deleted_at filter still treats the row
+    // as non-usable.
+    await db
+      .update(schema.platformUsers)
+      .set({
+        deletedAt: new Date(),
+        isActive: false,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.platformUsers.id, targetId));
+
+    await destroyAllPlatformSessionsForUser(targetId);
+
+    await recordPlatformAuditEvent({
+      platformUserId: session.platformUserId,
+      platformUserEmail: session.email,
+      kind: "platform.user.deleted",
+      summary: `Deleted platform user ${target.email}`,
+      tenantId: null,
+      ipAddress: req.ip ?? null,
+      userAgent: req.headers["user-agent"] ?? null,
+      metadata: { targetId, targetEmail: target.email, role: target.role },
+    });
+
+    return reply.send({ ok: true });
   });
 };
