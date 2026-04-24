@@ -7,7 +7,8 @@ import { Sidebar } from "@/components/app/sidebar";
 import { NotificationBell } from "@/components/app/notification-bell";
 import { PermissionsProvider } from "@/components/auth/permissions-provider";
 import { ImpersonationBanner } from "@/components/app/impersonation-banner";
-import { getPlanFeatures } from "@/lib/plan-features";
+import { TrialStatusBanner } from "@/components/app/trial-status-banner";
+import { getSubscription } from "@/lib/plan-features";
 import type { CallerPermissions, TenantSettings } from "@/lib/api";
 
 async function fetchMe() {
@@ -55,15 +56,19 @@ async function fetchSettings(): Promise<TenantSettings | null> {
 }
 
 export default async function AppLayout({ children }: { children: ReactNode }) {
-  // getPlanFeatures is React.cache()'d (#68) — the plan-gated pages
-  // call it too and dedup to this single request. Kept inside
-  // Promise.all so the three fetches still run in parallel.
-  const [me, settings, planFeatures] = await Promise.all([
+  // getSubscription is React.cache()'d (#68, extended in #70) —
+  // plan-gated pages call it too and dedup to this single request.
+  // We read features off it for the sidebar and the raw subscription
+  // for the trial banner below. Kept inside Promise.all so the three
+  // fetches still run in parallel.
+  const [me, settings, subscription] = await Promise.all([
     fetchMe(),
     fetchSettings(),
-    getPlanFeatures(),
+    getSubscription(),
   ]);
   if (!me) redirect("/login");
+
+  const planFeatures = subscription?.plan.features ?? [];
 
   return (
     <div className="min-h-screen bg-offwhite">
@@ -73,6 +78,10 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
           endsAt={me.impersonation.endsAt}
         />
       )}
+      {/* Trial / grace / cancelled banner (#70). Renders nothing for
+          active tenants — silent is the right default when billing is
+          healthy. */}
+      <TrialStatusBanner subscription={subscription} />
       <header className="sticky top-0 z-30 border-b-hairline border-border bg-offwhite/95 backdrop-blur">
         <div className="flex h-16 items-center justify-between px-6">
           <Link href="/app" className="flex items-center gap-3">
