@@ -22,6 +22,16 @@ export class ApiError extends Error {
   feature?: string;
   currentPlanCode?: string | null;
   upgradeToPlanCodes?: string[];
+  /**
+   * Quota-gate payload from `requireQuota()` — #65. Populated for
+   * QUOTA_EXCEEDED (the tenant already hit the cap for a resource on
+   * their plan). `resource` is one of "invoices_monthly", "branches",
+   * "warehouses"; `current` and `max` let the UI render "500 / 500
+   * invoices" inline without a second round-trip.
+   */
+  resource?: string;
+  quotaCurrent?: number;
+  quotaMax?: number;
 
   constructor(
     status: number,
@@ -33,6 +43,9 @@ export class ApiError extends Error {
       feature?: string;
       currentPlanCode?: string | null;
       upgradeToPlanCodes?: string[];
+      resource?: string;
+      quotaCurrent?: number;
+      quotaMax?: number;
     },
   ) {
     super(message);
@@ -44,6 +57,9 @@ export class ApiError extends Error {
       this.feature = planMeta.feature;
       this.currentPlanCode = planMeta.currentPlanCode;
       this.upgradeToPlanCodes = planMeta.upgradeToPlanCodes;
+      this.resource = planMeta.resource;
+      this.quotaCurrent = planMeta.quotaCurrent;
+      this.quotaMax = planMeta.quotaMax;
     }
   }
 }
@@ -113,7 +129,9 @@ async function request<T>(
       err?.message ?? res.statusText,
       err?.issues,
       Array.isArray(err?.reasons) ? err.reasons : undefined,
-      err?.code === "PLAN_REQUIRED" || err?.code === "SUBSCRIPTION_CANCELLED"
+      err?.code === "PLAN_REQUIRED" ||
+      err?.code === "SUBSCRIPTION_CANCELLED" ||
+      err?.code === "QUOTA_EXCEEDED"
         ? {
             feature: typeof err.feature === "string" ? err.feature : undefined,
             currentPlanCode:
@@ -123,6 +141,10 @@ async function request<T>(
             upgradeToPlanCodes: Array.isArray(err.upgradeToPlanCodes)
               ? err.upgradeToPlanCodes
               : [],
+            resource: typeof err.resource === "string" ? err.resource : undefined,
+            quotaCurrent:
+              typeof err.current === "number" ? err.current : undefined,
+            quotaMax: typeof err.max === "number" ? err.max : undefined,
           }
         : undefined,
     );
@@ -945,6 +967,21 @@ export const api = {
   // so hidden / grandfathered plans never reach the picker.
   listAvailablePlans: () =>
     request<{ plans: AvailablePlan[] }>("/subscription/plans"),
+
+  // Current quota usage (#65). Drives the "23 / 500 invoices this month"
+  // chips on /app/settings. Each resource returns `{ current, max }`
+  // where max=null means unlimited (render as "—" or "Unlimited" in the
+  // UI). Runs the same count math as the POST-side gate, so the numbers
+  // won't drift between what the card shows and what creating a new
+  // invoice actually enforces.
+  getUsage: () =>
+    request<{
+      usage: {
+        invoicesMonthly: { current: number; max: number | null };
+        branches: { current: number; max: number | null };
+        warehouses: { current: number; max: number | null };
+      };
+    }>("/subscription/usage"),
 
   // Self-serve plan change (#64). Requires settings.manage. Flips
   // past_due → active as a side effect ("payment received" contract).
