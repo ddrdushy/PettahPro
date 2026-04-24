@@ -2345,6 +2345,16 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
         cancelReason: row.subscription.cancelReason,
         createdAt: row.subscription.createdAt,
         updatedAt: row.subscription.updatedAt,
+        // Per-tenant overrides (#71). NULL = using the plan default.
+        // UI branches on nullness to render "Custom: 5,000" vs the
+        // plan cap in grey.
+        customLimits: {
+          maxUsers: row.subscription.customMaxUsers,
+          maxInvoicesMonthly: row.subscription.customMaxInvoicesMonthly,
+          maxBranches: row.subscription.customMaxBranches,
+          maxWarehouses: row.subscription.customMaxWarehouses,
+          note: row.subscription.customLimitsNote,
+        },
         plan: {
           id: row.plan.id,
           code: row.plan.code,
@@ -2521,6 +2531,157 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
         ok: true,
         changed: true,
         subscription: { ...updated, plan: targetPlan },
+      });
+    },
+  );
+
+  // #71 — Per-tenant quota overrides. Escape hatch for custom
+  // contracts: "Starter pricing, 5,000 invoices/month" goes here,
+  // not into a bespoke plan row. All four caps are nullable in the
+  // DB; null means "inherit from the plan". The API accepts
+  // `undefined` to leave a field untouched and explicit `null` to
+  // clear an existing override.
+  //
+  // Negative values rejected at the schema layer. 0 is legal — it
+  // means "freeze this resource" (useful for pausing a specific
+  // capability without flipping the plan). The note is free-form
+  // and exists so whoever sees the override six months from now can
+  // figure out why it's there.
+  const QuotaOverrideSchema = z.object({
+    maxUsers: z.number().int().min(0).max(1_000_000).nullable().optional(),
+    maxInvoicesMonthly: z
+      .number()
+      .int()
+      .min(0)
+      .max(10_000_000)
+      .nullable()
+      .optional(),
+    maxBranches: z.number().int().min(0).max(10_000).nullable().optional(),
+    maxWarehouses: z.number().int().min(0).max(10_000).nullable().optional(),
+    note: z.string().trim().max(500).nullable().optional(),
+    reason: z.string().trim().min(3).max(500),
+  });
+
+  fastify.patch(
+    "/tenants/:id/subscription/overrides",
+    async (req, reply) => {
+      const session = await requirePlatformSession(req, reply);
+      if (!session) return;
+
+      // Gated to super_admin, same as change-plan. Bespoke quota deals
+      // are a billing-sensitive action — billing-role staff can read
+      // them but shouldn't be able to silently 10x a tenant's cap.
+      if (
+        !(await requirePlatformRole(req, reply, session, ["super_admin"]))
+      ) {
+        return;
+      }
+
+      const paramsParsed = z
+        .object({ id: z.string().uuid() })
+        .safeParse(req.params);
+      if (!paramsParsed.success) {
+        return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+      }
+      const tenantId = paramsParsed.data.id;
+
+      const bodyParsed = QuotaOverrideSchema.safeParse(req.body);
+      if (!bodyParsed.success) {
+        return reply.status(400).send({
+          error: {
+            code: "INVALID_INPUT",
+            message:
+              bodyParsed.error.issues[0]?.message ??
+              "One or more override values are invalid.",
+          },
+        });
+      }
+
+      // Load the current subscription so we can diff for the audit
+      // line. 404 here mirrors the change-plan behaviour — no
+      // subscription row means nothing to override.
+      const existingRows = await db
+        .select()
+        .from(schema.tenantSubscriptions)
+        .where(eq(schema.tenantSubscriptions.tenantId, tenantId))
+        .limit(1);
+      const existing = existingRows[0];
+      if (!existing) {
+        return reply
+          .status(404)
+          .send({ error: { code: "NO_SUBSCRIPTION" } });
+      }
+
+      // Build the update set by picking only the fields the caller
+      // actually sent. `undefined` means "leave alone"; explicit
+      // `null` means "clear the override". Without the `in` check
+      // Drizzle would overwrite unspecified fields with undefined,
+      // which serialises to NULL — exactly the bug we want to avoid.
+      const body = bodyParsed.data;
+      const updateSet: Record<string, number | string | null> = {};
+      if ("maxUsers" in body) updateSet.customMaxUsers = body.maxUsers ?? null;
+      if ("maxInvoicesMonthly" in body)
+        updateSet.customMaxInvoicesMonthly = body.maxInvoicesMonthly ?? null;
+      if ("maxBranches" in body)
+        updateSet.customMaxBranches = body.maxBranches ?? null;
+      if ("maxWarehouses" in body)
+        updateSet.customMaxWarehouses = body.maxWarehouses ?? null;
+      if ("note" in body) updateSet.customLimitsNote = body.note ?? null;
+
+      if (Object.keys(updateSet).length === 0) {
+        return reply.status(400).send({
+          error: {
+            code: "INVALID_INPUT",
+            message: "At least one override field is required.",
+          },
+        });
+      }
+
+      const [updated] = await db
+        .update(schema.tenantSubscriptions)
+        .set(updateSet)
+        .where(eq(schema.tenantSubscriptions.tenantId, tenantId))
+        .returning();
+
+      // Audit every override mutation with before/after values for
+      // each field. Matters for bespoke-contract disputes six months
+      // later — "who set this to 5000 and why?" gets a real answer.
+      await recordPlatformAuditEvent({
+        platformUserId: session.platformUserId,
+        platformUserEmail: session.email,
+        kind: "platform.subscription_overrides_changed",
+        summary: `Updated quota overrides for tenant`,
+        tenantId,
+        ipAddress: req.ip ?? null,
+        userAgent: req.headers["user-agent"] ?? null,
+        metadata: {
+          from: {
+            maxUsers: existing.customMaxUsers,
+            maxInvoicesMonthly: existing.customMaxInvoicesMonthly,
+            maxBranches: existing.customMaxBranches,
+            maxWarehouses: existing.customMaxWarehouses,
+            note: existing.customLimitsNote,
+          },
+          to: {
+            maxUsers: updated?.customMaxUsers ?? null,
+            maxInvoicesMonthly: updated?.customMaxInvoicesMonthly ?? null,
+            maxBranches: updated?.customMaxBranches ?? null,
+            maxWarehouses: updated?.customMaxWarehouses ?? null,
+            note: updated?.customLimitsNote ?? null,
+          },
+          reason: body.reason,
+        },
+      });
+
+      return reply.send({
+        ok: true,
+        customLimits: {
+          maxUsers: updated?.customMaxUsers ?? null,
+          maxInvoicesMonthly: updated?.customMaxInvoicesMonthly ?? null,
+          maxBranches: updated?.customMaxBranches ?? null,
+          maxWarehouses: updated?.customMaxWarehouses ?? null,
+          note: updated?.customLimitsNote ?? null,
+        },
       });
     },
   );

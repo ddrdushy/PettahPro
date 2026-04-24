@@ -49,9 +49,12 @@ interface PlanContext {
   subscriptionStatus: string | null;
   planCode: string | null;
   features: string[];
-  // Numeric caps from the plan row (#65). NULL in the DB = unlimited;
-  // we preserve the NULL by mapping to `null` in TS so the gate can
-  // cheap-return on the "unlimited" branch without a count query.
+  // Effective numeric caps (#65, #71). Already coalesced against any
+  // per-tenant override on the subscription row — callers don't branch
+  // on "is there an override?"; they just read the cap. NULL still
+  // means unlimited regardless of origin (plan default or custom
+  // override set to NULL). The gate short-circuits on NULL without a
+  // count query.
   maxInvoicesMonthly: number | null;
   maxBranches: number | null;
   maxWarehouses: number | null;
@@ -70,10 +73,17 @@ async function loadPlanContext(tenantId: string): Promise<PlanContext> {
       status: schema.tenantSubscriptions.status,
       planCode: schema.plans.code,
       features: schema.plans.features,
-      maxInvoicesMonthly: schema.plans.maxInvoicesMonthly,
-      maxBranches: schema.plans.maxBranches,
-      maxWarehouses: schema.plans.maxWarehouses,
-      maxUsers: schema.plans.maxUsers,
+      planMaxInvoicesMonthly: schema.plans.maxInvoicesMonthly,
+      planMaxBranches: schema.plans.maxBranches,
+      planMaxWarehouses: schema.plans.maxWarehouses,
+      planMaxUsers: schema.plans.maxUsers,
+      // Per-tenant overrides (#71). These take precedence when non-null;
+      // the COALESCE happens below in TS so the gate logic is explicit
+      // and auditable, not hidden in a SQL expression.
+      customMaxInvoicesMonthly: schema.tenantSubscriptions.customMaxInvoicesMonthly,
+      customMaxBranches: schema.tenantSubscriptions.customMaxBranches,
+      customMaxWarehouses: schema.tenantSubscriptions.customMaxWarehouses,
+      customMaxUsers: schema.tenantSubscriptions.customMaxUsers,
     })
     .from(schema.tenantSubscriptions)
     .leftJoin(
@@ -105,10 +115,16 @@ async function loadPlanContext(tenantId: string): Promise<PlanContext> {
     // features is jsonb string[]; defensively coerce in case Drizzle
     // hands us `unknown`.
     features: Array.isArray(row.features) ? (row.features as string[]) : [],
-    maxInvoicesMonthly: row.maxInvoicesMonthly,
-    maxBranches: row.maxBranches,
-    maxWarehouses: row.maxWarehouses,
-    maxUsers: row.maxUsers,
+    // Effective caps: per-tenant override wins when set, otherwise fall
+    // through to the plan row. `?? null` preserves "unlimited" when
+    // both are null — we never want "0" (the falsy-but-legitimate
+    // "freeze this resource" value) to collapse to the plan default,
+    // so explicit null-coalescing rather than `||`.
+    maxInvoicesMonthly:
+      row.customMaxInvoicesMonthly ?? row.planMaxInvoicesMonthly ?? null,
+    maxBranches: row.customMaxBranches ?? row.planMaxBranches ?? null,
+    maxWarehouses: row.customMaxWarehouses ?? row.planMaxWarehouses ?? null,
+    maxUsers: row.customMaxUsers ?? row.planMaxUsers ?? null,
   };
 }
 

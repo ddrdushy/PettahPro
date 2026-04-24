@@ -395,6 +395,29 @@ export const platformApi = {
       method: "POST",
       json: body,
     }),
+
+  // #71 — Per-tenant quota override. Each numeric field is
+  // optionally number | null | undefined. `undefined` means "leave
+  // alone"; `null` means "clear the override back to the plan
+  // default". Reason string is required for audit.
+  setTenantOverrides: (
+    tenantId: string,
+    body: {
+      maxUsers?: number | null;
+      maxInvoicesMonthly?: number | null;
+      maxBranches?: number | null;
+      maxWarehouses?: number | null;
+      note?: string | null;
+      reason: string;
+    },
+  ) =>
+    request<{
+      ok: true;
+      customLimits: PlatformTenantCustomLimits;
+    }>(`/platform/tenants/${tenantId}/subscription/overrides`, {
+      method: "PATCH",
+      json: body,
+    }),
 };
 
 // #60 — observability payload shape. Mirrors SystemHealthPayload in
@@ -487,7 +510,20 @@ export interface PlatformTenantSubscription {
   cancelReason: string | null;
   createdAt: string;
   updatedAt: string;
+  // Per-tenant quota overrides (#71). Each field is nullable — null
+  // means "inherit from plan". When both are null the tenant is on
+  // the standard plan cap; when an override is set, the gate uses
+  // the override regardless of what the plan says.
+  customLimits: PlatformTenantCustomLimits;
   plan: PlatformPlan;
+}
+
+export interface PlatformTenantCustomLimits {
+  maxUsers: number | null;
+  maxInvoicesMonthly: number | null;
+  maxBranches: number | null;
+  maxWarehouses: number | null;
+  note: string | null;
 }
 
 // #58 — the global audit feed includes tenantId so the UI can link
