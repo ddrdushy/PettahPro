@@ -30,6 +30,22 @@ async function fetchSubscription(): Promise<TenantSubscriptionResponse | null> {
   return body.subscription;
 }
 
+type UsageResponse = {
+  invoicesMonthly: { current: number; max: number | null };
+  branches: { current: number; max: number | null };
+  warehouses: { current: number; max: number | null };
+};
+
+async function fetchUsage(): Promise<UsageResponse | null> {
+  const res = await fetch(`${INTERNAL_API}/subscription/usage`, {
+    headers: { cookie: cookies().toString() },
+    cache: "no-store",
+  });
+  if (!res.ok) return null;
+  const body = (await res.json()) as { usage: UsageResponse };
+  return body.usage;
+}
+
 const STATUS_COPY: Record<TenantSubscriptionResponse["status"], { label: string; tone: string }> = {
   trial: { label: "Trial", tone: "bg-amber-100 text-amber-900" },
   active: { label: "Active", tone: "bg-emerald-100 text-emerald-900" },
@@ -44,7 +60,11 @@ function daysUntil(iso: string | null): number | null {
 }
 
 export default async function SettingsPage() {
-  const [data, subscription] = await Promise.all([fetchSettings(), fetchSubscription()]);
+  const [data, subscription, usage] = await Promise.all([
+    fetchSettings(),
+    fetchSubscription(),
+    fetchUsage(),
+  ]);
 
   if (!data) {
     return (
@@ -122,6 +142,19 @@ export default async function SettingsPage() {
                       {f}
                     </span>
                   ))}
+                </div>
+              ) : null}
+              {usage ? (
+                /* Current-period usage vs plan cap (#65). Unlimited caps
+                   (max=null) render as "— / Unlimited" which is clearer
+                   than hiding the row entirely — people want to know the
+                   rule even when they're not near it. Near-cap rows
+                   (>=80%) flip to amber so a tenant approaching the
+                   limit sees a gentle nudge before the POST fails. */
+                <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                  <UsageChip label="Invoices this month" usage={usage.invoicesMonthly} />
+                  <UsageChip label="Branches" usage={usage.branches} />
+                  <UsageChip label="Warehouses" usage={usage.warehouses} />
                 </div>
               ) : null}
             </section>
@@ -257,5 +290,37 @@ export default async function SettingsPage() {
         </div>
       </section>
     </main>
+  );
+}
+
+function UsageChip({
+  label,
+  usage,
+}: {
+  label: string;
+  usage: { current: number; max: number | null };
+}) {
+  const { current, max } = usage;
+  const unlimited = max === null;
+  // Near-cap threshold at 80% — warns before hard-stop. Keep the tone
+  // gentle: amber, not rose. Rose is for "already blocked" states.
+  const ratio = unlimited || max === 0 ? 0 : current / max;
+  const nearCap = !unlimited && ratio >= 0.8 && ratio < 1;
+  const atCap = !unlimited && current >= (max ?? 0);
+  const tone = atCap
+    ? "border-rose-300 bg-rose-50 text-rose-900"
+    : nearCap
+      ? "border-amber-300 bg-amber-50 text-amber-900"
+      : "border-border bg-surface-recessed/40 text-text-secondary";
+  return (
+    <div className={`rounded-md border-hairline px-3 py-2 ${tone}`}>
+      <p className="text-caption text-text-tertiary">{label}</p>
+      <p className="text-small font-medium text-charcoal">
+        {current.toLocaleString()}{" "}
+        <span className="font-normal text-text-tertiary">
+          / {unlimited ? "Unlimited" : max.toLocaleString()}
+        </span>
+      </p>
+    </div>
   );
 }

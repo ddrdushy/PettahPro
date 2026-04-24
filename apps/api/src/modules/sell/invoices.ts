@@ -4,6 +4,7 @@ import { z } from "zod";
 import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
 import { requirePermission } from "../../lib/permissions.js";
+import { requireQuota } from "../../lib/plan-gate.js";
 import { postJournal } from "../accounting/journal-posting.js";
 import {
   postReversingJournal,
@@ -314,7 +315,12 @@ export const invoicesRoutes: FastifyPluginAsync = async (fastify) => {
 
   // POST /invoices — create draft
   fastify.post("/", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    // Quota gate (#65). Counts invoices with issue_date in the current
+    // calendar month against the plan's maxInvoicesMonthly. Runs before
+    // input parsing because the quota refusal is a cheaper failure than
+    // the parse+DB round-trip and the UI needs the shape consistent with
+    // the "no seat left" / "no branch left" errors.
+    const ctx = await requireQuota(req, reply, "invoices_monthly");
     if (!ctx) return;
 
     const parsed = CreateSchema.safeParse(req.body);

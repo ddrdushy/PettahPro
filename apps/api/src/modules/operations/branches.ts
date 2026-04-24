@@ -3,6 +3,7 @@ import { and, eq, isNull, asc } from "drizzle-orm";
 import { z } from "zod";
 import { withTenant, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
+import { requireQuota } from "../../lib/plan-gate.js";
 
 const CreateSchema = z.object({
   code: z.string().trim().min(1).max(16),
@@ -75,7 +76,11 @@ export const branchesRoutes: FastifyPluginAsync = async (fastify) => {
 
   // POST /branches — create
   fastify.post("/", async (req, reply) => {
-    const ctx = requireAuth(req, reply);
+    // Quota gate (#65). Active branches (deleted_at IS NULL) against the
+    // plan's maxBranches. Starter = 1 (head office only); Growth = 3;
+    // Scale = unlimited. Soft-deleted branches don't count — a tenant
+    // that deletes an old branch can create a replacement.
+    const ctx = await requireQuota(req, reply, "branches");
     if (!ctx) return;
 
     const parsed = CreateSchema.safeParse(req.body);

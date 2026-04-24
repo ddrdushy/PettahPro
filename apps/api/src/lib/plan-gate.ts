@@ -1,6 +1,6 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
-import { eq } from "drizzle-orm";
-import { db, schema } from "@pettahpro/db";
+import { and, eq, isNull, sql } from "drizzle-orm";
+import { db, schema, withTenant } from "@pettahpro/db";
 import { requireAuth } from "./with-tenant.js";
 
 /**
@@ -49,6 +49,13 @@ interface PlanContext {
   subscriptionStatus: string | null;
   planCode: string | null;
   features: string[];
+  // Numeric caps from the plan row (#65). NULL in the DB = unlimited;
+  // we preserve the NULL by mapping to `null` in TS so the gate can
+  // cheap-return on the "unlimited" branch without a count query.
+  maxInvoicesMonthly: number | null;
+  maxBranches: number | null;
+  maxWarehouses: number | null;
+  maxUsers: number | null;
 }
 
 declare module "fastify" {
@@ -63,6 +70,10 @@ async function loadPlanContext(tenantId: string): Promise<PlanContext> {
       status: schema.tenantSubscriptions.status,
       planCode: schema.plans.code,
       features: schema.plans.features,
+      maxInvoicesMonthly: schema.plans.maxInvoicesMonthly,
+      maxBranches: schema.plans.maxBranches,
+      maxWarehouses: schema.plans.maxWarehouses,
+      maxUsers: schema.plans.maxUsers,
     })
     .from(schema.tenantSubscriptions)
     .leftJoin(
@@ -78,7 +89,15 @@ async function loadPlanContext(tenantId: string): Promise<PlanContext> {
     // backfill ran would land here. Fail closed — no plan means no
     // gated features. An operator seeing this 403 is a signal to run
     // the backfill / assign a subscription.
-    return { subscriptionStatus: null, planCode: null, features: [] };
+    return {
+      subscriptionStatus: null,
+      planCode: null,
+      features: [],
+      maxInvoicesMonthly: null,
+      maxBranches: null,
+      maxWarehouses: null,
+      maxUsers: null,
+    };
   }
   return {
     subscriptionStatus: row.status,
@@ -86,6 +105,10 @@ async function loadPlanContext(tenantId: string): Promise<PlanContext> {
     // features is jsonb string[]; defensively coerce in case Drizzle
     // hands us `unknown`.
     features: Array.isArray(row.features) ? (row.features as string[]) : [],
+    maxInvoicesMonthly: row.maxInvoicesMonthly,
+    maxBranches: row.maxBranches,
+    maxWarehouses: row.maxWarehouses,
+    maxUsers: row.maxUsers,
   };
 }
 
@@ -158,6 +181,253 @@ export async function requireFeature(
     },
   });
   return null;
+}
+
+/**
+ * Per-resource quota enforcement (#65).
+ *
+ * Three countable resources today — invoices per month, branches,
+ * warehouses. NULL in the plan row means "unlimited" — we short-circuit
+ * before the count query, so unlimited resources cost zero work. Each
+ * resource has a local `count*` function that runs under RLS via
+ * withTenant; the helper picks the right one by `resource`.
+ *
+ * The 403 body mirrors requireFeature's shape so the UI's error handler
+ * can branch on `code`:
+ *
+ *   {
+ *     error: {
+ *       code: "QUOTA_EXCEEDED",
+ *       resource: "invoices_monthly",
+ *       current: 500,
+ *       max: 500,
+ *       currentPlanCode: "starter",
+ *       upgradeToPlanCodes: ["growth", "scale"],  // plans with higher/null cap
+ *       message: "You've hit your monthly invoice limit on the Starter plan."
+ *     }
+ *   }
+ *
+ * `upgradeToPlanCodes` only lists plans whose cap for the SAME resource
+ * is strictly higher (or unlimited). So a Starter tenant hitting the
+ * invoice cap sees Growth + Scale (both unlimited); a Growth tenant
+ * hitting the branch cap (3) sees only Scale (unlimited).
+ */
+export type QuotaResource = "invoices_monthly" | "branches" | "warehouses";
+
+interface QuotaCheck {
+  ok: boolean;
+  current: number;
+  max: number | null;
+  planCode: string | null;
+  upgradeToPlanCodes: string[];
+}
+
+/**
+ * Public read-only variant: returns the check result without sending a
+ * response. Used by the tenant-side /subscription/usage endpoint so the
+ * settings card can render "23 / 500 invoices this month" — same math
+ * as the gate, exposed as data rather than a 403.
+ */
+export async function checkQuota(
+  tenantId: string,
+  resource: QuotaResource,
+): Promise<QuotaCheck> {
+  const planCtx = await loadPlanContext(tenantId);
+  const max = quotaMaxFor(planCtx, resource);
+  if (max === null) {
+    return {
+      ok: true,
+      current: 0,
+      max: null,
+      planCode: planCtx.planCode,
+      upgradeToPlanCodes: [],
+    };
+  }
+  const current = await countResource(tenantId, resource);
+  const upgradeToPlanCodes = await plansWithHigherQuota(resource, max);
+  return {
+    ok: current < max,
+    current,
+    max,
+    planCode: planCtx.planCode,
+    upgradeToPlanCodes,
+  };
+}
+
+export async function requireQuota(
+  req: FastifyRequest,
+  reply: FastifyReply,
+  resource: QuotaResource,
+): Promise<{ tenantId: string; userId: string } | null> {
+  const ctx = requireAuth(req, reply);
+  if (!ctx) return null;
+
+  const planCtx =
+    req._planContext ?? (await loadPlanContext(ctx.tenantId));
+  req._planContext = planCtx;
+
+  // Cancelled short-circuit — same rationale as requireFeature. A
+  // cancelled tenant shouldn't be able to create new documents regardless
+  // of their last plan's quotas.
+  if (planCtx.subscriptionStatus === "cancelled") {
+    reply.status(403).send({
+      error: {
+        code: "SUBSCRIPTION_CANCELLED",
+        resource,
+        currentPlanCode: planCtx.planCode,
+        message:
+          "Your subscription has been cancelled. Contact support to reactivate.",
+      },
+    });
+    return null;
+  }
+
+  const max = quotaMaxFor(planCtx, resource);
+  if (max === null) return ctx; // unlimited — skip the count query
+
+  const current = await countResource(ctx.tenantId, resource);
+  if (current < max) return ctx;
+
+  // Over the line. Build the same "upgrade-to" payload that requireFeature
+  // emits so the UI has one dialog shape to handle.
+  const upgradeToPlanCodes = await plansWithHigherQuota(resource, max);
+
+  reply.status(403).send({
+    error: {
+      code: "QUOTA_EXCEEDED",
+      resource,
+      current,
+      max,
+      currentPlanCode: planCtx.planCode,
+      upgradeToPlanCodes,
+      message: quotaMessage(resource, planCtx.planCode, upgradeToPlanCodes),
+    },
+  });
+  return null;
+}
+
+function quotaMaxFor(
+  planCtx: PlanContext,
+  resource: QuotaResource,
+): number | null {
+  switch (resource) {
+    case "invoices_monthly":
+      return planCtx.maxInvoicesMonthly;
+    case "branches":
+      return planCtx.maxBranches;
+    case "warehouses":
+      return planCtx.maxWarehouses;
+  }
+}
+
+/**
+ * Count the resource for this tenant. Runs under RLS via withTenant —
+ * the alternative (outside RLS with an explicit tenant_id filter) would
+ * let a subscription-row misread silently count the whole universe, and
+ * this is a hot-path gate where we want the DB to refuse to see other
+ * tenants' rows on principle.
+ *
+ * invoices_monthly counts rows with issue_date in the current calendar
+ * month, NOT created_at. Same logic as the plan-page marketing copy
+ * ("500 invoices / month") — a tenant reading yesterday's invoice back
+ * in a new month shouldn't burn a quota slot.
+ */
+async function countResource(
+  tenantId: string,
+  resource: QuotaResource,
+): Promise<number> {
+  return withTenant(tenantId, async (tx) => {
+    if (resource === "invoices_monthly") {
+      const rows = (await tx.execute(sql`
+        SELECT COUNT(*)::int AS count
+          FROM invoices
+         WHERE tenant_id = current_tenant_id()
+           AND deleted_at IS NULL
+           AND issue_date >= date_trunc('month', CURRENT_DATE)
+           AND issue_date <  date_trunc('month', CURRENT_DATE) + interval '1 month'
+      `)) as unknown as Array<{ count: number }>;
+      return rows[0]?.count ?? 0;
+    }
+    if (resource === "branches") {
+      const rows = await tx
+        .select({ count: sql<number>`COUNT(*)::int` })
+        .from(schema.branches)
+        .where(
+          and(
+            eq(schema.branches.tenantId, tenantId),
+            isNull(schema.branches.deletedAt),
+          ),
+        );
+      return rows[0]?.count ?? 0;
+    }
+    if (resource === "warehouses") {
+      const rows = await tx
+        .select({ count: sql<number>`COUNT(*)::int` })
+        .from(schema.warehouses)
+        .where(
+          and(
+            eq(schema.warehouses.tenantId, tenantId),
+            isNull(schema.warehouses.deletedAt),
+          ),
+        );
+      return rows[0]?.count ?? 0;
+    }
+    // Exhaustiveness — if a new QuotaResource is added without a count
+    // branch, TS will flag it on the switch in quotaMaxFor but the
+    // runtime here would return 0. Throw to make that fast-fail.
+    throw new Error(`countResource: unknown resource ${resource as string}`);
+  });
+}
+
+/**
+ * Plans whose cap for `resource` is strictly higher than `currentMax`
+ * (or NULL = unlimited). Ordered by sort_order so the UI sees the
+ * cheapest qualifying plan first.
+ */
+async function plansWithHigherQuota(
+  resource: QuotaResource,
+  currentMax: number,
+): Promise<string[]> {
+  const rows = await db
+    .select({
+      code: schema.plans.code,
+      maxInvoicesMonthly: schema.plans.maxInvoicesMonthly,
+      maxBranches: schema.plans.maxBranches,
+      maxWarehouses: schema.plans.maxWarehouses,
+    })
+    .from(schema.plans)
+    .orderBy(schema.plans.sortOrder);
+  return rows
+    .filter((r) => {
+      const cap =
+        resource === "invoices_monthly"
+          ? r.maxInvoicesMonthly
+          : resource === "branches"
+            ? r.maxBranches
+            : r.maxWarehouses;
+      return cap === null || cap > currentMax;
+    })
+    .map((r) => r.code);
+}
+
+function quotaMessage(
+  resource: QuotaResource,
+  currentPlanCode: string | null,
+  upgradeToPlanCodes: string[],
+): string {
+  const planLabel = currentPlanCode
+    ? `${currentPlanCode.charAt(0).toUpperCase()}${currentPlanCode.slice(1)}`
+    : "your current";
+  const resourceLabel =
+    resource === "invoices_monthly"
+      ? "monthly invoice"
+      : resource === "branches"
+        ? "branch"
+        : "warehouse";
+  const upgradeLabel = upgradeToPlanCodes.length
+    ? ` Upgrade to ${upgradeToPlanCodes[0]!.charAt(0).toUpperCase()}${upgradeToPlanCodes[0]!.slice(1)} for more.`
+    : "";
+  return `You've hit your ${resourceLabel} limit on the ${planLabel} plan.${upgradeLabel}`;
 }
 
 /**

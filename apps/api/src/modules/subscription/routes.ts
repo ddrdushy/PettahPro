@@ -4,7 +4,7 @@ import { z } from "zod";
 import { db, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
 import { requirePermission } from "../../lib/permissions.js";
-import { getTenantSubscription } from "../../lib/plan-gate.js";
+import { checkQuota, getTenantSubscription } from "../../lib/plan-gate.js";
 
 /**
  * Tenant-side subscription surface.
@@ -44,6 +44,39 @@ export const subscriptionRoutes: FastifyPluginAsync = async (fastify) => {
     }
 
     return reply.send({ subscription });
+  });
+
+  // Current-tenant quota usage (#65). Drives the "23 / 500 invoices this
+  // month" chips on the settings page. Read-only — the same math that
+  // powers the POST-side gate, exposed as data. Runs three checkQuota
+  // calls in parallel; each one returns 0/null immediately for unlimited
+  // plans so there's no count query on Scale.
+  fastify.get("/usage", async (req, reply) => {
+    const ctx = requireAuth(req, reply);
+    if (!ctx) return;
+
+    const [invoices, branches, warehouses] = await Promise.all([
+      checkQuota(ctx.tenantId, "invoices_monthly"),
+      checkQuota(ctx.tenantId, "branches"),
+      checkQuota(ctx.tenantId, "warehouses"),
+    ]);
+
+    return reply.send({
+      usage: {
+        invoicesMonthly: {
+          current: invoices.current,
+          max: invoices.max,
+        },
+        branches: {
+          current: branches.current,
+          max: branches.max,
+        },
+        warehouses: {
+          current: warehouses.current,
+          max: warehouses.max,
+        },
+      },
+    });
   });
 
   // Public plan catalogue for the plan picker. Filters to is_public=true
