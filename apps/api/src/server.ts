@@ -102,6 +102,7 @@ import { posShiftsRoutes } from "./modules/pos/shifts.js";
 import { posSalesRoutes } from "./modules/pos/sales.js";
 import { commissionsRoutes } from "./modules/commissions/routes.js";
 import { portalPlugin } from "./modules/portal/plugin.js";
+import { platformAdminPlugin } from "./modules/platform-admin/plugin.js";
 
 export async function buildServer(): Promise<FastifyInstance> {
   const server = Fastify({
@@ -260,6 +261,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await server.register(commissionsRoutes, { prefix: "/commissions" });
   await server.register(attachmentsRoutes, { prefix: "/attachments" });
   await server.register(portalPlugin);
+  await server.register(platformAdminPlugin);
 
   // Kick MinIO bucket creation off in the background — don't block
   // boot or crash the server if the object store is unreachable; the

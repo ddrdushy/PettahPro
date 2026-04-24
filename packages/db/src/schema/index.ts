@@ -65,3 +65,5 @@ export * from "./item-serials.js";
 export * from "./stock-movement-batch-allocations.js";
 export * from "./document-templates.js";
 export * from "./user-mfa.js";
+export * from "./platform-users.js";
+export * from "./platform-audit-log.js";
