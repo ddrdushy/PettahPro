@@ -248,6 +248,29 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.status(401).send({ error: { code: "INVALID_CREDENTIALS", message: "Wrong email or password." } });
     }
 
+    // #54 / gap L1 — reject logins for suspended tenants. We already
+    // know the tenant_id from auth_find_user_by_email; a single cheap
+    // select on tenants (no RLS) tells us whether the platform has
+    // benched this business. Returning a distinct error code lets the
+    // UI show "Your account is currently suspended — contact support"
+    // instead of the generic invalid-credentials message that would
+    // leave the user confused about whether they mistyped.
+    const tenantStatusRows = await db
+      .select({ status: schema.tenants.status })
+      .from(schema.tenants)
+      .where(eq(schema.tenants.id, user.tenant_id))
+      .limit(1);
+    const tenantStatus = tenantStatusRows[0]?.status ?? "active";
+    if (tenantStatus === "suspended") {
+      return reply.status(403).send({
+        error: {
+          code: "TENANT_SUSPENDED",
+          message:
+            "This account is currently suspended. Please contact support@pettahpro.lk.",
+        },
+      });
+    }
+
     // #51 — If this user has MFA enabled, don't mint a session on password
     // alone. Stash a pre-session challenge in Redis (5-min TTL) and return
     // the challenge ID to the client. The real session is minted on
@@ -609,12 +632,29 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
         id: schema.tenants.id,
         slug: schema.tenants.slug,
         businessName: schema.tenants.businessName,
+        status: schema.tenants.status,
       })
       .from(schema.tenants)
       .where(eq(schema.tenants.id, user.tenant_id))
       .limit(1);
     const tenant = tenantRows[0];
     if (!tenant) return reply.status(401).send({ error: { code: "UNAUTHENTICATED" } });
+
+    // #54 / gap L1 — if the tenant was suspended after the session
+    // was minted, kick the session immediately. The client redirects
+    // to /login, where the login-gate itself will 403 with the same
+    // code. A distinct code (not UNAUTHENTICATED) keeps the UI
+    // honest — "your session expired" is misleading when the truth is
+    // "your tenant was suspended."
+    if (tenant.status === "suspended") {
+      return reply.status(403).send({
+        error: {
+          code: "TENANT_SUSPENDED",
+          message:
+            "This account is currently suspended. Please contact support@pettahpro.lk.",
+        },
+      });
+    }
 
     // Permission map the caller holds, so the web layout can hide
     // buttons it knows will 403. `enforcementActive=false` means the

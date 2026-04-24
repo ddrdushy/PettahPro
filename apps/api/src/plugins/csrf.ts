@@ -49,8 +49,13 @@ import fp from "fastify-plugin";
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { CSRF_COOKIE, SESSION_COOKIE } from "../modules/identity/cookies.js";
 import { PORTAL_CSRF_COOKIE, PORTAL_SESSION_COOKIE } from "../modules/portal/cookies.js";
+import {
+  PLATFORM_CSRF_COOKIE,
+  PLATFORM_SESSION_COOKIE,
+} from "../modules/platform-admin/cookies.js";
 import { readSession } from "../modules/identity/sessions.js";
 import { readPortalSession } from "../modules/portal/sessions.js";
+import { readPlatformSession } from "../modules/platform-admin/sessions.js";
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
@@ -66,6 +71,9 @@ const EXEMPT_PREFIXES = [
   "/auth/signup",
   "/portal/auth/request-otp",
   "/portal/auth/verify",
+  // Platform-admin login (#54 / gap L1) — same pre-session rationale.
+  // The handler still rate-limits aggressively (5/min).
+  "/platform/auth/login",
 ];
 
 // Liveness / readiness / scrape endpoints — never CSRF-checked. The
@@ -116,13 +124,23 @@ export const csrfPlugin: FastifyPluginAsync = fp(
       if (isExempt(req.url)) return;
 
       const isPortal = req.url.startsWith("/portal");
+      const isPlatform = req.url.startsWith("/platform");
 
-      // Portal vs admin uses different cookies — pick the pair that
-      // matches the URL scope. A portal request with only an admin
-      // session cookie (or vice versa) falls through to "no session"
-      // below and the downstream handler will 401, which is fine.
-      const sessionCookieName = isPortal ? PORTAL_SESSION_COOKIE : SESSION_COOKIE;
-      const csrfCookieName = isPortal ? PORTAL_CSRF_COOKIE : CSRF_COOKIE;
+      // Portal / platform / admin each have distinct cookie pairs so
+      // tabs for different principals on the same browser don't share
+      // a CSRF token. The request URL selects the pair; a request
+      // with the wrong cookie falls through to "no session" below and
+      // the downstream handler will 401.
+      const sessionCookieName = isPlatform
+        ? PLATFORM_SESSION_COOKIE
+        : isPortal
+          ? PORTAL_SESSION_COOKIE
+          : SESSION_COOKIE;
+      const csrfCookieName = isPlatform
+        ? PLATFORM_CSRF_COOKIE
+        : isPortal
+          ? PORTAL_CSRF_COOKIE
+          : CSRF_COOKIE;
 
       const rawSession = req.cookies[sessionCookieName];
       if (!rawSession) {
@@ -136,9 +154,11 @@ export const csrfPlugin: FastifyPluginAsync = fp(
         // Tampered session cookie — same deal, downstream 401s.
         return;
       }
-      const session = isPortal
-        ? await readPortalSession(unsigned.value)
-        : await readSession(unsigned.value);
+      const session = isPlatform
+        ? await readPlatformSession(unsigned.value)
+        : isPortal
+          ? await readPortalSession(unsigned.value)
+          : await readSession(unsigned.value);
       if (!session) {
         // Session expired / revoked — downstream 401.
         return;

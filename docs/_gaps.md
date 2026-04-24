@@ -4,7 +4,7 @@ Things that are **real gaps but not on `_roadmap.md`**. The roadmap tracks featu
 
 Surfaced during the gap analysis on 2026-04-23 (post-PR #64). Discuss, prioritize, and promote to `_roadmap.md` when the time comes.
 
-Updated 2026-04-24 after promoting D1 (email delivery for immediate notifications) in PR #53.
+Updated 2026-04-24 after promoting L1 v0 (Super-Admin Console — tenant directory + suspend/reactivate + audited reveal + CLI bootstrap) in PR #54. Earlier the same day: D1 (email delivery for immediate notifications) in PR #53.
 
 **This is a parking lot. If something here becomes urgent, it should be lifted into `_roadmap.md` as a numbered item with a size and a PR, not worked on out of this file.**
 
@@ -145,7 +145,7 @@ Already flagged on the roadmap as separate; putting here for completeness so the
 
 | # | Gap | Why it matters | Rough size |
 |---|---|---|---|
-| L1 | **Super-Admin Layer 1 console** (`super-admin-layer1-spec.md`) — tenant directory, billing ops, impersonation, revenue analytics. Zero code. | Today we can't see all tenants, suspend one, or run a platform query without `psql`. Required before we onboard the first paying customer. | L |
+| L1 | ~~**Super-Admin Layer 1 console** (`super-admin-layer1-spec.md`) — tenant directory, billing ops, impersonation, revenue analytics. Zero code.~~ **v0 shipped in PR #54** (tenant directory, detail with anonymized users + audited reveal, suspend/reactivate with reason, CLI bootstrap, separate `platform_users` + `platform_audit_log` realm). **L1 v1 still parked:** operator impersonation (consent-gated, time-boxed, fully audited), billing ops (plan changes, refunds, invoice issuance), multi-role platform staff (super-admin / support / billing separation), MFA on platform users, revenue / MRR / churn analytics dashboard. | v0 unblocks tenant-ops triage. v1 required before scaled support + paid launch. | L (v1 remainder) |
 | L2 | **Pricing plan engine** (`pricing-plan-architecture-spec.md`) — tiers, feature gating, metering, dunning. Zero code. Every tenant gets every feature today. | **Biggest monetization blocker.** Can't meter, gate, or bill. Blocks paid launch. | L–XL |
 | L3 | **Landing page → signup provisioning funnel** — marketing site exists under `apps/web/`, but needs real signup → tenant bootstrap → billing setup wiring. | Conversion-critical. | M |
 
@@ -155,6 +155,6 @@ Already flagged on the roadmap as separate; putting here for completeness so the
 
 When any of the above gets promoted to `_roadmap.md`:
 
-1. Give it a number continuing the roadmap sequence (the next free number as of this writing is **#49**).
+1. Give it a number continuing the roadmap sequence (the next free number as of this writing is **#55**).
 2. Lift the description into the roadmap table under the right section (Must-have if compliance, Should-have if convenience, Nice-to-have otherwise).
 3. Delete the row from this file in the same PR. This file should shrink over time.
