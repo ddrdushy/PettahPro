@@ -32,11 +32,13 @@ import { requireAuth } from "./with-tenant.js";
  *     composite endpoint could fire several. Cache the subscription
  *     row on req._planContext so subsequent calls are free.
  *
- *   - We do NOT block past_due or cancelled subscriptions here. That's
- *     a separate concern (trial expiry + grace period handling in
- *     PR #63). If a subscription is cancelled but the feature is
- *     still in the plan.features list, this gate passes. The caller
- *     who cancelled shouldn't be punished mid-request.
+ *   - `cancelled` status denies outright with SUBSCRIPTION_CANCELLED
+ *     (#63). The trial-expiry job flips past_due → cancelled after the
+ *     7-day grace window; platform-admin can also cancel manually. Once
+ *     cancelled, no gated feature works. `past_due` still passes —
+ *     that's the grace window doing its job. If the user is on a free
+ *     base tier without any gated features none of this matters, but
+ *     Growth/Scale features go dark the instant cancellation lands.
  *
  *   - Unknown feature codes deny by default. Typo-safety: if someone
  *     writes `requireFeature("payrol")` the gate 403s, we see it in
@@ -117,6 +119,24 @@ export async function requireFeature(
   const planCtx =
     req._planContext ?? (await loadPlanContext(ctx.tenantId));
   req._planContext = planCtx;
+
+  // Cancelled blocks everything gated (#63). Separate error code from
+  // PLAN_REQUIRED so the UI can render a "subscription ended — contact
+  // support" dialog instead of a plan picker: picking a plan from a
+  // cancelled state isn't self-serve yet, and showing the upgrade
+  // sheet would be misleading.
+  if (planCtx.subscriptionStatus === "cancelled") {
+    reply.status(403).send({
+      error: {
+        code: "SUBSCRIPTION_CANCELLED",
+        feature,
+        currentPlanCode: planCtx.planCode,
+        message:
+          "Your subscription has been cancelled. Contact support to reactivate.",
+      },
+    });
+    return null;
+  }
 
   if (planCtx.features.includes(feature)) return ctx;
 
