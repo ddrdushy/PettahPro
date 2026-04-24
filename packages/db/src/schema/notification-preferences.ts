@@ -21,6 +21,13 @@ export const notificationPreferences = pgTable("notification_preferences", {
   // 'immediate' preserves pre-PR behaviour; 'daily' / 'weekly' divert
   // into notification_digest_queue for rollup emails.
   cadence: varchar("cadence", { length: 16 }).notNull().default("immediate"),
+  // Roadmap #53 / gap D1. When cadence='immediate', this flag controls
+  // whether emitNotification also sends an email in addition to the
+  // in-app bell row. Default false for back-compat — pre-#53 users
+  // keep bell-only delivery until they explicitly opt in. For
+  // 'daily'/'weekly' cadences the flag is moot because email is
+  // implicit via the digest cron; for 'off' the server forces it false.
+  emailEnabled: boolean("email_enabled").notNull().default(false),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

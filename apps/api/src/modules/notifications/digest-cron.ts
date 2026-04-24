@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import type { Database } from "@pettahpro/db";
 import { withTenant } from "@pettahpro/db";
 import { sendEmail } from "../../lib/email.js";
+import { renderDigestEmail as renderDigestEmailShared } from "./email-template.js";
 
 /**
  * Notification digest cron (roadmap #45).
@@ -186,12 +187,11 @@ async function dispatchForTenant(
         const windowStart = rows[0]?.created_at ?? opts.now.toISOString();
         const windowEnd = opts.now.toISOString();
         const breakdown = aggregateKinds(rows);
-        const { subject, html, text } = renderDigestEmail({
+        const { subject, html, text } = renderDigestEmailShared({
           cadence,
           businessName: tenant.business_name,
           recipientName: user.full_name,
           rows,
-          breakdown,
         });
 
         try {
@@ -303,103 +303,6 @@ export function tenantLocalNow(
   };
 }
 
-function renderDigestEmail(input: {
-  cadence: "daily" | "weekly";
-  businessName: string;
-  recipientName: string;
-  rows: QueueRow[];
-  breakdown: Record<string, number>;
-}): { subject: string; html: string; text: string } {
-  const cadenceLabel = input.cadence === "daily" ? "Daily" : "Weekly";
-  const subject = `${cadenceLabel} digest · ${input.businessName} · ${input.rows.length} update${input.rows.length === 1 ? "" : "s"}`;
-
-  // Group by kind for the HTML summary — cleaner than a flat chronological
-  // list when the digest spans multiple event types.
-  const groups = new Map<string, QueueRow[]>();
-  for (const r of input.rows) {
-    const bucket = groups.get(r.kind) ?? [];
-    bucket.push(r);
-    groups.set(r.kind, bucket);
-  }
-
-  const sections: string[] = [];
-  const textSections: string[] = [];
-  for (const [kind, rows] of groups.entries()) {
-    const label = KIND_LABELS[kind] ?? kind;
-    sections.push(`
-      <h3 style="font-size:14px;margin:20px 0 6px 0;color:#1f2937;">${escapeHtml(label)} <span style="color:#9ca3af;font-weight:400;">(${rows.length})</span></h3>
-      <ul style="margin:0 0 0 0;padding:0 0 0 18px;color:#374151;font-size:13px;line-height:1.6;">
-        ${rows
-          .map(
-            (r) => `<li>
-              <strong>${escapeHtml(r.title)}</strong>${r.body ? `<br/><span style="color:#6b7280;">${escapeHtml(r.body)}</span>` : ""}
-            </li>`,
-          )
-          .join("")}
-      </ul>
-    `);
-    textSections.push(`${label} (${rows.length}):`);
-    for (const r of rows) {
-      textSections.push(`  · ${r.title}${r.body ? ` — ${r.body}` : ""}`);
-    }
-    textSections.push("");
-  }
-
-  const html = `
-<!doctype html>
-<html>
-  <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f9fafb;margin:0;padding:24px;">
-    <div style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:8px;padding:28px;">
-      <p style="margin:0 0 4px 0;color:#6b7280;font-size:12px;text-transform:uppercase;letter-spacing:0.05em;">${cadenceLabel} digest</p>
-      <h1 style="margin:0 0 16px 0;font-size:20px;color:#111827;">${escapeHtml(input.businessName)}</h1>
-      <p style="margin:0 0 20px 0;color:#374151;font-size:14px;">
-        Hi ${escapeHtml(input.recipientName || "there")}, here's what happened in the last ${input.cadence === "daily" ? "day" : "week"}.
-      </p>
-      ${sections.join("")}
-      <hr style="border:none;border-top:1px solid #e5e7eb;margin:28px 0 16px 0;" />
-      <p style="margin:0;color:#9ca3af;font-size:12px;">
-        You're receiving this because you set ${input.cadence} digest for one or more events.
-        Adjust under Settings → Notifications in PettahPro.
-      </p>
-    </div>
-  </body>
-</html>`.trim();
-
-  const text = [
-    `${cadenceLabel} digest — ${input.businessName}`,
-    "",
-    `Hi ${input.recipientName || "there"}, here's what happened in the last ${input.cadence === "daily" ? "day" : "week"}.`,
-    "",
-    ...textSections,
-    "Adjust your digest settings under Settings → Notifications in PettahPro.",
-  ].join("\n");
-
-  return { subject, html, text };
-}
-
-// Keep aligned with NOTIFICATION_KIND_CATALOG in routes.ts. Untracked
-// kinds fall through to the raw kind string — degrades gracefully.
-const KIND_LABELS: Record<string, string> = {
-  invoice_posted: "Invoice posted",
-  payment_received: "Payment received",
-  pos_sale_posted: "POS sale posted",
-  pos_shift_variance: "POS shift variance",
-  bill_posted: "Bill posted",
-  je_approval_pending: "Journal pending review",
-  je_approved: "Journal approved",
-  je_rejected: "Journal rejected",
-  period_closed: "Period closed",
-  period_reopened: "Period reopened",
-  year_closed: "Year closed",
-  low_stock: "Low stock",
-  cheque_stale: "Stale cheque",
-};
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
+// Email rendering + KIND_LABELS moved to ./email-template.ts in PR #53
+// (roadmap #53, gap D1) so the immediate-send path from emitNotification
+// can share the same dictionary without drifting on new kinds.

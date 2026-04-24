@@ -961,12 +961,18 @@ export const api = {
     request<{ preferences: NotificationPreference[] }>("/notifications/preferences"),
   updateNotificationPreference: (
     kind: string,
-    body: { enabled?: boolean; cadence?: NotificationCadence },
+    body: { enabled?: boolean; cadence?: NotificationCadence; emailEnabled?: boolean },
   ) =>
-    request<{ ok: true; kind: string; enabled: boolean; cadence: NotificationCadence }>(
-      `/notifications/preferences/${encodeURIComponent(kind)}`,
-      { method: "PATCH", json: body },
-    ),
+    request<{
+      ok: true;
+      kind: string;
+      enabled: boolean;
+      cadence: NotificationCadence;
+      emailEnabled: boolean;
+    }>(`/notifications/preferences/${encodeURIComponent(kind)}`, {
+      method: "PATCH",
+      json: body,
+    }),
 
   // Approval engine runtime (roadmap #43).
   // The generic queue surfaces requests regardless of source document
@@ -5329,6 +5335,10 @@ export interface NotificationPreference {
   description: string;
   enabled: boolean;
   cadence: NotificationCadence;
+  // Roadmap #53 / gap D1 — only meaningful when cadence='immediate'.
+  // Daily/weekly already deliver via email (digest cron); 'off' means
+  // no delivery at all so the flag is forced false on the server.
+  emailEnabled: boolean;
   known: boolean;
 }
 

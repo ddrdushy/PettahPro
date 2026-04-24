@@ -1,6 +1,8 @@
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { schema } from "@pettahpro/db";
+import { sendEmail } from "../../lib/email.js";
+import { renderImmediateEmail } from "./email-template.js";
 
 export interface EmitNotificationInput {
   tenantId: string;
@@ -27,6 +29,15 @@ export interface EmitNotificationInput {
  *   • cadence='daily' or 'weekly'    → insert into notification_digest_queue
  *     so the digest cron can coalesce into one email (roadmap #45)
  *
+ * Immediate email delivery (roadmap #53 / gap D1): when cadence='immediate'
+ * and email_enabled=true, we also fire a single-event email. The bell row
+ * is still written — emailing doesn't replace the in-app notification,
+ * just augments it. The email fire is after the bell insert + inside the
+ * same try/catch so a misconfigured SMTP host can't block the bell or the
+ * triggering business op. We log to notification_digest_emails with
+ * cadence='immediate', event_count=1 so there's a single grep target for
+ * "did this email actually go out?" regardless of cadence.
+ *
  * Broadcasts (userId null) bypass the check — tenant-wide announcements
  * aren't user-level opt-out material and shouldn't be deferred into a
  * digest either (by the time the email lands, "period closed" has lost
@@ -37,11 +48,13 @@ export async function emitNotification(
   input: EmitNotificationInput,
 ): Promise<void> {
   try {
+    let emailEnabled = false;
     if (input.userId) {
       const [pref] = await tx
         .select({
           enabled: schema.notificationPreferences.enabled,
           cadence: schema.notificationPreferences.cadence,
+          emailEnabled: schema.notificationPreferences.emailEnabled,
         })
         .from(schema.notificationPreferences)
         .where(
@@ -78,6 +91,8 @@ export async function emitNotification(
         });
         return;
       }
+      // cadence === 'immediate' from here on.
+      emailEnabled = pref?.emailEnabled ?? false;
     }
     await tx.insert(schema.notifications).values({
       tenantId: input.tenantId,
@@ -88,9 +103,103 @@ export async function emitNotification(
       refType: input.refType ?? null,
       refId: input.refId ?? null,
     });
+
+    if (input.userId && emailEnabled) {
+      // Fire-and-log an immediate email. Isolated in its own try so a
+      // transport hiccup can't skip the bell insert that just ran.
+      await deliverImmediateEmail(tx, {
+        tenantId: input.tenantId,
+        userId: input.userId,
+        kind: input.kind,
+        title: input.title,
+        body: input.body ?? null,
+      });
+    }
   } catch (err) {
     // Don't fail the business operation over a notification write. Log for
     // visibility; we can reconcile via polling or audit log if it matters.
     console.warn("[notifications] emit failed:", (err as Error).message, input);
+  }
+}
+
+async function deliverImmediateEmail(
+  tx: PostgresJsDatabase<typeof schema>,
+  input: {
+    tenantId: string;
+    userId: string;
+    kind: string;
+    title: string;
+    body: string | null;
+  },
+): Promise<void> {
+  try {
+    // Fetch recipient + tenant brand in one round-trip. Uses raw SQL
+    // rather than drizzle's relations builder so we don't have to wire
+    // a relation definition for a single call site.
+    const rows = (await tx.execute(sql`
+      SELECT u.email, u.full_name, t.business_name
+      FROM users u
+      JOIN tenants t ON t.id = u.tenant_id
+      WHERE u.id = ${input.userId}::uuid
+        AND u.tenant_id = ${input.tenantId}::uuid
+        AND u.is_active = true
+        AND u.deleted_at IS NULL
+      LIMIT 1
+    `)) as unknown as Array<{
+      email: string;
+      full_name: string;
+      business_name: string;
+    }>;
+    const recipient = rows[0];
+    if (!recipient) return;
+
+    const now = new Date().toISOString();
+    const { subject, html, text } = renderImmediateEmail({
+      kind: input.kind,
+      title: input.title,
+      body: input.body,
+      businessName: recipient.business_name,
+      recipientName: recipient.full_name,
+    });
+
+    try {
+      const result = await sendEmail({ to: recipient.email, subject, html, text });
+      // Log to the same table as digests — one place to grep for send
+      // outcomes. window_start == window_end == now for immediate sends.
+      await tx.execute(sql`
+        INSERT INTO notification_digest_emails
+          (tenant_id, user_id, to_email, cadence, window_start, window_end,
+           event_count, kind_breakdown, status, message_id, transport)
+        VALUES
+          (${input.tenantId}::uuid, ${input.userId}::uuid, ${recipient.email},
+           'immediate', ${now}::timestamptz, ${now}::timestamptz,
+           1, ${JSON.stringify({ [input.kind]: 1 })}::jsonb, 'sent',
+           ${result.messageId}, ${result.transport})
+      `);
+    } catch (err) {
+      const message = (err as Error).message;
+      await tx.execute(sql`
+        INSERT INTO notification_digest_emails
+          (tenant_id, user_id, to_email, cadence, window_start, window_end,
+           event_count, kind_breakdown, status, error_message, transport)
+        VALUES
+          (${input.tenantId}::uuid, ${input.userId}::uuid, ${recipient.email},
+           'immediate', ${now}::timestamptz, ${now}::timestamptz,
+           1, ${JSON.stringify({ [input.kind]: 1 })}::jsonb, 'failed',
+           ${message}, 'smtp')
+      `);
+      console.warn("[notifications] immediate email failed:", message, {
+        userId: input.userId,
+        kind: input.kind,
+      });
+    }
+  } catch (err) {
+    // Recipient lookup itself failed. Already inside the outer emit
+    // try/catch so this just makes the log more specific.
+    console.warn(
+      "[notifications] immediate email lookup failed:",
+      (err as Error).message,
+      { userId: input.userId, kind: input.kind },
+    );
   }
 }

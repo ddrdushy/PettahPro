@@ -27,11 +27,20 @@ export function NotificationPrefsClient({
   async function setCadence(kind: string, next: NotificationCadence) {
     setError(null);
     setBusy((b) => ({ ...b, [kind]: true }));
-    const before = prefs.find((p) => p.kind === kind)?.cadence;
+    const before = prefs.find((p) => p.kind === kind);
     // Optimistic — the server derives `enabled` from cadence so we mirror.
+    // It also force-clears emailEnabled when cadence flips to 'off'; match
+    // that here so the UI doesn't flash an impossible state.
     setPrefs((p) =>
       p.map((x) =>
-        x.kind === kind ? { ...x, cadence: next, enabled: next !== "off" } : x,
+        x.kind === kind
+          ? {
+              ...x,
+              cadence: next,
+              enabled: next !== "off",
+              emailEnabled: next === "off" ? false : x.emailEnabled,
+            }
+          : x,
       ),
     );
     try {
@@ -41,10 +50,31 @@ export function NotificationPrefsClient({
       if (before) {
         setPrefs((p) =>
           p.map((x) =>
-            x.kind === kind ? { ...x, cadence: before, enabled: before !== "off" } : x,
+            x.kind === kind
+              ? { ...x, cadence: before.cadence, enabled: before.enabled, emailEnabled: before.emailEnabled }
+              : x,
           ),
         );
       }
+      setError(err instanceof ApiError ? err.message : "Couldn't save that change.");
+    } finally {
+      setBusy((b) => ({ ...b, [kind]: false }));
+    }
+  }
+
+  async function setEmailEnabled(kind: string, next: boolean) {
+    setError(null);
+    setBusy((b) => ({ ...b, [kind]: true }));
+    const before = prefs.find((p) => p.kind === kind)?.emailEnabled ?? false;
+    setPrefs((p) =>
+      p.map((x) => (x.kind === kind ? { ...x, emailEnabled: next } : x)),
+    );
+    try {
+      await api.updateNotificationPreference(kind, { emailEnabled: next });
+    } catch (err) {
+      setPrefs((p) =>
+        p.map((x) => (x.kind === kind ? { ...x, emailEnabled: before } : x)),
+      );
       setError(err instanceof ApiError ? err.message : "Couldn't save that change.");
     } finally {
       setBusy((b) => ({ ...b, [kind]: false }));
@@ -65,6 +95,7 @@ export function NotificationPrefsClient({
             <tr>
               <th className="px-6 py-3 text-left">Event</th>
               <th className="w-48 px-6 py-3 text-right">Delivery</th>
+              <th className="w-44 px-6 py-3 text-right">Email</th>
             </tr>
           </thead>
           <tbody className="divide-y-hairline divide-border">
@@ -79,6 +110,14 @@ export function NotificationPrefsClient({
                     value={p.cadence}
                     disabled={busy[p.kind]}
                     onChange={(v) => setCadence(p.kind, v)}
+                  />
+                </td>
+                <td className="px-6 py-4 text-right">
+                  <EmailToggle
+                    cadence={p.cadence}
+                    emailEnabled={p.emailEnabled}
+                    disabled={busy[p.kind]}
+                    onChange={(v) => setEmailEnabled(p.kind, v)}
                   />
                 </td>
               </tr>
@@ -100,11 +139,19 @@ export function NotificationPrefsClient({
               {unknown.map((p) => (
                 <tr key={p.kind}>
                   <td className="px-6 py-4 font-mono text-text-secondary">{p.kind}</td>
-                  <td className="px-6 py-4 text-right">
+                  <td className="w-48 px-6 py-4 text-right">
                     <CadenceSelect
                       value={p.cadence}
                       disabled={busy[p.kind]}
                       onChange={(v) => setCadence(p.kind, v)}
+                    />
+                  </td>
+                  <td className="w-44 px-6 py-4 text-right">
+                    <EmailToggle
+                      cadence={p.cadence}
+                      emailEnabled={p.emailEnabled}
+                      disabled={busy[p.kind]}
+                      onChange={(v) => setEmailEnabled(p.kind, v)}
                     />
                   </td>
                 </tr>
@@ -115,12 +162,13 @@ export function NotificationPrefsClient({
       )}
 
       <div className="rounded-md bg-mint-surface/60 p-4 text-caption text-mint-dark">
-        <p className="font-medium">About digest delivery</p>
+        <p className="font-medium">About delivery</p>
         <ul className="mt-1 list-disc pl-4">
+          <li><strong>Immediate</strong>: in-app bell. Toggle <em>Email</em> on to also get an email per event.</li>
+          <li><strong>Daily</strong> / <strong>Weekly</strong>: one rollup email per window; email is always included, so the <em>Email</em> toggle is locked on.</li>
           <li>Daily digests go out each morning; weekly digests on Monday morning — in your tenant's timezone.</li>
-          <li>Digest mode replaces the in-app bell for that kind. You'll see the summary in email instead.</li>
           <li>Switching from digest to immediate or off clears any events still waiting in the queue.</li>
-          <li>Tenant-wide announcements (e.g. period closed) are broadcast to everyone and don't go through digest.</li>
+          <li>Tenant-wide announcements (e.g. period closed) are broadcast to everyone and don't go through digest or per-user email.</li>
         </ul>
       </div>
     </div>
@@ -150,5 +198,60 @@ function CadenceSelect({
         </option>
       ))}
     </select>
+  );
+}
+
+// Email toggle semantics:
+//   • cadence='immediate' → live toggle (the emailEnabled column). This
+//     is the only state where the flag meaningfully changes behaviour.
+//   • cadence='daily' or 'weekly' → email always fires via the digest
+//     cron, so the toggle is locked on + disabled with an explanatory
+//     title. Shows "Via digest" so users know *why* it's locked.
+//   • cadence='off' → delivery is off entirely; toggle is locked off +
+//     disabled.
+function EmailToggle({
+  cadence,
+  emailEnabled,
+  disabled,
+  onChange,
+}: {
+  cadence: NotificationCadence;
+  emailEnabled: boolean;
+  disabled?: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  const isDigest = cadence === "daily" || cadence === "weekly";
+  const isOff = cadence === "off";
+  const locked = isDigest || isOff;
+  const effective = isDigest ? true : isOff ? false : emailEnabled;
+  const title = isDigest
+    ? "Digest mode always emails — this toggle is on automatically."
+    : isOff
+      ? "Delivery is off for this event. Set a cadence to enable email."
+      : emailEnabled
+        ? "Email is on. We'll send you one email per event."
+        : "Email is off. You'll only see this in the in-app bell.";
+
+  return (
+    <label
+      className={`inline-flex items-center gap-2 ${locked || disabled ? "opacity-60" : ""}`}
+      title={title}
+    >
+      <span className="text-caption text-text-secondary">
+        {isDigest ? "Via digest" : effective ? "On" : "Off"}
+      </span>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={effective}
+        disabled={locked || disabled}
+        onClick={() => !locked && !disabled && onChange(!emailEnabled)}
+        className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:cursor-not-allowed ${effective ? "bg-charcoal" : "bg-border-emphasis"}`}
+      >
+        <span
+          className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${effective ? "translate-x-4" : "translate-x-0.5"}`}
+        />
+      </button>
+    </label>
   );
 }

@@ -179,6 +179,7 @@ export const notificationsRoutes: FastifyPluginAsync = async (fastify) => {
           kind: schema.notificationPreferences.kind,
           enabled: schema.notificationPreferences.enabled,
           cadence: schema.notificationPreferences.cadence,
+          emailEnabled: schema.notificationPreferences.emailEnabled,
         })
         .from(schema.notificationPreferences)
         .where(
@@ -189,7 +190,10 @@ export const notificationsRoutes: FastifyPluginAsync = async (fastify) => {
         );
     });
     const byKind = new Map(
-      overrides.map((o) => [o.kind, { enabled: o.enabled, cadence: o.cadence }]),
+      overrides.map((o) => [
+        o.kind,
+        { enabled: o.enabled, cadence: o.cadence, emailEnabled: o.emailEnabled },
+      ]),
     );
 
     // Roadmap #45: cadence is returned alongside enabled. UI treats
@@ -204,6 +208,12 @@ export const notificationsRoutes: FastifyPluginAsync = async (fastify) => {
       return (row.cadence as "immediate" | "daily" | "weekly") ?? "immediate";
     };
 
+    // Roadmap #53 / gap D1: emailEnabled is only meaningful when
+    // cadence='immediate' (daily/weekly already email via the digest
+    // cron, 'off' means no delivery at all). We still return the raw
+    // stored flag so the UI can preserve the user's choice across
+    // cadence flips, and the server layer enforces the semantic
+    // constraint on PATCH.
     const preferences = [
       ...NOTIFICATION_KIND_CATALOG.map((c) => {
         const row = byKind.get(c.kind);
@@ -213,6 +223,7 @@ export const notificationsRoutes: FastifyPluginAsync = async (fastify) => {
           description: c.description,
           enabled: row?.enabled ?? true,
           cadence: resolveCadence(row),
+          emailEnabled: row?.emailEnabled ?? false,
           known: true as const,
         };
       }),
@@ -224,6 +235,7 @@ export const notificationsRoutes: FastifyPluginAsync = async (fastify) => {
           description: "",
           enabled: o.enabled,
           cadence: resolveCadence({ enabled: o.enabled, cadence: o.cadence }),
+          emailEnabled: o.emailEnabled,
           known: false as const,
         })),
     ];
@@ -232,14 +244,23 @@ export const notificationsRoutes: FastifyPluginAsync = async (fastify) => {
   });
 
   // PATCH /notifications/preferences/:kind — update cadence (and derive
-  // enabled). Body accepts either { enabled: boolean } (legacy) or
-  // { cadence: "off"|"immediate"|"daily"|"weekly" } (roadmap #45).
-  // When both are sent, cadence wins and enabled is derived (enabled =
-  // cadence !== 'off'); when only `enabled` is sent we flip it and leave
-  // cadence as-is, falling back to 'immediate' on new rows.
+  // enabled) + the immediate-email flag. Body accepts:
+  //   • { enabled: boolean }                              — legacy on/off
+  //   • { cadence: "off"|"immediate"|"daily"|"weekly" }   — roadmap #45
+  //   • { emailEnabled: boolean }                         — roadmap #53
+  // Any subset can be sent; at least one must be present. When both
+  // `cadence` and `enabled` are sent, cadence wins and enabled is derived
+  // (enabled = cadence !== 'off'); when only `enabled` is sent we flip
+  // it and leave cadence as-is, falling back to 'immediate' on new rows.
+  // `emailEnabled` is independent and gets read-modify-written against
+  // the current row unless explicitly set in this request.
   fastify.patch<{
     Params: { kind: string };
-    Body: { enabled?: boolean; cadence?: "off" | "immediate" | "daily" | "weekly" };
+    Body: {
+      enabled?: boolean;
+      cadence?: "off" | "immediate" | "daily" | "weekly";
+      emailEnabled?: boolean;
+    };
   }>("/preferences/:kind", async (req, reply) => {
     const ctx = requireAuth(req, reply);
     if (!ctx) return;
@@ -248,10 +269,15 @@ export const notificationsRoutes: FastifyPluginAsync = async (fastify) => {
       .object({
         enabled: z.boolean().optional(),
         cadence: z.enum(["off", "immediate", "daily", "weekly"]).optional(),
+        emailEnabled: z.boolean().optional(),
       })
-      .refine((v) => v.enabled !== undefined || v.cadence !== undefined, {
-        message: "enabled or cadence is required",
-      })
+      .refine(
+        (v) =>
+          v.enabled !== undefined ||
+          v.cadence !== undefined ||
+          v.emailEnabled !== undefined,
+        { message: "enabled, cadence, or emailEnabled is required" },
+      )
       .safeParse(req.body);
     if (!parsed.success) {
       return reply
@@ -270,19 +296,49 @@ export const notificationsRoutes: FastifyPluginAsync = async (fastify) => {
     if (parsed.data.cadence) {
       cadence = parsed.data.cadence;
       enabled = cadence !== "off";
-    } else {
-      enabled = parsed.data.enabled ?? true;
+    } else if (parsed.data.enabled !== undefined) {
+      enabled = parsed.data.enabled;
       cadence = enabled ? "immediate" : "off";
+    } else {
+      // Only emailEnabled was sent. Keep cadence/enabled as they were by
+      // reading the existing row; default to immediate+enabled so a
+      // first-time email opt-in works without forcing the UI to send
+      // a cadence too.
+      cadence = "immediate";
+      enabled = true;
     }
 
-    await withTenant(ctx.tenantId, async (tx) => {
+    // Enforce the semantic constraint: when cadence='off' there's no
+    // delivery channel to email on. Force the flag off so a stale UI
+    // state can't leave ghost emails armed for later.
+    const emailEnabled =
+      cadence === "off" ? false : (parsed.data.emailEnabled ?? undefined);
+
+    const result = await withTenant(ctx.tenantId, async (tx) => {
+      // Read current emailEnabled when the caller didn't send one, so
+      // the INSERT ... ON CONFLICT path doesn't blow it away on a
+      // cadence-only flip.
+      let effectiveEmailEnabled = emailEnabled;
+      if (effectiveEmailEnabled === undefined) {
+        const existing = (await tx.execute(sql`
+          SELECT email_enabled FROM notification_preferences
+          WHERE tenant_id = current_tenant_id()
+            AND user_id = ${ctx.userId}::uuid
+            AND kind = ${kind}
+          LIMIT 1
+        `)) as unknown as Array<{ email_enabled: boolean }>;
+        effectiveEmailEnabled = existing[0]?.email_enabled ?? false;
+      }
+      if (cadence === "off") effectiveEmailEnabled = false;
+
       // Upsert on (tenant_id, user_id, kind) — unique index enforces.
       await tx.execute(sql`
-        INSERT INTO notification_preferences (tenant_id, user_id, kind, enabled, cadence)
-        VALUES (${ctx.tenantId}::uuid, ${ctx.userId}::uuid, ${kind}, ${enabled}, ${cadence})
+        INSERT INTO notification_preferences (tenant_id, user_id, kind, enabled, cadence, email_enabled)
+        VALUES (${ctx.tenantId}::uuid, ${ctx.userId}::uuid, ${kind}, ${enabled}, ${cadence}, ${effectiveEmailEnabled})
         ON CONFLICT (tenant_id, user_id, kind)
         DO UPDATE SET enabled = EXCLUDED.enabled,
                       cadence = EXCLUDED.cadence,
+                      email_enabled = EXCLUDED.email_enabled,
                       updated_at = now()
       `);
 
@@ -299,8 +355,16 @@ export const notificationsRoutes: FastifyPluginAsync = async (fastify) => {
             AND delivered_at IS NULL
         `);
       }
+
+      return { effectiveEmailEnabled };
     });
 
-    return reply.send({ ok: true, kind, enabled, cadence });
+    return reply.send({
+      ok: true,
+      kind,
+      enabled,
+      cadence,
+      emailEnabled: result.effectiveEmailEnabled,
+    });
   });
 };

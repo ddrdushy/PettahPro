@@ -4,6 +4,8 @@ Things that are **real gaps but not on `_roadmap.md`**. The roadmap tracks featu
 
 Surfaced during the gap analysis on 2026-04-23 (post-PR #64). Discuss, prioritize, and promote to `_roadmap.md` when the time comes.
 
+Updated 2026-04-24 after promoting D1 (email delivery for immediate notifications) in PR #53.
+
 **This is a parking lot. If something here becomes urgent, it should be lifted into `_roadmap.md` as a numbered item with a size and a PR, not worked on out of this file.**
 
 ---
@@ -49,7 +51,6 @@ Notifications live in-app only.
 
 | # | Gap | Why it matters | Rough size |
 |---|---|---|---|
-| D1 | **Email delivery for regular notifications** — only the monthly customer statement email uses SMTP. "Invoice posted," "payment received," "journal pending approval" are all in-app bell only. | Users who aren't actively in the app miss everything. | M |
 | D2 | **SMS gateway** (Dialog / Mobitel bulk SMS) for payment reminders, cheque-bounce alerts. | Real SL business practice — SMS still outperforms email for payment chasing. | M |
 | D3 | **WhatsApp Business integration** — customer statements, payment reminders via WhatsApp. | Table-stakes channel in SL. | M |
 
