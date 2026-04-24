@@ -7,11 +7,8 @@ import { Sidebar } from "@/components/app/sidebar";
 import { NotificationBell } from "@/components/app/notification-bell";
 import { PermissionsProvider } from "@/components/auth/permissions-provider";
 import { ImpersonationBanner } from "@/components/app/impersonation-banner";
-import type {
-  CallerPermissions,
-  TenantSettings,
-  TenantSubscriptionResponse,
-} from "@/lib/api";
+import { getPlanFeatures } from "@/lib/plan-features";
+import type { CallerPermissions, TenantSettings } from "@/lib/api";
 
 async function fetchMe() {
   const cookieHeader = cookies().toString();
@@ -33,31 +30,6 @@ async function fetchMe() {
     };
   } catch {
     return null;
-  }
-}
-
-// Tenant plan drives the PLAN-gated sidebar items (#67) — Payroll,
-// Approvals, etc. surface a padlock instead of silently 403'ing. We
-// fetch only the feature array; the full subscription card is fetched
-// on the settings page where it's rendered. Failure is non-fatal — we
-// fall back to an empty feature list, which locks all gated items.
-// That's a safe-default: a missing subscription means "unknown plan",
-// and unknown plan shouldn't unlock Scale features.
-async function fetchPlanFeatures(): Promise<string[]> {
-  const cookieHeader = cookies().toString();
-  if (!cookieHeader) return [];
-  try {
-    const res = await fetch(
-      `${process.env.INTERNAL_API_URL ?? "http://api:4000"}/subscription`,
-      { headers: { cookie: cookieHeader }, cache: "no-store" },
-    );
-    if (!res.ok) return [];
-    const body = (await res.json()) as {
-      subscription: TenantSubscriptionResponse;
-    };
-    return body.subscription.plan.features ?? [];
-  } catch {
-    return [];
   }
 }
 
@@ -83,10 +55,13 @@ async function fetchSettings(): Promise<TenantSettings | null> {
 }
 
 export default async function AppLayout({ children }: { children: ReactNode }) {
+  // getPlanFeatures is React.cache()'d (#68) — the plan-gated pages
+  // call it too and dedup to this single request. Kept inside
+  // Promise.all so the three fetches still run in parallel.
   const [me, settings, planFeatures] = await Promise.all([
     fetchMe(),
     fetchSettings(),
-    fetchPlanFeatures(),
+    getPlanFeatures(),
   ]);
   if (!me) redirect("/login");
 
