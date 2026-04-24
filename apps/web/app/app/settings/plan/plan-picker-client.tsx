@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Check, Loader2, Sparkles } from "lucide-react";
+import { Check, Loader2, Sparkles, BadgeCheck } from "lucide-react";
 import {
   api,
   ApiError,
@@ -28,6 +28,16 @@ export function PlanPickerClient({
 
   const currentPlanCode = subscription.plan.code;
   const isCancelled = subscription.status === "cancelled";
+  // Per-tenant overrides (#71). Only apply to the *current* plan card —
+  // a bespoke "5,000 invoices on Starter" contract doesn't travel if the
+  // tenant switches to Growth, so the other cards stay on raw plan caps.
+  // `hasAnyOverride` drives the top-of-page contract banner.
+  const { customLimits } = subscription;
+  const hasAnyOverride =
+    customLimits.maxUsers !== null ||
+    customLimits.maxInvoicesMonthly !== null ||
+    customLimits.maxBranches !== null ||
+    customLimits.maxWarehouses !== null;
 
   async function submit(plan: AvailablePlan) {
     setError(null);
@@ -105,6 +115,40 @@ export function PlanPickerClient({
         </div>
       ) : null}
 
+      {/* Custom-contract callout (#71 / #72). When ops has set per-tenant
+          overrides, the current plan card alone is misleading — the raw
+          plan caps ("500 invoices/month") don't match what the tenant
+          actually gets. The banner makes the bespoke arrangement visible
+          up front and surfaces the operator's note verbatim so the tenant
+          knows why their Starter row behaves unlike every other Starter. */}
+      {hasAnyOverride ? (
+        <div className="mb-6 rounded-card border-hairline border-amber-300 bg-amber-50 p-4">
+          <div className="flex items-start gap-2">
+            <BadgeCheck
+              className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-700"
+              aria-hidden
+            />
+            <div>
+              <p className="text-small font-medium text-amber-900">
+                Custom contract on your {subscription.plan.name} plan
+              </p>
+              <p className="mt-1 text-caption text-amber-900/80">
+                Your account has bespoke limits that replace some of the
+                standard {subscription.plan.name} caps. The figures below
+                on the <strong className="font-medium">{subscription.plan.name}</strong>{" "}
+                card reflect what's actually applied to you; switching to a
+                different plan would move you onto that plan's standard caps.
+              </p>
+              {customLimits.note ? (
+                <p className="mt-2 text-caption italic text-amber-900/90">
+                  "{customLimits.note}"
+                </p>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <div className="grid gap-4 md:grid-cols-3">
         {plans.map((plan) => {
           const isCurrent = plan.code === currentPlanCode;
@@ -142,23 +186,32 @@ export function PlanPickerClient({
               </p>
 
               <ul className="mt-4 flex-1 space-y-2">
-                {renderLimitLine(
+                {/* Limit rows. Overrides (#71) only apply on the tenant's
+                    CURRENT plan card — switching plans abandons the
+                    bespoke contract, so other cards stay on raw caps.
+                    `renderLimit` annotates overridden rows with a
+                    "(custom)" tag + strikes through the plan default so
+                    the relationship between contract and catalogue is
+                    legible at a glance. */}
+                {renderLimit(
                   "Users",
-                  plan.maxUsers === null ? "Unlimited" : plan.maxUsers,
+                  plan.maxUsers,
+                  isCurrent ? customLimits.maxUsers : null,
                 )}
-                {renderLimitLine(
+                {renderLimit(
                   "Invoices / month",
-                  plan.maxInvoicesMonthly === null
-                    ? "Unlimited"
-                    : plan.maxInvoicesMonthly,
+                  plan.maxInvoicesMonthly,
+                  isCurrent ? customLimits.maxInvoicesMonthly : null,
                 )}
-                {renderLimitLine(
+                {renderLimit(
                   "Branches",
-                  plan.maxBranches === null ? "Unlimited" : plan.maxBranches,
+                  plan.maxBranches,
+                  isCurrent ? customLimits.maxBranches : null,
                 )}
-                {renderLimitLine(
+                {renderLimit(
                   "Warehouses",
-                  plan.maxWarehouses === null ? "Unlimited" : plan.maxWarehouses,
+                  plan.maxWarehouses,
+                  isCurrent ? customLimits.maxWarehouses : null,
                 )}
                 {plan.features.map((f) => (
                   <li key={f} className="flex items-start gap-2 text-caption text-text-secondary">
@@ -202,12 +255,34 @@ export function PlanPickerClient({
   );
 }
 
-function renderLimitLine(label: string, value: string | number) {
+function renderLimit(
+  label: string,
+  planCap: number | null,
+  customCap: number | null,
+) {
+  const planLabel = planCap === null ? "Unlimited" : planCap.toLocaleString();
+  const hasOverride = customCap !== null;
+  const effectiveLabel = hasOverride
+    ? customCap === 0
+      ? "0 (frozen)"
+      : customCap.toLocaleString()
+    : planLabel;
   return (
     <li className="flex items-start gap-2 text-caption text-text-secondary">
       <Check className="mt-0.5 h-3.5 w-3.5 text-emerald-700" aria-hidden />
       <span>
-        {label}: <span className="font-medium text-charcoal">{value}</span>
+        {label}: <span className="font-medium text-charcoal">{effectiveLabel}</span>
+        {hasOverride ? (
+          <>
+            {" "}
+            <span className="ml-1 inline-flex items-center rounded-full bg-amber-100 px-1.5 text-[10px] font-medium text-amber-900">
+              custom
+            </span>
+            <span className="ml-1 text-text-tertiary">
+              (plan: <span className="line-through">{planLabel}</span>)
+            </span>
+          </>
+        ) : null}
       </span>
     </li>
   );

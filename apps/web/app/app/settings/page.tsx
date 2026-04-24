@@ -84,8 +84,19 @@ export default async function SettingsPage() {
 
       {subscription ? (
         (() => {
-          const { plan, status, billingCycle, trialEndsAt, currentPeriodEnd } = subscription;
+          const { plan, status, billingCycle, trialEndsAt, currentPeriodEnd, customLimits } = subscription;
           const statusCopy = STATUS_COPY[status];
+          // Per-tenant override awareness (#71 / #72). If any resource has
+          // a bespoke cap, we flag "Custom contract" next to the plan name
+          // so the tenant understands why the chips below might show a
+          // bigger ceiling than the public plan advertises. Full detail +
+          // the operator's note live on the plan picker page — this is
+          // just a breadcrumb back to it.
+          const hasOverride =
+            customLimits.maxUsers !== null ||
+            customLimits.maxInvoicesMonthly !== null ||
+            customLimits.maxBranches !== null ||
+            customLimits.maxWarehouses !== null;
           const priceCents =
             billingCycle === "yearly" ? plan.yearlyPriceCents : plan.monthlyPriceCents;
           const priceLabel = billingCycle === "yearly" ? "per year" : "per month";
@@ -101,8 +112,20 @@ export default async function SettingsPage() {
                       {statusCopy.label}
                     </span>
                   </div>
-                  <p className="mt-2 text-h3 font-semibold text-charcoal">{plan.name}</p>
+                  <p className="mt-2 text-h3 font-semibold text-charcoal">
+                    {plan.name}
+                    {hasOverride ? (
+                      <span className="ml-2 inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 align-middle text-caption font-medium text-amber-900">
+                        Custom contract
+                      </span>
+                    ) : null}
+                  </p>
                   <p className="text-caption text-text-secondary">{plan.tagline}</p>
+                  {hasOverride && customLimits.note ? (
+                    <p className="mt-1 text-caption italic text-text-secondary">
+                      "{customLimits.note}"
+                    </p>
+                  ) : null}
                   <p className="mt-3 text-small text-text-secondary">
                     {formatLKR(priceCents)} {priceLabel} · billed {billingCycle}
                   </p>

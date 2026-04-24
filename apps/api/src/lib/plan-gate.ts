@@ -459,6 +459,19 @@ export async function getTenantSubscription(tenantId: string): Promise<{
   trialEndsAt: Date | null;
   currentPeriodStart: Date;
   currentPeriodEnd: Date;
+  // Per-tenant quota overrides (#71). NULL on every field = "no override,
+  // use the plan's caps." Any non-null integer replaces the plan cap for
+  // that resource. Exposed on the tenant-side read so the settings UI (#72)
+  // can render the effective caps and the "Custom contract" note instead
+  // of the raw plan-catalogue values — those don't match the usage chips
+  // driven by checkQuota when overrides are active.
+  customLimits: {
+    maxUsers: number | null;
+    maxInvoicesMonthly: number | null;
+    maxBranches: number | null;
+    maxWarehouses: number | null;
+    note: string | null;
+  };
   plan: {
     id: string;
     code: string;
@@ -495,6 +508,13 @@ export async function getTenantSubscription(tenantId: string): Promise<{
     trialEndsAt: row.subscription.trialEndsAt,
     currentPeriodStart: row.subscription.currentPeriodStart,
     currentPeriodEnd: row.subscription.currentPeriodEnd,
+    customLimits: {
+      maxUsers: row.subscription.customMaxUsers,
+      maxInvoicesMonthly: row.subscription.customMaxInvoicesMonthly,
+      maxBranches: row.subscription.customMaxBranches,
+      maxWarehouses: row.subscription.customMaxWarehouses,
+      note: row.subscription.customLimitsNote,
+    },
     plan: {
       id: row.plan.id,
       code: row.plan.code,
