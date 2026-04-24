@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
 import { PlatformApiError, platformApi } from "@/lib/platform-api";
+import { PlatformMfaCard } from "./mfa-card";
 
 export function PlatformAccountClient() {
   const router = useRouter();
@@ -94,6 +95,8 @@ export function PlatformAccountClient() {
           </button>
         </form>
       </section>
+
+      <PlatformMfaCard />
 
       <section className="rounded-card border border-white/10 bg-black/20 p-6">
         <h2 className="text-h3 text-white">Sign out</h2>
