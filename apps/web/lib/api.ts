@@ -5395,6 +5395,19 @@ export interface TenantSubscriptionResponse {
   trialEndsAt: string | null;
   currentPeriodStart: string;
   currentPeriodEnd: string;
+  // Per-tenant quota overrides (#71). Every field null = "no custom
+  // contract, use the plan's caps." A non-null integer replaces the
+  // plan's cap for that resource. The tenant's own settings page (#72)
+  // renders effective caps (`custom ?? plan`) and surfaces the note so
+  // the plan card matches what the usage chips show — checkQuota already
+  // coalesces override-first on the API side.
+  customLimits: {
+    maxUsers: number | null;
+    maxInvoicesMonthly: number | null;
+    maxBranches: number | null;
+    maxWarehouses: number | null;
+    note: string | null;
+  };
   plan: {
     id: string;
     code: string;
