@@ -363,6 +363,29 @@ export const platformApi = {
   // #60 — observability read-out for /platform/health.
   getSystemHealth: () =>
     request<SystemHealthPayload>("/platform/system-health"),
+  // #61 — pricing plans + tenant subscriptions.
+  listPlans: () => request<{ plans: PlatformPlan[] }>("/platform/plans"),
+  getTenantSubscription: (tenantId: string) =>
+    request<{ subscription: PlatformTenantSubscription }>(
+      `/platform/tenants/${tenantId}/subscription`,
+    ),
+  changeTenantPlan: (
+    tenantId: string,
+    body: {
+      planCode: string;
+      billingCycle?: "monthly" | "yearly";
+      endTrial?: boolean;
+      reason: string;
+    },
+  ) =>
+    request<{
+      ok: true;
+      changed: boolean;
+      subscription: PlatformTenantSubscription;
+    }>(`/platform/tenants/${tenantId}/subscription/change-plan`, {
+      method: "POST",
+      json: body,
+    }),
 };
 
 // #60 — observability payload shape. Mirrors SystemHealthPayload in
@@ -407,6 +430,55 @@ export interface SystemHealthPayload {
     uptimeSeconds: number | null;
     queueDepths: Record<string, number>;
   };
+}
+
+// #61 — plans + subscriptions.  Keep in lockstep with the server
+// schema (packages/db/src/schema/plans.ts + tenant-subscriptions.ts).
+// Prices are LKR cents; divide at the edge only.
+export const PLAN_CODES = ["starter", "growth", "scale"] as const;
+export type PlanCode = (typeof PLAN_CODES)[number];
+
+export const SUBSCRIPTION_STATUSES = [
+  "trial",
+  "active",
+  "past_due",
+  "cancelled",
+] as const;
+export type SubscriptionStatus = (typeof SUBSCRIPTION_STATUSES)[number];
+
+export const BILLING_CYCLES = ["monthly", "yearly"] as const;
+export type BillingCycle = (typeof BILLING_CYCLES)[number];
+
+export interface PlatformPlan {
+  id: string;
+  code: string;
+  name: string;
+  tagline: string;
+  monthlyPriceCents: number;
+  yearlyPriceCents: number;
+  currency: string;
+  maxUsers: number | null;
+  maxInvoicesMonthly: number | null;
+  maxBranches: number | null;
+  maxWarehouses: number | null;
+  features: string[];
+  isPublic: boolean;
+  sortOrder: number;
+}
+
+export interface PlatformTenantSubscription {
+  id: string;
+  tenantId: string;
+  status: SubscriptionStatus;
+  billingCycle: BillingCycle;
+  trialEndsAt: string | null;
+  currentPeriodStart: string;
+  currentPeriodEnd: string;
+  cancelledAt: string | null;
+  cancelReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+  plan: PlatformPlan;
 }
 
 // #58 — the global audit feed includes tenantId so the UI can link
