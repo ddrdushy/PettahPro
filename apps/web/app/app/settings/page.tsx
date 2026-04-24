@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { cookies } from "next/headers";
-import { Hash, ArrowRight, Bell, CheckCircle2, UserCog, Coins, FileText, KeyRound } from "lucide-react";
+import { Hash, ArrowRight, Bell, CheckCircle2, UserCog, Coins, FileText, KeyRound, ShieldCheck } from "lucide-react";
 import type { TenantSettingsResponse } from "@/lib/api";
 import { PageHeader } from "@/components/app/page-header";
 import { SettingsFormClient } from "./settings-form-client";
@@ -125,6 +125,21 @@ export default async function SettingsPage() {
                 <p className="text-small font-medium text-charcoal">Change password</p>
                 <p className="text-caption text-text-secondary">
                   Update your sign-in password. Saving signs out every other session for your account — useful if you think someone else had access.
+                </p>
+              </div>
+            </div>
+            <ArrowRight className="h-4 w-4 text-text-tertiary" aria-hidden />
+          </Link>
+          <Link
+            href="/app/settings/security"
+            className="flex items-center justify-between rounded-md border-hairline border-border px-4 py-3 hover:bg-surface-recessed/40"
+          >
+            <div className="flex items-start gap-3">
+              <ShieldCheck className="mt-0.5 h-4 w-4 text-text-tertiary" aria-hidden />
+              <div>
+                <p className="text-small font-medium text-charcoal">Two-factor authentication</p>
+                <p className="text-caption text-text-secondary">
+                  Add a second step to sign-in using an authenticator app (Google Authenticator, 1Password, Authy, Bitwarden). Keep your backup codes somewhere safe — they're the only way back in if you lose your phone.
                 </p>
               </div>
             </div>

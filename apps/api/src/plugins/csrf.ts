@@ -59,6 +59,9 @@ const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 // Prefix match (startsWith) because /portal/auth/verify + variants with
 // a trailing slash or query string both need to land.
 const EXEMPT_PREFIXES = [
+  // `/auth/login` covers both step 1 (`/auth/login`) and step 2
+  // (`/auth/login/mfa`, #51) — both are pre-session and there's no
+  // double-submit token to check yet.
   "/auth/login",
   "/auth/signup",
   "/portal/auth/request-otp",

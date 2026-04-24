@@ -64,3 +64,4 @@ export * from "./item-batches.js";
 export * from "./item-serials.js";
 export * from "./stock-movement-batch-allocations.js";
 export * from "./document-templates.js";
+export * from "./user-mfa.js";

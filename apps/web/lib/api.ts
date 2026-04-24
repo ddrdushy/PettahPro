@@ -107,8 +107,20 @@ export const api = {
     password: string;
   }) => request<{ user: User; tenant: Tenant }>("/auth/signup", { method: "POST", json: body }),
 
+  // #51 — login returns EITHER `{ user }` (no MFA, session minted) OR
+  // `{ mfaRequired: true, challengeId }` (step 2 needed). Callers MUST
+  // branch on the `mfaRequired` discriminator. Both shapes are 200s;
+  // errors (401/400) use the standard ApiError path.
   login: (body: { email: string; password: string }) =>
-    request<{ user: User }>("/auth/login", { method: "POST", json: body }),
+    request<
+      { user: User; mfaRequired?: undefined } | { mfaRequired: true; challengeId: string }
+    >("/auth/login", { method: "POST", json: body }),
+
+  loginMfa: (body: { challengeId: string; code: string }) =>
+    request<{ user: User; backupCodesRemaining: number }>("/auth/login/mfa", {
+      method: "POST",
+      json: body,
+    }),
 
   changePassword: (body: { currentPassword: string; newPassword: string }) =>
     request<{ ok: true }>("/auth/change-password", { method: "POST", json: body }),
@@ -116,9 +128,40 @@ export const api = {
   logout: () => request<{ ok: true }>("/auth/logout", { method: "POST" }),
 
   me: () =>
-    request<{ user: User; tenant: Tenant; permissions: CallerPermissions }>("/auth/me", {
+    request<{
+      user: User;
+      tenant: Tenant;
+      permissions: CallerPermissions;
+      mfa: { enabled: boolean };
+    }>("/auth/me", {
       method: "GET",
     }),
+
+  // #51 — MFA enrol / disable / status. All session-gated; the flow is:
+  //   1) mfaEnrollStart -> render QR + secret
+  //   2) mfaEnrollVerify -> stores secret, returns one-time backup codes
+  //   3) mfaDisable -> requires a valid TOTP or backup code
+  mfaStatus: () =>
+    request<{
+      enabled: boolean;
+      enrolledAt: string | null;
+      lastUsedAt: string | null;
+      backupCodesRemaining: number;
+    }>("/auth/mfa/status"),
+  mfaEnrollStart: () =>
+    request<{
+      tempToken: string;
+      otpauthUri: string;
+      secret: string;
+      qrCodeDataUrl: string | null;
+    }>("/auth/mfa/enroll", { method: "POST" }),
+  mfaEnrollVerify: (body: { tempToken: string; code: string }) =>
+    request<{ ok: true; backupCodes: string[] }>("/auth/mfa/enroll/verify", {
+      method: "POST",
+      json: body,
+    }),
+  mfaDisable: (body: { code: string }) =>
+    request<{ ok: true }>("/auth/mfa/disable", { method: "POST", json: body }),
 
   listCustomers: (q?: string) =>
     request<{ customers: Customer[] }>(`/customers${q ? `?q=${encodeURIComponent(q)}` : ""}`),

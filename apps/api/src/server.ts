@@ -148,6 +148,21 @@ export async function buildServer(): Promise<FastifyInstance> {
   // are set via route config.
   await server.register(rateLimitPlugin);
   await server.register(identityPlugin);
+  // #51 — loud warning if MFA_ENCRYPTION_KEY isn't set in prod. In dev
+  // we fall back to an HKDF-derived key from SESSION_SECRET so local
+  // environments work out of the box; prod MUST set this independently
+  // so rotating SESSION_SECRET doesn't invalidate every TOTP secret at
+  // rest. See apps/api/src/modules/identity/mfa.ts for the derivation.
+  if (!process.env.MFA_ENCRYPTION_KEY) {
+    const msg =
+      "MFA_ENCRYPTION_KEY not set — deriving from SESSION_SECRET (dev only). " +
+      "Generate with: node -e \"console.log(require('crypto').randomBytes(32).toString('base64'))\"";
+    if (process.env.NODE_ENV === "production") {
+      server.log.error(msg);
+    } else {
+      server.log.warn(msg);
+    }
+  }
   // CSRF double-submit (#50 / gap A5). Must register AFTER identity so
   // @fastify/cookie is already wired (we need req.unsignCookie + the
   // parsed req.cookies map), and BEFORE business routes so the
