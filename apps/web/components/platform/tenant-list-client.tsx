@@ -71,6 +71,13 @@ function formatDate(s: string | null): string {
   }
 }
 
+function trialCountdown(iso: string): string {
+  const ms = new Date(iso).getTime() - Date.now();
+  if (ms <= 0) return "ended";
+  const days = Math.ceil(ms / (1000 * 60 * 60 * 24));
+  return `${days}d left`;
+}
+
 function relativeTime(s: string | null): string {
   if (!s) return "Never";
   const diffMs = Date.now() - new Date(s).getTime();
@@ -142,11 +149,100 @@ function downloadCsv(filename: string, rows: string[][]) {
 type SortKey =
   | "name"
   | "status"
+  | "plan"
+  | "subscription"
   | "country"
   | "users"
   | "lastActive"
   | "created";
 type SortDir = "asc" | "desc";
+
+type BaseParams = {
+  status?: string;
+  plan?: string;
+  subscriptionStatus?: string;
+  trialEndingSoon?: string;
+  search?: string;
+};
+
+function buildBaseQs(baseParams: BaseParams): URLSearchParams {
+  const qs = new URLSearchParams();
+  if (baseParams.status) qs.set("status", baseParams.status);
+  if (baseParams.plan) qs.set("plan", baseParams.plan);
+  if (baseParams.subscriptionStatus) {
+    qs.set("subscriptionStatus", baseParams.subscriptionStatus);
+  }
+  if (baseParams.trialEndingSoon === "true") {
+    qs.set("trialEndingSoon", "true");
+  }
+  if (baseParams.search) qs.set("search", baseParams.search);
+  return qs;
+}
+
+// Compact plan pill — Starter / Growth / Scale chips are a recognisable
+// ops signal. Same colour palette as the status pills so the row doesn't
+// look like a rainbow.
+function planPill(code: string | null): { label: string; cls: string } {
+  if (!code) return { label: "—", cls: "bg-white/5 text-white/40" };
+  switch (code) {
+    case "starter":
+      return {
+        label: "Starter",
+        cls: "bg-blue-500/20 text-blue-200 ring-1 ring-inset ring-blue-500/30",
+      };
+    case "growth":
+      return {
+        label: "Growth",
+        cls: "bg-violet-500/20 text-violet-200 ring-1 ring-inset ring-violet-500/30",
+      };
+    case "scale":
+      return {
+        label: "Scale",
+        cls: "bg-mint/20 text-mint ring-1 ring-inset ring-mint/30",
+      };
+    default:
+      // Hidden / grandfathered plans still need to render — ops sees the
+      // raw code so they know they're looking at something outside the
+      // public catalogue.
+      return {
+        label: code,
+        cls: "bg-white/10 text-white/70 ring-1 ring-inset ring-white/20",
+      };
+  }
+}
+
+// Subscription status is distinct from tenant lifecycle status. Rose
+// = needs-attention (past_due, cancelled); amber = in-progress (trial);
+// mint = happy path (active).
+function subStatusPill(
+  status: string | null,
+): { label: string; cls: string } {
+  if (!status) return { label: "—", cls: "bg-white/5 text-white/40" };
+  switch (status) {
+    case "trial":
+      return {
+        label: "Trial",
+        cls: "bg-amber-400/20 text-amber-200 ring-1 ring-inset ring-amber-400/30",
+      };
+    case "active":
+      return {
+        label: "Active",
+        cls: "bg-mint/20 text-mint ring-1 ring-inset ring-mint/30",
+      };
+    case "past_due":
+      return {
+        label: "Past due",
+        cls: "bg-orange-500/20 text-orange-200 ring-1 ring-inset ring-orange-500/30",
+      };
+    case "cancelled":
+      return {
+        label: "Cancelled",
+        cls: "bg-red-500/20 text-red-300 ring-1 ring-inset ring-red-500/30",
+      };
+    default:
+      return { label: status, cls: "bg-white/10 text-white/70" };
+  }
+}
 
 // A mini SortHeader that renders inside the client table. Same shape
 // as the server-side one so URLs keep working — sort state lives in
@@ -163,14 +259,12 @@ function SortHeader({
   sortKey: SortKey;
   currentKey: SortKey;
   currentDir: SortDir;
-  baseParams: { status?: string; search?: string };
+  baseParams: BaseParams;
   align?: "left" | "right";
 }) {
   const active = currentKey === sortKey;
   const nextDir: SortDir = active && currentDir === "asc" ? "desc" : "asc";
-  const qs = new URLSearchParams();
-  if (baseParams.status) qs.set("status", baseParams.status);
-  if (baseParams.search) qs.set("search", baseParams.search);
+  const qs = buildBaseQs(baseParams);
   qs.set("sort", sortKey);
   qs.set("dir", nextDir);
   const arrow = active ? (currentDir === "asc" ? "↑" : "↓") : "";
@@ -204,7 +298,7 @@ export function TenantListClient({
   canBulkAct: boolean;
   currentSort: SortKey;
   currentDir: SortDir;
-  baseParams: { status?: string; search?: string };
+  baseParams: BaseParams;
 }) {
   const router = useRouter();
   // Map id → selected. Using a Map keeps Set-like semantics but gives
@@ -400,6 +494,10 @@ export function TenantListClient({
       "slug",
       "business_name",
       "status",
+      "plan_code",
+      "subscription_status",
+      "billing_cycle",
+      "trial_ends_at",
       "country",
       "timezone",
       "user_count",
@@ -411,6 +509,10 @@ export function TenantListClient({
       t.slug,
       t.businessName,
       t.status,
+      t.planCode ?? "",
+      t.subscriptionStatus ?? "",
+      t.billingCycle ?? "",
+      t.trialEndsAt ?? "",
       t.country,
       t.timezone,
       String(t.userCount),
@@ -600,6 +702,20 @@ export function TenantListClient({
                 baseParams={baseParams}
               />
               <SortHeader
+                label="Plan"
+                sortKey="plan"
+                currentKey={currentSort}
+                currentDir={currentDir}
+                baseParams={baseParams}
+              />
+              <SortHeader
+                label="Subscription"
+                sortKey="subscription"
+                currentKey={currentSort}
+                currentDir={currentDir}
+                baseParams={baseParams}
+              />
+              <SortHeader
                 label="Country"
                 sortKey="country"
                 currentKey={currentSort}
@@ -634,7 +750,7 @@ export function TenantListClient({
             {tenants.length === 0 && (
               <tr>
                 <td
-                  colSpan={canBulkAct ? 7 : 6}
+                  colSpan={canBulkAct ? 9 : 8}
                   className="px-4 py-16 text-center text-white/50"
                 >
                   No tenants match those filters.
@@ -643,6 +759,8 @@ export function TenantListClient({
             )}
             {tenants.map((t, idx) => {
               const pill = statusPill(t.status);
+              const plan = planPill(t.planCode);
+              const sub = subStatusPill(t.subscriptionStatus);
               const isSelected = selected.has(t.id);
               const isFocused = idx === focusIdx;
               return (
@@ -695,6 +813,33 @@ export function TenantListClient({
                     >
                       {pill.label}
                     </span>
+                  </td>
+                  <td className="px-4 py-3">
+                    <span
+                      className={`inline-flex rounded-full px-2 py-0.5 text-caption ${plan.cls}`}
+                    >
+                      {plan.label}
+                    </span>
+                    {t.billingCycle ? (
+                      <span className="ml-2 text-caption text-white/40">
+                        {t.billingCycle === "yearly" ? "yr" : "mo"}
+                      </span>
+                    ) : null}
+                  </td>
+                  <td className="px-4 py-3">
+                    <span
+                      className={`inline-flex rounded-full px-2 py-0.5 text-caption ${sub.cls}`}
+                    >
+                      {sub.label}
+                    </span>
+                    {/* Inline trial countdown — ops wants to see "3d left"
+                        at a glance without hovering into the detail page.
+                        Only shown when on trial + a future trial_ends_at. */}
+                    {t.subscriptionStatus === "trial" && t.trialEndsAt ? (
+                      <span className="ml-2 text-caption text-white/40">
+                        {trialCountdown(t.trialEndsAt)}
+                      </span>
+                    ) : null}
                   </td>
                   <td className="px-4 py-3 text-white/70">{t.country}</td>
                   <td className="px-4 py-3 text-right tabular-nums text-white/80">

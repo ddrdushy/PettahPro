@@ -1,6 +1,16 @@
 import { randomBytes } from "node:crypto";
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
-import { and, desc, eq, isNull, sql, ilike, or, count } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  isNotNull,
+  isNull,
+  sql,
+  ilike,
+  or,
+  count,
+} from "drizzle-orm";
 import IORedis from "ioredis";
 import { z } from "zod";
 import { db, schema } from "@pettahpro/db";
@@ -85,6 +95,22 @@ const ListTenantsQuerySchema = z.object({
     .enum(["all", "active", "suspended", "trial", "past-due", "churned"])
     .optional()
     .default("all"),
+  // #66 — Plan / subscription filters. These live alongside the existing
+  // `status` (tenant-lifecycle) filter because the two concepts drifted
+  // apart once #61 introduced its own subscriptions.status. Billing ops
+  // typically filters on subscription state ("who's past_due?"), lifecycle
+  // ops filters on tenant state ("who did we suspend?"). Both stay.
+  plan: z.string().trim().max(32).optional(),
+  subscriptionStatus: z
+    .enum(["all", "trial", "active", "past_due", "cancelled"])
+    .optional()
+    .default("all"),
+  // "Trials ending in the next 7 days" shortcut for revenue outreach.
+  // Narrower window than the trial_ends_at ever — we want the list ops
+  // should call TODAY, not the full trial pool.
+  trialEndingSoon: z
+    .union([z.literal("true"), z.literal("false"), z.literal("")])
+    .optional(),
   search: z.string().trim().max(128).optional(),
   limit: z.coerce.number().int().min(1).max(200).optional().default(50),
   offset: z.coerce.number().int().min(0).optional().default(0),
@@ -819,7 +845,15 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
     if (!parsed.success) {
       return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
     }
-    const { status, search, limit, offset } = parsed.data;
+    const {
+      status,
+      plan,
+      subscriptionStatus,
+      trialEndingSoon,
+      search,
+      limit,
+      offset,
+    } = parsed.data;
 
     // Filter clauses. Status "all" is a no-op.
     const clauses = [isNull(schema.tenants.deletedAt)];
@@ -834,6 +868,29 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
       );
       if (matcher) clauses.push(matcher);
     }
+    // Subscription / plan filters (#66). tenant_subscriptions has no RLS
+    // (#61) so we can join + filter server-side. plans.code is unique,
+    // so filtering by plan code is O(index-seek) even on big tables.
+    if (subscriptionStatus !== "all") {
+      clauses.push(eq(schema.tenantSubscriptions.status, subscriptionStatus));
+    }
+    if (plan && plan.length > 0) {
+      clauses.push(eq(schema.plans.code, plan));
+    }
+    // "Ends in the next 7 days AND not past it yet". The grace-period
+    // job (#63) flips past_due → cancelled 7 days AFTER trial_ends_at,
+    // so this window gives ops a full 7 days of notice before any
+    // automation fires. We require subscriptionStatus='trial' implicitly
+    // via trial_ends_at IS NOT NULL + being in the future.
+    if (trialEndingSoon === "true") {
+      clauses.push(isNotNull(schema.tenantSubscriptions.trialEndsAt));
+      clauses.push(
+        sql`${schema.tenantSubscriptions.trialEndsAt} >= NOW()`,
+      );
+      clauses.push(
+        sql`${schema.tenantSubscriptions.trialEndsAt} < NOW() + interval '7 days'`,
+      );
+    }
 
     // Correlated subqueries for user count + last login per tenant.
     // Tenants table has no RLS so a direct query works; users/mfa do
@@ -844,6 +901,10 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
     // column from outer won't go through RLS cleanly, use a separate
     // aggregate pull after the main tenant list and stitch client-side.
     const whereClause = and(...clauses);
+    // LEFT JOIN subscription + plan so a tenant without a subscription row
+    // (pre-backfill gap) still appears in the list — the UI just shows "—"
+    // for plan. If we INNER-joined, those tenants would vanish and ops
+    // would have no way to find them.
     const tenants = await db
       .select({
         id: schema.tenants.id,
@@ -854,8 +915,22 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
         status: schema.tenants.status,
         createdAt: schema.tenants.createdAt,
         notes: schema.tenants.notes,
+        subscriptionStatus: schema.tenantSubscriptions.status,
+        billingCycle: schema.tenantSubscriptions.billingCycle,
+        trialEndsAt: schema.tenantSubscriptions.trialEndsAt,
+        currentPeriodEnd: schema.tenantSubscriptions.currentPeriodEnd,
+        planCode: schema.plans.code,
+        planName: schema.plans.name,
       })
       .from(schema.tenants)
+      .leftJoin(
+        schema.tenantSubscriptions,
+        eq(schema.tenantSubscriptions.tenantId, schema.tenants.id),
+      )
+      .leftJoin(
+        schema.plans,
+        eq(schema.plans.id, schema.tenantSubscriptions.planId),
+      )
       .where(whereClause)
       .orderBy(desc(schema.tenants.createdAt))
       .limit(limit)
@@ -864,6 +939,14 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
     const totalRows = await db
       .select({ count: count() })
       .from(schema.tenants)
+      .leftJoin(
+        schema.tenantSubscriptions,
+        eq(schema.tenantSubscriptions.tenantId, schema.tenants.id),
+      )
+      .leftJoin(
+        schema.plans,
+        eq(schema.plans.id, schema.tenantSubscriptions.planId),
+      )
       .where(whereClause);
     const total = totalRows[0]?.count ?? 0;
 
@@ -930,6 +1013,15 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
         notes: t.notes,
         userCount: aggregates.get(t.id)?.userCount ?? 0,
         lastLoginAt: aggregates.get(t.id)?.lastLoginAt ?? null,
+        // #66 — plan + subscription summary. All nullable: a tenant with
+        // no subscription row (pre-backfill) returns null for each, which
+        // the UI renders as "—".
+        planCode: t.planCode,
+        planName: t.planName,
+        subscriptionStatus: t.subscriptionStatus,
+        billingCycle: t.billingCycle,
+        trialEndsAt: t.trialEndsAt,
+        currentPeriodEnd: t.currentPeriodEnd,
       })),
     });
   });
