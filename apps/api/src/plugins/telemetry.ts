@@ -7,6 +7,7 @@ import {
   Histogram,
   Registry,
 } from "prom-client";
+import { recordHttpSample } from "./system-health.js";
 
 /**
  * Observability plugin (roadmap #46).
@@ -96,6 +97,10 @@ export const telemetryPlugin: FastifyPluginAsync = fp(
       };
       httpRequestsTotal.inc(labels);
       httpRequestDurationSeconds.observe(labels, durationSeconds);
+      // Feed the in-memory ring buffer used by /platform/health for
+      // minute-by-minute sparklines. See system-health.ts for why this
+      // lives alongside Prom instead of replacing it.
+      recordHttpSample(reply.statusCode);
     });
 
     // The scrape endpoint. No auth — see file-level note above.

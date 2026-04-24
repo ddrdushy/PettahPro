@@ -37,6 +37,7 @@ import {
   setPlatformSessionCookie,
 } from "./cookies.js";
 import { recordPlatformAuditEvent } from "./audit.js";
+import { buildSystemHealthPayload } from "../../plugins/system-health.js";
 
 const SESSION_TTL = 60 * 60 * 12; // match cookies.ts / sessions.ts
 
@@ -2149,5 +2150,19 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.status(404).send({ error: { code: "NOT_FOUND" } });
     }
     return reply.send({ ok: true });
+  });
+
+  // #60 — Observability read-out for /platform/health.
+  //
+  // Intentionally open to all three platform roles: support/billing
+  // engineers need to see whether the platform is healthy to triage
+  // user complaints, even though they can't act on tenants. Nothing
+  // here is tenant-private — it's aggregate API/infra state.
+  fastify.get("/system-health", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+
+    const payload = await buildSystemHealthPayload();
+    return reply.send(payload);
   });
 };
