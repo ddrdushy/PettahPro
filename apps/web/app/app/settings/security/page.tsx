@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { cookies } from "next/headers";
 import { PageHeader } from "@/components/app/page-header";
 import { SecurityClient, type MfaStatus } from "./security-client";
+import { ActiveSessionsCard } from "./sessions-client";
 
 export const metadata: Metadata = { title: "Two-factor authentication" };
 
@@ -41,6 +42,7 @@ export default async function SecurityPage() {
       />
       <section className="mt-6 max-w-2xl">
         <SecurityClient initialStatus={status} />
+        <ActiveSessionsCard />
       </section>
     </main>
   );

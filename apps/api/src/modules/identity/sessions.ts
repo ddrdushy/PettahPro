@@ -25,6 +25,14 @@ export interface Session {
   // form post", not "predict-the-next-token"). Sessions are 30 days sliding,
   // so the window is bounded by that.
   csrfToken: string;
+  // #52 / gap A3 — session management UI. Captured at mint time so the
+  // "active sessions" list can show "Chrome on macOS from 203.0.113.7,
+  // last seen 3 minutes ago" without a separate request log. Optional on
+  // read for back-compat with pre-#52 blobs (fields back-fill as null
+  // there — the list page renders "Unknown device / unknown IP" and the
+  // revoke button still works).
+  ip?: string | null;
+  userAgent?: string | null;
 }
 
 function genSessionId(): string {
@@ -42,6 +50,8 @@ export async function createSession(input: {
   tenantId: string;
   email: string;
   ttlSeconds?: number;
+  ip?: string | null;
+  userAgent?: string | null;
 }): Promise<Session> {
   const id = genSessionId();
   const now = Math.floor(Date.now() / 1000);
@@ -55,6 +65,12 @@ export async function createSession(input: {
     lastSeenAt: now,
     expiresAt: now + ttl,
     csrfToken: genCsrfToken(),
+    ip: input.ip ?? null,
+    // Long UA strings (>512 chars) get truncated — the index/list pages only
+    // show a humanised "Chrome on macOS" summary anyway, and the raw string is
+    // purely for debug detail. Cap keeps the Redis blob bounded against the
+    // occasional bot UA dumping 2 KB of junk into the header.
+    userAgent: input.userAgent ? input.userAgent.slice(0, 512) : null,
   };
 
   const pipeline = redis.multi();
@@ -114,4 +130,95 @@ export async function destroyAllSessionsForUser(userId: string): Promise<void> {
   if (ids.length === 0) return;
   const keys = ids.map((id) => SESSION_PREFIX + id);
   await redis.del(...keys, USER_INDEX_PREFIX + userId);
+}
+
+// #52 / gap A3 — session management UI helpers.
+//
+// The secondary index `user-sessions:{userId}` is a Redis SET of session
+// IDs, maintained by createSession (SADD) / destroySession (SREM). Listing
+// does an MGET against the blobs in one round-trip; entries that come back
+// null are orphans (session expired but the set entry didn't get cleaned
+// up — possible when Redis evicts the blob before this helper notices, or
+// when a prior version didn't SREM on destroy). We opportunistically clean
+// those up on read so the set doesn't grow unbounded.
+
+export async function listSessionsForUser(userId: string): Promise<Session[]> {
+  const ids = await redis.smembers(USER_INDEX_PREFIX + userId);
+  if (ids.length === 0) return [];
+  const keys = ids.map((id) => SESSION_PREFIX + id);
+  const blobs = await redis.mget(...keys);
+  const sessions: Session[] = [];
+  const orphans: string[] = [];
+  for (let i = 0; i < ids.length; i++) {
+    const raw = blobs[i];
+    const id = ids[i];
+    if (!id) continue;
+    if (!raw) {
+      orphans.push(id);
+      continue;
+    }
+    try {
+      sessions.push(JSON.parse(raw) as Session);
+    } catch {
+      orphans.push(id);
+    }
+  }
+  if (orphans.length > 0) {
+    await redis.srem(USER_INDEX_PREFIX + userId, ...orphans);
+  }
+  // Most-recent-first so the current device tends to land at the top of
+  // the list — but the caller decides display order, the helper is
+  // deterministic but unopinionated.
+  sessions.sort((a, b) => b.lastSeenAt - a.lastSeenAt);
+  return sessions;
+}
+
+// Revoke a specific session. Returns true if we actually destroyed
+// something (useful to tell "someone clicked twice on a stale UI" from
+// "session didn't belong to this user"). Enforces ownership — the caller
+// passes their userId and we only act if the session's userId matches.
+// A session ID from a different user silently no-ops (returns false);
+// callers should treat that as a 404.
+export async function destroySessionForUser(
+  userId: string,
+  sessionId: string,
+): Promise<boolean> {
+  const raw = await redis.get(SESSION_PREFIX + sessionId);
+  if (!raw) {
+    // Opportunistically prune the index entry if it's lingering.
+    await redis.srem(USER_INDEX_PREFIX + userId, sessionId);
+    return false;
+  }
+  try {
+    const s = JSON.parse(raw) as Session;
+    if (s.userId !== userId) return false;
+    await redis.del(SESSION_PREFIX + sessionId);
+    await redis.srem(USER_INDEX_PREFIX + userId, sessionId);
+    return true;
+  } catch {
+    // Malformed blob — clean up and report no-op.
+    await redis.del(SESSION_PREFIX + sessionId);
+    await redis.srem(USER_INDEX_PREFIX + userId, sessionId);
+    return false;
+  }
+}
+
+// Revoke every session for this user except the one the caller is
+// currently using. Returns the count of sessions destroyed so the UI can
+// show "Signed out 3 other devices." If keepId doesn't belong to the
+// user (or is expired) we still revoke the others — this is the panic
+// button, not a normal flow.
+export async function destroyOtherSessionsForUser(
+  userId: string,
+  keepId: string,
+): Promise<number> {
+  const ids = await redis.smembers(USER_INDEX_PREFIX + userId);
+  const toKill = ids.filter((id) => id !== keepId);
+  if (toKill.length === 0) return 0;
+  const blobKeys = toKill.map((id) => SESSION_PREFIX + id);
+  const pipeline = redis.multi();
+  pipeline.del(...blobKeys);
+  pipeline.srem(USER_INDEX_PREFIX + userId, ...toKill);
+  await pipeline.exec();
+  return toKill.length;
 }

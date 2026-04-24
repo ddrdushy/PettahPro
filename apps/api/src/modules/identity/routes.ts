@@ -14,7 +14,10 @@ import {
 import {
   createSession,
   destroyAllSessionsForUser,
+  destroyOtherSessionsForUser,
   destroySession,
+  destroySessionForUser,
+  listSessionsForUser,
   readSession,
 } from "./sessions.js";
 import {
@@ -212,6 +215,8 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       tenantId: tenant.id,
       email: user.email,
       ttlSeconds: SESSION_TTL,
+      ip: req.ip ?? null,
+      userAgent: req.headers["user-agent"] ?? null,
     });
     setSessionCookie(reply, session.id, SESSION_TTL);
     setCsrfCookie(reply, session.csrfToken, SESSION_TTL);
@@ -271,6 +276,8 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       tenantId: user.tenant_id,
       email: user.email,
       ttlSeconds: SESSION_TTL,
+      ip: req.ip ?? null,
+      userAgent: req.headers["user-agent"] ?? null,
     });
     setSessionCookie(reply, session.id, SESSION_TTL);
     setCsrfCookie(reply, session.csrfToken, SESSION_TTL);
@@ -413,6 +420,8 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
         tenantId: challenge.tenantId,
         email: challenge.email,
         ttlSeconds: SESSION_TTL,
+        ip: req.ip ?? null,
+        userAgent: req.headers["user-agent"] ?? null,
       });
       setSessionCookie(reply, session.id, SESSION_TTL);
       setCsrfCookie(reply, session.csrfToken, SESSION_TTL);
@@ -543,6 +552,8 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       tenantId: session.tenantId,
       email: userRow.email,
       ttlSeconds: SESSION_TTL,
+      ip: req.ip ?? null,
+      userAgent: req.headers["user-agent"] ?? null,
     });
     setSessionCookie(reply, fresh.id, SESSION_TTL);
     setCsrfCookie(reply, fresh.csrfToken, SESSION_TTL);
@@ -923,5 +934,154 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       lastUsedAt: row?.lastUsedAt ?? null,
       backupCodesRemaining: row ? row.backupCodesHash.length : 0,
     });
+  });
+
+  // -------------------------------------------------------------------
+  // #52 / gap A3 — active sessions list + revoke.
+  //
+  // Natural follow-on to #51 MFA: if 2FA is on, the next question is
+  // "who's signed in as me right now, and can I kick them off?" All three
+  // endpoints are session-gated through the standard cookie-unsign path —
+  // no pre-session exemptions, they're all under the CSRF plugin because
+  // they're session-scoped mutations.
+  //
+  // The list does not include session IDs in the response — leaking a
+  // session ID to the JS layer would undo the HttpOnly guarantee that the
+  // session cookie carries. Each session gets a short `revokeKey` (HMAC
+  // of id under the current session's CSRF token) that the client echoes
+  // back to revoke — server verifies the HMAC and maps it to the real
+  // session ID. That keeps the ID server-side while still letting the UI
+  // address individual rows.
+  // -------------------------------------------------------------------
+
+  // Deterministic HMAC so the client can round-trip the opaque revoke
+  // key without us having to persist a mapping. Keyed under the caller's
+  // current session CSRF token (which itself is minted per-session and
+  // never leaves Redis / the non-HttpOnly cookie), so a revoke key
+  // captured from one tab is useless once that session logs out.
+  async function deriveRevokeKey(currentCsrfToken: string, sessionId: string): Promise<string> {
+    const { createHmac } = await import("node:crypto");
+    return createHmac("sha256", currentCsrfToken)
+      .update(sessionId)
+      .digest("base64url")
+      .slice(0, 24);
+  }
+
+  fastify.get("/sessions", async (req, reply) => {
+    const cookie = req.cookies[SESSION_COOKIE];
+    if (!cookie) return reply.status(401).send({ error: { code: "UNAUTHENTICATED" } });
+    const unsigned = req.unsignCookie(cookie);
+    if (!unsigned.valid || !unsigned.value) {
+      return reply.status(401).send({ error: { code: "UNAUTHENTICATED" } });
+    }
+    const session = await readSession(unsigned.value);
+    if (!session) return reply.status(401).send({ error: { code: "UNAUTHENTICATED" } });
+
+    const sessions = await listSessionsForUser(session.userId);
+    const items = await Promise.all(
+      sessions.map(async (s) => ({
+        revokeKey: await deriveRevokeKey(session.csrfToken, s.id),
+        isCurrent: s.id === session.id,
+        createdAt: new Date(s.createdAt * 1000).toISOString(),
+        lastSeenAt: new Date(s.lastSeenAt * 1000).toISOString(),
+        expiresAt: new Date(s.expiresAt * 1000).toISOString(),
+        ip: s.ip ?? null,
+        userAgent: s.userAgent ?? null,
+      })),
+    );
+    return reply.send({ sessions: items });
+  });
+
+  const RevokeSessionSchema = z.object({
+    revokeKey: z.string().min(1).max(128),
+  });
+
+  fastify.post("/sessions/revoke", async (req, reply) => {
+    const cookie = req.cookies[SESSION_COOKIE];
+    if (!cookie) return reply.status(401).send({ error: { code: "UNAUTHENTICATED" } });
+    const unsigned = req.unsignCookie(cookie);
+    if (!unsigned.valid || !unsigned.value) {
+      return reply.status(401).send({ error: { code: "UNAUTHENTICATED" } });
+    }
+    const session = await readSession(unsigned.value);
+    if (!session) return reply.status(401).send({ error: { code: "UNAUTHENTICATED" } });
+
+    const parsed = RevokeSessionSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+    }
+    const { revokeKey } = parsed.data;
+
+    // Resolve the opaque key back to a real session ID by hashing every
+    // live session and constant-time comparing. The caller's own user
+    // scope (listSessionsForUser) is the ownership boundary — a revoke
+    // key minted under userA's CSRF token cannot match any sessionId
+    // stored under userB, because the HMAC input (CSRF token) differs.
+    const mySessions = await listSessionsForUser(session.userId);
+    let targetId: string | null = null;
+    for (const candidate of mySessions) {
+      const derived = await deriveRevokeKey(session.csrfToken, candidate.id);
+      if (derived === revokeKey) {
+        targetId = candidate.id;
+        break;
+      }
+    }
+    if (!targetId) {
+      return reply.status(404).send({ error: { code: "SESSION_NOT_FOUND" } });
+    }
+
+    const destroyed = await destroySessionForUser(session.userId, targetId);
+    if (!destroyed) {
+      return reply.status(404).send({ error: { code: "SESSION_NOT_FOUND" } });
+    }
+
+    // If the caller just revoked the session they're currently sitting on,
+    // clear the cookies so the next request lands cleanly on /login. The
+    // 200 still goes out carrying the Set-Cookie headers — the browser
+    // deletes the cookies and the next nav gets a proper 401 / redirect.
+    if (targetId === session.id) {
+      clearSessionCookie(reply);
+      clearCsrfCookie(reply);
+    }
+
+    await withTenant(session.tenantId, async (tx) => {
+      await recordAuditEvent(tx, {
+        kind: "user.session_revoked",
+        summary:
+          targetId === session.id
+            ? `Revoked own current session (${session.email})`
+            : `Revoked a session (${session.email})`,
+        actorUserId: session.userId,
+        ipAddress: req.ip ?? null,
+        userAgent: req.headers["user-agent"] ?? null,
+      });
+    });
+
+    return reply.send({ ok: true, revokedCurrent: targetId === session.id });
+  });
+
+  fastify.post("/sessions/revoke-others", async (req, reply) => {
+    const cookie = req.cookies[SESSION_COOKIE];
+    if (!cookie) return reply.status(401).send({ error: { code: "UNAUTHENTICATED" } });
+    const unsigned = req.unsignCookie(cookie);
+    if (!unsigned.valid || !unsigned.value) {
+      return reply.status(401).send({ error: { code: "UNAUTHENTICATED" } });
+    }
+    const session = await readSession(unsigned.value);
+    if (!session) return reply.status(401).send({ error: { code: "UNAUTHENTICATED" } });
+
+    const count = await destroyOtherSessionsForUser(session.userId, session.id);
+
+    await withTenant(session.tenantId, async (tx) => {
+      await recordAuditEvent(tx, {
+        kind: "user.session_revoked",
+        summary: `Signed out ${count} other session${count === 1 ? "" : "s"} (${session.email})`,
+        actorUserId: session.userId,
+        ipAddress: req.ip ?? null,
+        userAgent: req.headers["user-agent"] ?? null,
+      });
+    });
+
+    return reply.send({ ok: true, revoked: count });
   });
 };

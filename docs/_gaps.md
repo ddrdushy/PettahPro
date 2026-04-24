@@ -14,7 +14,6 @@ Real risk surface for a system holding payroll, bank, and tax data.
 
 | # | Gap | Why it matters | Rough size |
 |---|---|---|---|
-| A3 | **Session management UI** — users can't see their active sessions or sign-out-elsewhere. | Natural follow-on to A1 (MFA, shipped #51) — closes the loop on "who's signed in as me right now?" | S |
 | A4 | **IP allow-listing per tenant** — admins can't lock app access to office IPs. | Nice-to-have until we have a tenant requesting it; then urgent. | S |
 
 ---

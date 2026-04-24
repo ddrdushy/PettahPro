@@ -16,6 +16,7 @@ export type AuditEventKind =
   | "user.mfa_enrolled"
   | "user.mfa_disabled"
   | "user.mfa_challenge_failed"
+  | "user.session_revoked"
   // Accounting posting flow
   | "journal.post"
   | "journal.void"

@@ -163,6 +163,33 @@ export const api = {
   mfaDisable: (body: { code: string }) =>
     request<{ ok: true }>("/auth/mfa/disable", { method: "POST", json: body }),
 
+  // #52 / gap A3 — active sessions list + revoke. The server returns an
+  // opaque `revokeKey` per row (HMAC of the real session ID under the
+  // caller's current session CSRF token) so the real session IDs never
+  // leave Redis / the HttpOnly cookie. The client round-trips the
+  // opaque key to revoke — server re-derives and resolves it.
+  listSessions: () =>
+    request<{
+      sessions: Array<{
+        revokeKey: string;
+        isCurrent: boolean;
+        createdAt: string;
+        lastSeenAt: string;
+        expiresAt: string;
+        ip: string | null;
+        userAgent: string | null;
+      }>;
+    }>("/auth/sessions"),
+  revokeSession: (body: { revokeKey: string }) =>
+    request<{ ok: true; revokedCurrent: boolean }>("/auth/sessions/revoke", {
+      method: "POST",
+      json: body,
+    }),
+  revokeOtherSessions: () =>
+    request<{ ok: true; revoked: number }>("/auth/sessions/revoke-others", {
+      method: "POST",
+    }),
+
   listCustomers: (q?: string) =>
     request<{ customers: Customer[] }>(`/customers${q ? `?q=${encodeURIComponent(q)}` : ""}`),
   getCustomer: (id: string) => request<CustomerDetail>(`/customers/${id}`),
