@@ -110,17 +110,61 @@ export interface PlatformAuditEntry {
   createdAt: string;
 }
 
+export interface PlatformMfaStatus {
+  enabled: boolean;
+  enrolledAt: string | null;
+  lastUsedAt: string | null;
+  backupCodesRemaining: number;
+}
+
+export interface PlatformMfaEnrollResponse {
+  tempToken: string;
+  otpauthUri: string;
+  secret: string;
+  qrCodeDataUrl: string | null;
+}
+
+// Login response is a union: either the session was minted immediately
+// (no MFA) or we got a pre-session MFA challenge. The UI branches on
+// mfaRequired — see components/platform/login-form.tsx.
+export type PlatformLoginResponse =
+  | { mfaRequired?: false; user: PlatformUser }
+  | { mfaRequired: true; challengeId: string };
+
 export const platformApi = {
   login: (body: { email: string; password: string }) =>
-    request<{ user: PlatformUser }>("/platform/auth/login", {
+    request<PlatformLoginResponse>("/platform/auth/login", {
       method: "POST",
       json: body,
     }),
+  loginMfa: (body: { challengeId: string; code: string }) =>
+    request<{ user: PlatformUser; backupCodesRemaining: number }>(
+      "/platform/auth/login/mfa",
+      { method: "POST", json: body },
+    ),
   logout: () =>
     request<{ ok: true }>("/platform/auth/logout", { method: "POST" }),
-  me: () => request<{ user: PlatformUser }>("/platform/auth/me"),
+  me: () =>
+    request<{ user: PlatformUser; mfa: { enabled: boolean } }>(
+      "/platform/auth/me",
+    ),
   changePassword: (body: { currentPassword: string; newPassword: string }) =>
     request<{ ok: true }>("/platform/auth/change-password", {
+      method: "POST",
+      json: body,
+    }),
+  mfaStatus: () => request<PlatformMfaStatus>("/platform/auth/mfa/status"),
+  mfaEnroll: () =>
+    request<PlatformMfaEnrollResponse>("/platform/auth/mfa/enroll", {
+      method: "POST",
+    }),
+  mfaEnrollVerify: (body: { tempToken: string; code: string }) =>
+    request<{ ok: true; backupCodes: string[] }>(
+      "/platform/auth/mfa/enroll/verify",
+      { method: "POST", json: body },
+    ),
+  mfaDisable: (body: { code: string }) =>
+    request<{ ok: true }>("/platform/auth/mfa/disable", {
       method: "POST",
       json: body,
     }),

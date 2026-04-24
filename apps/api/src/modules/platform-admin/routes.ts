@@ -1,8 +1,26 @@
+import { randomBytes } from "node:crypto";
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { and, desc, eq, isNull, sql, ilike, or, count } from "drizzle-orm";
+import IORedis from "ioredis";
 import { z } from "zod";
 import { db, schema } from "@pettahpro/db";
 import { hashPassword, verifyPassword } from "../identity/password.js";
+import {
+  buildOtpauthUri,
+  buildQrCodeDataUrl,
+  consumeBackupCode,
+  decryptSecret,
+  encryptSecret,
+  generateBackupCodes,
+  generateTotpSecret,
+  hashBackupCodes,
+  verifyTotp,
+} from "../identity/mfa.js";
+import {
+  consumePlatformMfaChallenge,
+  createPlatformMfaChallenge,
+  readPlatformMfaChallenge,
+} from "./mfa-challenge.js";
 import {
   createPlatformSession,
   destroyPlatformSession,
@@ -29,6 +47,23 @@ const LOGIN_RATE_LIMIT = { max: 5, timeWindow: "1 minute" };
 const LoginSchema = z.object({
   email: z.string().email().toLowerCase(),
   password: z.string().min(1),
+});
+
+// #55 — MFA step-2 + enrol + disable. Same shape as the tenant side.
+// Code envelope is deliberately loose (min 1 / max 20) — TOTP vs backup
+// is distinguished at verify time by testing the 6-digit shape first.
+const LoginMfaSchema = z.object({
+  challengeId: z.string().min(1).max(128),
+  code: z.string().min(1).max(20),
+});
+
+const MfaVerifyEnrollSchema = z.object({
+  tempToken: z.string().min(1).max(128),
+  code: z.string().min(6).max(10),
+});
+
+const MfaDisableSchema = z.object({
+  code: z.string().min(1).max(20),
 });
 
 const SuspendSchema = z.object({
@@ -125,6 +160,26 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
       const ok = await verifyPassword(user.passwordHash, password);
       if (!ok) return invalid();
 
+      // #55 — If this platform user has MFA enabled, don't mint the
+      // session on password alone. Same shape as the tenant login: stash
+      // a pre-session challenge in Redis (5-min TTL) and return the
+      // challenge ID. The real session comes from /auth/login/mfa after
+      // the code verifies.
+      const hasMfaRows = (await db.execute(
+        sql`SELECT platform_user_has_mfa(${user.id}::uuid) AS has_mfa`,
+      )) as unknown as Array<{ has_mfa: boolean }>;
+      const hasMfa = hasMfaRows[0]?.has_mfa ?? false;
+
+      if (hasMfa) {
+        const challenge = await createPlatformMfaChallenge({
+          platformUserId: user.id,
+          email: user.email,
+          ip: req.ip ?? null,
+          userAgent: req.headers["user-agent"] ?? null,
+        });
+        return reply.send({ mfaRequired: true, challengeId: challenge.id });
+      }
+
       await db
         .update(schema.platformUsers)
         .set({ lastLoginAt: new Date() })
@@ -152,6 +207,142 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
 
       return reply.send({
         user: { id: user.id, email: user.email, fullName: user.fullName },
+      });
+    },
+  );
+
+  // #55 — Platform login step 2. Pre-session (no cookie yet). Takes the
+  // challengeId from step 1 + the submitted TOTP or backup code, verifies
+  // against the encrypted secret (+ hashed backup codes), and mints the
+  // real session on success. Tight rate limit — same rationale as tenant
+  // side: 6-digit space + ±1 step window = 3 valid codes per 90s, 5/min
+  // exhausts the code space far slower than the 5-min challenge TTL.
+  fastify.post(
+    "/auth/login/mfa",
+    { config: { rateLimit: { max: 5, timeWindow: "1 minute" } } },
+    async (req, reply) => {
+      const parsed = LoginMfaSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+      }
+      const { challengeId, code } = parsed.data;
+
+      const challenge = await readPlatformMfaChallenge(challengeId);
+      if (!challenge) {
+        return reply.status(401).send({
+          error: {
+            code: "MFA_CHALLENGE_EXPIRED",
+            message: "This sign-in attempt has expired. Please start again.",
+          },
+        });
+      }
+
+      const mfaRows = (await db.execute(
+        sql`SELECT * FROM platform_get_mfa_for_user(${challenge.platformUserId}::uuid)`,
+      )) as unknown as Array<{
+        platform_user_id: string;
+        totp_secret_encrypted: string;
+        backup_codes_hash: string[];
+        enabled: boolean;
+      }>;
+      const mfa = mfaRows[0];
+      if (!mfa || !mfa.enabled) {
+        // Defensive: challenge existed but MFA row vanished. Consume
+        // the challenge and treat as expired — don't silently fall back
+        // to password-only, that would defeat the whole point.
+        await consumePlatformMfaChallenge(challengeId);
+        return reply.status(401).send({
+          error: { code: "MFA_CHALLENGE_EXPIRED", message: "Please sign in again." },
+        });
+      }
+
+      let verified = false;
+      let consumedBackup = false;
+      let remainingBackupHashes: string[] | null = null;
+
+      try {
+        const secret = decryptSecret(mfa.totp_secret_encrypted);
+        if (/^\d{6}$/.test(code.replace(/\s+/g, ""))) {
+          verified = verifyTotp(secret, code);
+        }
+      } catch (err) {
+        req.log.error({ err }, "platform mfa totp decrypt failed");
+      }
+
+      if (!verified) {
+        const remaining = await consumeBackupCode(code, mfa.backup_codes_hash);
+        if (remaining !== null) {
+          verified = true;
+          consumedBackup = true;
+          remainingBackupHashes = remaining;
+        }
+      }
+
+      if (!verified) {
+        // Audit failed attempts. Platform audit log is not tenant-scoped
+        // so this is a straight insert; failures in the audit layer are
+        // swallowed inside recordPlatformAuditEvent.
+        await recordPlatformAuditEvent({
+          platformUserId: challenge.platformUserId,
+          platformUserEmail: challenge.email,
+          kind: "platform.mfa_challenge_failed",
+          summary: `Platform MFA challenge failed for ${challenge.email}`,
+          tenantId: null,
+          ipAddress: req.ip ?? null,
+          userAgent: req.headers["user-agent"] ?? null,
+        });
+        return reply.status(401).send({
+          error: { code: "MFA_INVALID_CODE", message: "Wrong code. Try again." },
+        });
+      }
+
+      // Success — consume challenge, stamp last_used_at + optionally
+      // shortened backup array, bump last_login_at, mint session.
+      await consumePlatformMfaChallenge(challengeId);
+      await db.execute(
+        sql`SELECT platform_record_mfa_success(${challenge.platformUserId}::uuid, ${
+          remainingBackupHashes
+        }::text[])`,
+      );
+      await db
+        .update(schema.platformUsers)
+        .set({ lastLoginAt: new Date() })
+        .where(eq(schema.platformUsers.id, challenge.platformUserId));
+
+      const session = await createPlatformSession({
+        platformUserId: challenge.platformUserId,
+        email: challenge.email,
+        ttlSeconds: SESSION_TTL,
+        ip: req.ip ?? null,
+        userAgent: req.headers["user-agent"] ?? null,
+      });
+      setPlatformSessionCookie(reply, session.id, SESSION_TTL);
+      setPlatformCsrfCookie(reply, session.csrfToken, SESSION_TTL);
+
+      await recordPlatformAuditEvent({
+        platformUserId: challenge.platformUserId,
+        platformUserEmail: challenge.email,
+        kind: "platform.login",
+        summary: consumedBackup
+          ? `Platform login: ${challenge.email} (MFA backup code)`
+          : `Platform login: ${challenge.email} (MFA)`,
+        tenantId: null,
+        ipAddress: req.ip ?? null,
+        userAgent: req.headers["user-agent"] ?? null,
+      });
+
+      return reply.send({
+        user: {
+          id: challenge.platformUserId,
+          email: challenge.email,
+          // fullName is supplied by /auth/me on the next round-trip —
+          // keeping this response narrow avoids surfacing a user shape
+          // that the enrolment path doesn't know.
+          fullName: "",
+        },
+        backupCodesRemaining: consumedBackup
+          ? (remainingBackupHashes?.length ?? 0)
+          : mfa.backup_codes_hash.length,
       });
     },
   );
@@ -205,8 +396,16 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.status(401).send({ error: { code: "UNAUTHENTICATED" } });
     }
 
+    // #55 — let the web layer know whether MFA is on so /platform/account
+    // can render "enabled" vs "not enrolled" without a second round-trip.
+    const mfaRows = (await db.execute(
+      sql`SELECT platform_user_has_mfa(${user.id}::uuid) AS enabled`,
+    )) as unknown as Array<{ enabled: boolean }>;
+    const mfaEnabled = mfaRows[0]?.enabled ?? false;
+
     return reply.send({
       user: { id: user.id, email: user.email, fullName: user.fullName },
+      mfa: { enabled: mfaEnabled },
     });
   });
 
@@ -280,6 +479,245 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.send({ ok: true });
     },
   );
+
+  // -------------------------------------------------------------------
+  // #55 — MFA (TOTP) enrol / verify / disable / status for platform
+  // users. Exact structural parallel to the tenant-side flow in
+  // identity/routes.ts — same two-step enrolment (Redis-held pending
+  // secret + DB commit on verify), same disable invariant (requires a
+  // valid code, not just a session), same hashed-backup-codes shape.
+  // -------------------------------------------------------------------
+
+  // 10-min Redis keyspace for pending enrolments. Separate prefix from
+  // the tenant side so a captured tempToken can't cross realms.
+  const PLATFORM_MFA_ENROL_PREFIX = "platform-mfa-enrol:";
+  const PLATFORM_MFA_ENROL_TTL = 10 * 60;
+  const platformEnrolRedis = new IORedis(process.env.REDIS_URL ?? "redis://localhost:6379");
+
+  fastify.post(
+    "/auth/mfa/enroll",
+    { config: { rateLimit: { max: 10, timeWindow: "10 minutes" } } },
+    async (req, reply) => {
+      const session = await requirePlatformSession(req, reply);
+      if (!session) return;
+
+      // Block re-enrolment when already enabled — users who want to
+      // rotate disable first, then re-enrol. Two clicks is fine for a
+      // rare path.
+      const existingRows = (await db.execute(
+        sql`SELECT platform_user_has_mfa(${session.platformUserId}::uuid) AS enabled`,
+      )) as unknown as Array<{ enabled: boolean }>;
+      if (existingRows[0]?.enabled) {
+        return reply.status(409).send({
+          error: {
+            code: "MFA_ALREADY_ENABLED",
+            message: "MFA is already enabled. Disable it first to re-enrol.",
+          },
+        });
+      }
+
+      const secret = generateTotpSecret();
+      const otpauthUri = buildOtpauthUri(session.email, secret);
+      let qrCodeDataUrl: string | null = null;
+      try {
+        qrCodeDataUrl = await buildQrCodeDataUrl(otpauthUri);
+      } catch (err) {
+        // Non-fatal — the otpauth URI + raw secret fallback are still
+        // returned and every serious TOTP app accepts manual entry.
+        req.log.warn({ err }, "platform mfa qr render failed, returning URI only");
+      }
+
+      const tempToken = randomBytes(18).toString("base64url");
+      await platformEnrolRedis.set(
+        PLATFORM_MFA_ENROL_PREFIX + tempToken,
+        JSON.stringify({ platformUserId: session.platformUserId, secret }),
+        "EX",
+        PLATFORM_MFA_ENROL_TTL,
+      );
+
+      return reply.send({
+        tempToken,
+        otpauthUri,
+        secret,
+        qrCodeDataUrl,
+      });
+    },
+  );
+
+  fastify.post(
+    "/auth/mfa/enroll/verify",
+    { config: { rateLimit: { max: 10, timeWindow: "10 minutes" } } },
+    async (req, reply) => {
+      const session = await requirePlatformSession(req, reply);
+      if (!session) return;
+
+      const parsed = MfaVerifyEnrollSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+      }
+      const { tempToken, code } = parsed.data;
+
+      const raw = await platformEnrolRedis.get(PLATFORM_MFA_ENROL_PREFIX + tempToken);
+      if (!raw) {
+        return reply.status(400).send({
+          error: { code: "MFA_ENROLL_EXPIRED", message: "Enrolment timed out. Start again." },
+        });
+      }
+      let pending: { platformUserId: string; secret: string };
+      try {
+        pending = JSON.parse(raw);
+      } catch {
+        return reply.status(400).send({
+          error: { code: "MFA_ENROLL_EXPIRED", message: "Enrolment timed out. Start again." },
+        });
+      }
+
+      // Defend against a captured tempToken from another tab — the
+      // pending record must belong to the same platform user.
+      if (pending.platformUserId !== session.platformUserId) {
+        return reply.status(400).send({
+          error: { code: "MFA_ENROLL_EXPIRED", message: "Enrolment timed out. Start again." },
+        });
+      }
+
+      if (!verifyTotp(pending.secret, code)) {
+        return reply.status(400).send({
+          error: { code: "MFA_INVALID_CODE", message: "That code didn't match. Try again." },
+        });
+      }
+
+      const backupCodes = generateBackupCodes();
+      const hashes = await hashBackupCodes(backupCodes);
+      const encrypted = encryptSecret(pending.secret);
+
+      await db.execute(sql`
+        INSERT INTO platform_user_mfa (
+          platform_user_id, totp_secret_encrypted, backup_codes_hash,
+          enabled, enrolled_at, created_at, updated_at
+        ) VALUES (
+          ${session.platformUserId}::uuid, ${encrypted}, ${hashes}::text[],
+          true, now(), now(), now()
+        )
+        ON CONFLICT (platform_user_id) DO UPDATE SET
+          totp_secret_encrypted = EXCLUDED.totp_secret_encrypted,
+          backup_codes_hash = EXCLUDED.backup_codes_hash,
+          enabled = true,
+          enrolled_at = now(),
+          updated_at = now()
+      `);
+
+      await recordPlatformAuditEvent({
+        platformUserId: session.platformUserId,
+        platformUserEmail: session.email,
+        kind: "platform.mfa_enrolled",
+        summary: `Enabled platform two-factor auth (${session.email})`,
+        tenantId: null,
+        ipAddress: req.ip ?? null,
+        userAgent: req.headers["user-agent"] ?? null,
+      });
+
+      await platformEnrolRedis.del(PLATFORM_MFA_ENROL_PREFIX + tempToken);
+
+      return reply.send({ ok: true, backupCodes });
+    },
+  );
+
+  fastify.post(
+    "/auth/mfa/disable",
+    { config: { rateLimit: { max: 5, timeWindow: "10 minutes" } } },
+    async (req, reply) => {
+      const session = await requirePlatformSession(req, reply);
+      if (!session) return;
+
+      const parsed = MfaDisableSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+      }
+      const { code } = parsed.data;
+
+      const rows = await db
+        .select({
+          totpSecretEncrypted: schema.platformUserMfa.totpSecretEncrypted,
+          backupCodesHash: schema.platformUserMfa.backupCodesHash,
+        })
+        .from(schema.platformUserMfa)
+        .where(eq(schema.platformUserMfa.platformUserId, session.platformUserId))
+        .limit(1);
+      const mfaRow = rows[0];
+      if (!mfaRow) {
+        // Idempotent: if MFA was already off, a disable request is a
+        // harmless no-op. Don't 404 — that would leak the state.
+        return reply.send({ ok: true });
+      }
+
+      // Require a valid TOTP OR backup code to disable. The whole point
+      // of this gate is that a stolen session cookie alone must not be
+      // enough to silently disarm the second factor.
+      let verified = false;
+      try {
+        const secret = decryptSecret(mfaRow.totpSecretEncrypted);
+        if (/^\d{6}$/.test(code.replace(/\s+/g, ""))) {
+          verified = verifyTotp(secret, code);
+        }
+      } catch (err) {
+        req.log.error({ err }, "platform mfa disable: decrypt failed");
+      }
+      if (!verified) {
+        const remaining = await consumeBackupCode(code, mfaRow.backupCodesHash);
+        if (remaining !== null) verified = true;
+      }
+
+      if (!verified) {
+        return reply.status(400).send({
+          error: {
+            code: "MFA_INVALID_CODE",
+            message:
+              "That code didn't match. Enter a current code from your authenticator (or a backup code) to turn MFA off.",
+          },
+        });
+      }
+
+      await db
+        .delete(schema.platformUserMfa)
+        .where(eq(schema.platformUserMfa.platformUserId, session.platformUserId));
+
+      await recordPlatformAuditEvent({
+        platformUserId: session.platformUserId,
+        platformUserEmail: session.email,
+        kind: "platform.mfa_disabled",
+        summary: `Disabled platform two-factor auth (${session.email})`,
+        tenantId: null,
+        ipAddress: req.ip ?? null,
+        userAgent: req.headers["user-agent"] ?? null,
+      });
+
+      return reply.send({ ok: true });
+    },
+  );
+
+  fastify.get("/auth/mfa/status", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+
+    const rows = await db
+      .select({
+        enabled: schema.platformUserMfa.enabled,
+        enrolledAt: schema.platformUserMfa.enrolledAt,
+        lastUsedAt: schema.platformUserMfa.lastUsedAt,
+        backupCodesHash: schema.platformUserMfa.backupCodesHash,
+      })
+      .from(schema.platformUserMfa)
+      .where(eq(schema.platformUserMfa.platformUserId, session.platformUserId))
+      .limit(1);
+    const row = rows[0];
+
+    return reply.send({
+      enabled: row?.enabled ?? false,
+      enrolledAt: row?.enrolledAt ?? null,
+      lastUsedAt: row?.lastUsedAt ?? null,
+      backupCodesRemaining: row ? row.backupCodesHash.length : 0,
+    });
+  });
 
   // -------------------------------------------------------------------
   // Tenant directory + detail.

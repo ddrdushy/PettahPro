@@ -67,3 +67,4 @@ export * from "./document-templates.js";
 export * from "./user-mfa.js";
 export * from "./platform-users.js";
 export * from "./platform-audit-log.js";
+export * from "./platform-user-mfa.js";
