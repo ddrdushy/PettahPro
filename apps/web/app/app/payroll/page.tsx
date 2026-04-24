@@ -3,6 +3,7 @@ import Link from "next/link";
 import { cookies } from "next/headers";
 import { Briefcase, Plus } from "lucide-react";
 import { PageHeader } from "@/components/app/page-header";
+import { PlanFeatureGate } from "@/components/app/plan-feature-gate";
 import { DataTable, type Column } from "@/components/app/data-table";
 import { formatLKR, formatDate } from "@/lib/format";
 import type { Account, PayrollRun, PayrollRunStatus, StatutoryBalance } from "@/lib/api";
@@ -61,6 +62,18 @@ async function fetchAll() {
 }
 
 export default async function PayrollPage() {
+  // Plan gate first — if the tenant can't use Payroll, skip the data
+  // fetch entirely and render the upgrade card. Saves three requests
+  // (/payroll-runs, /payroll/statutory-summary, /coa) for a page the
+  // user can't use. The gate is a server component so no client flash.
+  return (
+    <PlanFeatureGate feature="payroll">
+      <PayrollPageContent />
+    </PlanFeatureGate>
+  );
+}
+
+async function PayrollPageContent() {
   const { runs, statutory, bankAccounts } = await fetchAll();
 
   const columns: Column<PayrollRun>[] = [
