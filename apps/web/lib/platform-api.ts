@@ -112,6 +112,15 @@ export interface TenantSummary {
   notes: string | null;
   userCount: number;
   lastLoginAt: string | null;
+  // #66 — plan + subscription summary. All nullable: a tenant without a
+  // subscription row (pre-backfill edge case) returns null for each, and
+  // the UI renders "—".
+  planCode: string | null;
+  planName: string | null;
+  subscriptionStatus: string | null;
+  billingCycle: string | null;
+  trialEndsAt: string | null;
+  currentPeriodEnd: string | null;
 }
 
 export interface TenantDetail extends TenantSummary {
