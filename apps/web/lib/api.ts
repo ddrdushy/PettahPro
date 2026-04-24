@@ -941,6 +941,22 @@ export const api = {
   getSubscription: () =>
     request<{ subscription: TenantSubscriptionResponse }>("/subscription"),
 
+  // Public plan catalogue (#64). Filters to is_public=true server-side
+  // so hidden / grandfathered plans never reach the picker.
+  listAvailablePlans: () =>
+    request<{ plans: AvailablePlan[] }>("/subscription/plans"),
+
+  // Self-serve plan change (#64). Requires settings.manage. Flips
+  // past_due → active as a side effect ("payment received" contract).
+  // Gated server-side by SUBSCRIPTION_PAYMENT_STUB env flag until a
+  // real payment provider lands — calling without it returns 503.
+  changeMyPlan: (body: { planCode: string; billingCycle?: "monthly" | "yearly" }) =>
+    request<{
+      ok: true;
+      changed: boolean;
+      subscription: TenantSubscriptionResponse;
+    }>("/subscription/change-plan", { method: "POST", json: body }),
+
   listFxRates: (filter?: { from?: string; to?: string }) => {
     const qs = new URLSearchParams();
     if (filter?.from) qs.set("from", filter.from);
@@ -5311,6 +5327,25 @@ export interface FiscalPeriod {
 export interface TenantSettingsResponse {
   settings: TenantSettings;
   defaults: TenantSettings;
+}
+
+// Public plan entry returned by GET /subscription/plans (#64). Same
+// shape as the plan sub-object on TenantSubscriptionResponse but
+// includes sortOrder so the picker can preserve catalogue order.
+export interface AvailablePlan {
+  id: string;
+  code: string;
+  name: string;
+  tagline: string;
+  monthlyPriceCents: number;
+  yearlyPriceCents: number;
+  currency: string;
+  maxUsers: number | null;
+  maxInvoicesMonthly: number | null;
+  maxBranches: number | null;
+  maxWarehouses: number | null;
+  features: string[];
+  sortOrder: number;
 }
 
 // Subscription shape returned by GET /subscription (#62). Mirrors the

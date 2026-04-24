@@ -105,10 +105,10 @@ export default async function SettingsPage() {
                   )}
                 </div>
                 <Link
-                  href="/pricing"
+                  href="/app/settings/plan"
                   className="inline-flex items-center gap-1 rounded-md border-hairline border-border px-3 py-1.5 text-small font-medium text-charcoal hover:bg-surface-recessed/40"
                 >
-                  View plans
+                  Change plan
                   <ArrowRight className="h-3.5 w-3.5" aria-hidden />
                 </Link>
               </div>
