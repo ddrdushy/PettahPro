@@ -4,6 +4,8 @@ import Link from "next/link";
 import type { Metadata } from "next";
 import type {
   PlatformAuditEntry,
+  PlatformPlan,
+  PlatformTenantSubscription,
   TenantDetail,
   TenantUser,
 } from "@/lib/platform-api";
@@ -11,6 +13,7 @@ import { TenantActions } from "@/components/platform/tenant-actions";
 import { RevealUsersButton } from "@/components/platform/reveal-users-button";
 import { RequestImpersonationButton } from "@/components/platform/request-impersonation-button";
 import { TenantNotesEditor } from "@/components/platform/tenant-notes-editor";
+import { SubscriptionPanel } from "@/components/platform/subscription-panel";
 
 export const metadata: Metadata = {
   title: "Tenant · Platform",
@@ -90,6 +93,32 @@ async function fetchAudit(id: string): Promise<PlatformAuditEntry[]> {
   return body.entries;
 }
 
+async function fetchSubscription(
+  id: string,
+): Promise<PlatformTenantSubscription | null> {
+  const cookieHeader = cookies().toString();
+  const res = await fetch(`${API}/platform/tenants/${id}/subscription`, {
+    headers: { cookie: cookieHeader },
+    cache: "no-store",
+  });
+  if (!res.ok) return null;
+  const body = (await res.json()) as {
+    subscription: PlatformTenantSubscription;
+  };
+  return body.subscription;
+}
+
+async function fetchPlans(): Promise<PlatformPlan[]> {
+  const cookieHeader = cookies().toString();
+  const res = await fetch(`${API}/platform/plans`, {
+    headers: { cookie: cookieHeader },
+    cache: "no-store",
+  });
+  if (!res.ok) return [];
+  const body = (await res.json()) as { plans: PlatformPlan[] };
+  return body.plans;
+}
+
 function formatDateTime(s: string | null): string {
   if (!s) return "—";
   try {
@@ -162,10 +191,16 @@ export default async function TenantDetailPage({
   const canEditNotes = me.role === "super_admin" || me.role === "support";
   const pill = statusPill(tenant.status);
 
-  // Only fetch what the current tab needs. Avoids two redundant round
+  // Only fetch what the current tab needs. Avoids redundant round
   // trips every page load.
   const users = tab === "users" ? await fetchUsers(params.id) : [];
   const audit = tab === "audit" ? await fetchAudit(params.id) : [];
+  // #61 — billing tab needs both the subscription and the plan
+  // catalogue (for the change-plan dropdown). Parallel fetch.
+  const [subscription, plans] =
+    tab === "billing"
+      ? await Promise.all([fetchSubscription(params.id), fetchPlans()])
+      : [null, [] as PlatformPlan[]];
 
   return (
     <div className="px-6 py-10">
@@ -408,14 +443,26 @@ export default async function TenantDetailPage({
         <section className="mt-6 rounded-card border border-white/10 bg-black/20 p-6">
           <h2 className="text-h3 text-white">Billing</h2>
           <p className="mt-2 text-small text-white/60">
-            Plan, subscription state, invoices, and payment history will live
-            here once the pricing engine ships (roadmap L2 — #59).
+            Plan, subscription state, and trial window for this tenant.
+            Invoice + payment history ships with the billing collection PR.
           </p>
-          <div className="mt-6 rounded-md border border-dashed border-white/15 bg-black/30 p-6 text-center">
-            <p className="text-small text-white/50">
-              No billing data yet. This tenant is on the pre-pricing
-              self-hosted plan.
-            </p>
+          <div className="mt-6">
+            {subscription ? (
+              <SubscriptionPanel
+                tenantId={tenant.id}
+                initialSubscription={subscription}
+                plans={plans}
+                canEdit={canMutate}
+              />
+            ) : (
+              <div className="rounded-md border border-dashed border-white/15 bg-black/30 p-6 text-center">
+                <p className="text-small text-white/50">
+                  No subscription found for this tenant. Backfill may have
+                  skipped it — run the migration again or create the
+                  subscription directly.
+                </p>
+              </div>
+            )}
           </div>
         </section>
       )}

@@ -2165,4 +2165,271 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
     const payload = await buildSystemHealthPayload();
     return reply.send(payload);
   });
+
+  // -------------------------------------------------------------------
+  // #61 — Pricing plans + tenant subscriptions.
+  //
+  // Three endpoints in this PR:
+  //   * GET  /plans                          — catalogue, any role
+  //   * GET  /tenants/:id/subscription       — current subscription, any role
+  //   * POST /tenants/:id/subscription/change-plan — super_admin, audited
+  //
+  // Billing role sees plans + subscriptions read-only (they need the
+  // number to chase receivables), but only super_admin flips plans.
+  // Self-serve plan change + payment collection lives in later PRs.
+  // -------------------------------------------------------------------
+
+  fastify.get("/plans", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+
+    const rows = await db
+      .select()
+      .from(schema.plans)
+      .orderBy(schema.plans.sortOrder, schema.plans.code);
+    return reply.send({
+      plans: rows.map((p) => ({
+        id: p.id,
+        code: p.code,
+        name: p.name,
+        tagline: p.tagline,
+        monthlyPriceCents: p.monthlyPriceCents,
+        yearlyPriceCents: p.yearlyPriceCents,
+        currency: p.currency,
+        maxUsers: p.maxUsers,
+        maxInvoicesMonthly: p.maxInvoicesMonthly,
+        maxBranches: p.maxBranches,
+        maxWarehouses: p.maxWarehouses,
+        features: p.features,
+        isPublic: p.isPublic,
+        sortOrder: p.sortOrder,
+      })),
+    });
+  });
+
+  fastify.get("/tenants/:id/subscription", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+
+    const parsed = z.object({ id: z.string().uuid() }).safeParse(req.params);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+    }
+
+    // LEFT JOIN on plans because we want the plan's marketing fields
+    // in one trip. Join is safe even under unusual data — plan_id is
+    // NOT NULL + FK, so a tenant with a subscription always has a plan.
+    const rows = await db
+      .select({
+        subscription: schema.tenantSubscriptions,
+        plan: schema.plans,
+      })
+      .from(schema.tenantSubscriptions)
+      .leftJoin(
+        schema.plans,
+        eq(schema.plans.id, schema.tenantSubscriptions.planId),
+      )
+      .where(eq(schema.tenantSubscriptions.tenantId, parsed.data.id))
+      .limit(1);
+
+    const row = rows[0];
+    if (!row || !row.plan) {
+      // No subscription = tenant exists but the backfill missed it, or
+      // tenant is unknown. 404 either way; the caller can disambiguate
+      // by hitting /tenants/:id separately.
+      return reply.status(404).send({ error: { code: "NO_SUBSCRIPTION" } });
+    }
+
+    return reply.send({
+      subscription: {
+        id: row.subscription.id,
+        tenantId: row.subscription.tenantId,
+        status: row.subscription.status,
+        billingCycle: row.subscription.billingCycle,
+        trialEndsAt: row.subscription.trialEndsAt,
+        currentPeriodStart: row.subscription.currentPeriodStart,
+        currentPeriodEnd: row.subscription.currentPeriodEnd,
+        cancelledAt: row.subscription.cancelledAt,
+        cancelReason: row.subscription.cancelReason,
+        createdAt: row.subscription.createdAt,
+        updatedAt: row.subscription.updatedAt,
+        plan: {
+          id: row.plan.id,
+          code: row.plan.code,
+          name: row.plan.name,
+          tagline: row.plan.tagline,
+          monthlyPriceCents: row.plan.monthlyPriceCents,
+          yearlyPriceCents: row.plan.yearlyPriceCents,
+          currency: row.plan.currency,
+          maxUsers: row.plan.maxUsers,
+          maxInvoicesMonthly: row.plan.maxInvoicesMonthly,
+          maxBranches: row.plan.maxBranches,
+          maxWarehouses: row.plan.maxWarehouses,
+          features: row.plan.features,
+        },
+      },
+    });
+  });
+
+  // Plan-change payload. `planCode` (not `planId`) so the UI can hit
+  // this endpoint armed with nothing more than the seed catalogue —
+  // one fewer round-trip to resolve a uuid. `billingCycle` is optional
+  // so an operator swapping plans keeps the existing cycle by default.
+  const ChangePlanSchema = z.object({
+    planCode: z.string().min(1).max(32),
+    billingCycle: z.enum(["monthly", "yearly"]).optional(),
+    // Keep/reset trial: when moving a mid-trial tenant to a different
+    // plan, by default we keep their existing trialEndsAt. Set
+    // `endTrial: true` to flip them to `active` immediately (useful
+    // when they've paid and want the plan upgraded mid-trial).
+    endTrial: z.boolean().optional().default(false),
+    reason: z.string().trim().min(3).max(500),
+  });
+
+  fastify.post(
+    "/tenants/:id/subscription/change-plan",
+    async (req, reply) => {
+      const session = await requirePlatformSession(req, reply);
+      if (!session) return;
+
+      if (
+        !(await requirePlatformRole(req, reply, session, ["super_admin"]))
+      ) {
+        return;
+      }
+
+      const paramsParsed = z
+        .object({ id: z.string().uuid() })
+        .safeParse(req.params);
+      if (!paramsParsed.success) {
+        return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+      }
+      const tenantId = paramsParsed.data.id;
+
+      const bodyParsed = ChangePlanSchema.safeParse(req.body);
+      if (!bodyParsed.success) {
+        return reply.status(400).send({
+          error: {
+            code: "INVALID_INPUT",
+            message:
+              bodyParsed.error.issues[0]?.message ??
+              "Plan code, billing cycle, and reason are required.",
+          },
+        });
+      }
+
+      // Resolve the target plan first — if the code is bogus we want
+      // a clean 400 before we touch anything.
+      const planRows = await db
+        .select()
+        .from(schema.plans)
+        .where(eq(schema.plans.code, bodyParsed.data.planCode))
+        .limit(1);
+      const targetPlan = planRows[0];
+      if (!targetPlan) {
+        return reply
+          .status(400)
+          .send({ error: { code: "UNKNOWN_PLAN" } });
+      }
+
+      // Fetch the current subscription row so we can (a) detect noop,
+      // (b) include a diff in the audit line.
+      const existingRows = await db
+        .select({
+          subscription: schema.tenantSubscriptions,
+          plan: schema.plans,
+        })
+        .from(schema.tenantSubscriptions)
+        .leftJoin(
+          schema.plans,
+          eq(schema.plans.id, schema.tenantSubscriptions.planId),
+        )
+        .where(eq(schema.tenantSubscriptions.tenantId, tenantId))
+        .limit(1);
+      const existing = existingRows[0];
+      if (!existing) {
+        return reply
+          .status(404)
+          .send({ error: { code: "NO_SUBSCRIPTION" } });
+      }
+
+      const wasSamePlan =
+        existing.subscription.planId === targetPlan.id &&
+        (bodyParsed.data.billingCycle == null ||
+          existing.subscription.billingCycle ===
+            bodyParsed.data.billingCycle) &&
+        !bodyParsed.data.endTrial;
+      if (wasSamePlan) {
+        // Idempotent noop. Still return 200 so the UI doesn't need a
+        // separate "nothing changed" branch, but skip the audit line
+        // (nothing happened) to keep the log honest.
+        return reply.send({
+          ok: true,
+          changed: false,
+          subscription: {
+            ...existing.subscription,
+            plan: existing.plan,
+          },
+        });
+      }
+
+      // Status transition: if endTrial is set, move trial → active;
+      // otherwise preserve whatever status the subscription was in.
+      // 'cancelled' rows can't be re-upgraded via this endpoint — the
+      // operator should reactivate (separate endpoint in #62).
+      if (existing.subscription.status === "cancelled") {
+        return reply
+          .status(409)
+          .send({ error: { code: "SUBSCRIPTION_CANCELLED" } });
+      }
+
+      const nextStatus =
+        bodyParsed.data.endTrial && existing.subscription.status === "trial"
+          ? "active"
+          : existing.subscription.status;
+      const nextCycle =
+        bodyParsed.data.billingCycle ?? existing.subscription.billingCycle;
+
+      const [updated] = await db
+        .update(schema.tenantSubscriptions)
+        .set({
+          planId: targetPlan.id,
+          status: nextStatus,
+          billingCycle: nextCycle,
+          // Clear trialEndsAt when we explicitly end the trial; otherwise
+          // leave it alone — a mid-trial plan change keeps the clock.
+          trialEndsAt: bodyParsed.data.endTrial
+            ? null
+            : existing.subscription.trialEndsAt,
+        })
+        .where(eq(schema.tenantSubscriptions.tenantId, tenantId))
+        .returning();
+
+      await recordPlatformAuditEvent({
+        platformUserId: session.platformUserId,
+        platformUserEmail: session.email,
+        kind: "platform.subscription_changed",
+        summary: `Changed plan: ${existing.plan?.code ?? "?"} → ${targetPlan.code}`,
+        tenantId,
+        ipAddress: req.ip ?? null,
+        userAgent: req.headers["user-agent"] ?? null,
+        metadata: {
+          fromPlanCode: existing.plan?.code ?? null,
+          toPlanCode: targetPlan.code,
+          fromBillingCycle: existing.subscription.billingCycle,
+          toBillingCycle: nextCycle,
+          fromStatus: existing.subscription.status,
+          toStatus: nextStatus,
+          endedTrial: Boolean(bodyParsed.data.endTrial),
+          reason: bodyParsed.data.reason,
+        },
+      });
+
+      return reply.send({
+        ok: true,
+        changed: true,
+        subscription: { ...updated, plan: targetPlan },
+      });
+    },
+  );
 };
