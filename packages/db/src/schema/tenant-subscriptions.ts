@@ -4,6 +4,7 @@ import {
   uuid,
   varchar,
   timestamp,
+  integer,
   index,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
@@ -62,6 +63,15 @@ export const tenantSubscriptions = pgTable(
       .default(sql`(now() + interval '30 days')`),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
     cancelReason: varchar("cancel_reason", { length: 500 }),
+    // Per-tenant quota overrides (#71). NULL = "use the plan's cap";
+    // an integer overrides the plan cap for this tenant. Lets ops
+    // honor custom contracts ("Starter pricing, 5,000 invoices/mo")
+    // without polluting the shared plan catalogue.
+    customMaxUsers: integer("custom_max_users"),
+    customMaxInvoicesMonthly: integer("custom_max_invoices_monthly"),
+    customMaxBranches: integer("custom_max_branches"),
+    customMaxWarehouses: integer("custom_max_warehouses"),
+    customLimitsNote: varchar("custom_limits_note", { length: 500 }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
