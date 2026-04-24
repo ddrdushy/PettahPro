@@ -267,6 +267,32 @@ export const platformApi = {
     request<{ ok: true }>(`/platform/platform-users/${id}`, {
       method: "DELETE",
     }),
+  // #58 — platform overview + global audit + tenant notes PATCH.
+  getOverview: () => request<PlatformOverview>("/platform/overview"),
+  listPlatformAudit: (params: {
+    kind?: string;
+    actor?: string;
+    limit?: number;
+    offset?: number;
+  } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.kind) qs.set("kind", params.kind);
+    if (params.actor) qs.set("actor", params.actor);
+    if (params.limit != null) qs.set("limit", String(params.limit));
+    if (params.offset != null) qs.set("offset", String(params.offset));
+    const q = qs.toString();
+    return request<{
+      total: number;
+      limit: number;
+      offset: number;
+      entries: PlatformAuditEntryWithTenant[];
+    }>(`/platform/audit${q ? `?${q}` : ""}`);
+  },
+  updateTenant: (id: string, body: { notes?: string | null }) =>
+    request<{ ok: true }>(`/platform/tenants/${id}`, {
+      method: "PATCH",
+      json: body,
+    }),
   // #57 / gap L1 v1 — operator impersonation. Platform-side. Tenant-side
   // sits in lib/api.ts (different cookie realm).
   createImpersonationRequest: (
@@ -306,6 +332,36 @@ export const platformApi = {
       json: body,
     }),
 };
+
+// #58 — the global audit feed includes tenantId so the UI can link
+// each row to /platform/tenants/:id; per-tenant audit doesn't need it.
+export interface PlatformAuditEntryWithTenant extends PlatformAuditEntry {
+  tenantId: string | null;
+}
+
+// #58 — shape of the GET /platform/overview payload.  Deliberately
+// flat by section so a renaming of a stat doesn't ripple through the
+// whole client.  byStatus always carries every status key with 0 as
+// the fallback, so consumers never need `?? 0`.
+export interface PlatformOverview {
+  tenants: {
+    total: number;
+    byStatus: Record<string, number>;
+    signupsLast7Days: number;
+    signupsLast30Days: number;
+  };
+  users: {
+    total: number;
+    activeLast7Days: number;
+    activeLast30Days: number;
+  };
+  impersonation: {
+    pendingRequests: number;
+    approvedWaiting: number;
+    activeSessions: number;
+  };
+  recentAudit: PlatformAuditEntryWithTenant[];
+}
 
 export interface PlatformImpersonationRequest {
   id: string;
