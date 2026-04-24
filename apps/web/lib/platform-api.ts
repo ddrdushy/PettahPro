@@ -68,10 +68,37 @@ async function request<T>(
   return payload as T;
 }
 
+// #56 — kept in lockstep with packages/db PLATFORM_ROLES. If you add a
+// new role, update both ends + the migration's CHECK constraint + the
+// create/patch Zod schemas in apps/api routes.
+export const PLATFORM_ROLES = ["super_admin", "support", "billing"] as const;
+export type PlatformRole = (typeof PLATFORM_ROLES)[number];
+
+export const PLATFORM_ROLE_LABELS: Record<PlatformRole, string> = {
+  super_admin: "Super admin",
+  support: "Support",
+  billing: "Billing",
+};
+
 export interface PlatformUser {
   id: string;
   email: string;
   fullName: string;
+  // #56 — optional in the type because the /auth/login/mfa response
+  // returns a narrow user shape without a role (the real role lands on
+  // /auth/me). Consumers should treat `role` as "definitely present on
+  // /auth/me, maybe not elsewhere."
+  role?: PlatformRole;
+}
+
+export interface PlatformStaffMember {
+  id: string;
+  email: string;
+  fullName: string;
+  role: PlatformRole;
+  isActive: boolean;
+  lastLoginAt: string | null;
+  createdAt: string;
 }
 
 export interface TenantSummary {
@@ -145,9 +172,10 @@ export const platformApi = {
   logout: () =>
     request<{ ok: true }>("/platform/auth/logout", { method: "POST" }),
   me: () =>
-    request<{ user: PlatformUser; mfa: { enabled: boolean } }>(
-      "/platform/auth/me",
-    ),
+    request<{
+      user: PlatformUser & { role: PlatformRole };
+      mfa: { enabled: boolean };
+    }>("/platform/auth/me"),
   changePassword: (body: { currentPassword: string; newPassword: string }) =>
     request<{ ok: true }>("/platform/auth/change-password", {
       method: "POST",
@@ -211,5 +239,32 @@ export const platformApi = {
     request<{ ok: true; status: string }>(`/platform/tenants/${id}/reactivate`, {
       method: "POST",
       json: body,
+    }),
+  // #56 — staff management. Super-admin-gated at the API layer; the web
+  // also hides the /platform/staff entry for non-super_admin sessions,
+  // so these methods only exist on super-admin surfaces.
+  listPlatformUsers: () =>
+    request<{ users: PlatformStaffMember[] }>("/platform/platform-users"),
+  createPlatformUser: (body: {
+    email: string;
+    fullName: string;
+    password: string;
+    role: PlatformRole;
+  }) =>
+    request<{ user: PlatformStaffMember }>("/platform/platform-users", {
+      method: "POST",
+      json: body,
+    }),
+  patchPlatformUser: (
+    id: string,
+    body: { fullName?: string; role?: PlatformRole; isActive?: boolean },
+  ) =>
+    request<{ ok: true }>(`/platform/platform-users/${id}`, {
+      method: "PATCH",
+      json: body,
+    }),
+  deletePlatformUser: (id: string) =>
+    request<{ ok: true }>(`/platform/platform-users/${id}`, {
+      method: "DELETE",
     }),
 };

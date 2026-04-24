@@ -16,7 +16,11 @@ export const metadata: Metadata = {
 
 const API = process.env.INTERNAL_API_URL ?? "http://api:4000";
 
-async function fetchMe(): Promise<{ email: string; fullName: string } | null> {
+async function fetchMe(): Promise<{
+  email: string;
+  fullName: string;
+  role: string;
+} | null> {
   const cookieHeader = cookies().toString();
   if (!cookieHeader) return null;
   const res = await fetch(`${API}/platform/auth/me`, {
@@ -24,7 +28,9 @@ async function fetchMe(): Promise<{ email: string; fullName: string } | null> {
     cache: "no-store",
   });
   if (!res.ok) return null;
-  const body = (await res.json()) as { user: { email: string; fullName: string } };
+  const body = (await res.json()) as {
+    user: { email: string; fullName: string; role: string };
+  };
   return body.user;
 }
 
@@ -90,6 +96,10 @@ export default async function TenantDetailPage({
 
   const [users, audit] = await Promise.all([fetchUsers(params.id), fetchAudit(params.id)]);
   const isSuspended = tenant.status === "suspended";
+  // #56 — role-aware chrome. Super-admin gets suspend/reactivate; support
+  // additionally keeps reveal. Billing sees the read-only page.
+  const canMutate = me.role === "super_admin";
+  const canReveal = me.role === "super_admin" || me.role === "support";
 
   return (
     <div className="px-6 py-10">
@@ -108,11 +118,17 @@ export default async function TenantDetailPage({
             /{tenant.slug} · {tenant.country} · {tenant.timezone}
           </p>
         </div>
-        <TenantActions
-          tenantId={tenant.id}
-          businessName={tenant.businessName}
-          currentStatus={tenant.status}
-        />
+        {canMutate ? (
+          <TenantActions
+            tenantId={tenant.id}
+            businessName={tenant.businessName}
+            currentStatus={tenant.status}
+          />
+        ) : (
+          <span className="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-caption text-white/50">
+            Read-only for your role
+          </span>
+        )}
       </div>
 
       <section className="mt-8 grid grid-cols-1 gap-4 md:grid-cols-4">
@@ -130,7 +146,7 @@ export default async function TenantDetailPage({
               Anonymous by default. Reveal requires a reason and is audited.
             </p>
           </div>
-          <RevealUsersButton tenantId={tenant.id} />
+          {canReveal && <RevealUsersButton tenantId={tenant.id} />}
         </div>
 
         <div id="tenant-users-list" className="mt-6 overflow-hidden rounded-md border border-white/10">

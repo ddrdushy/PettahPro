@@ -4,7 +4,8 @@
  * Usage (inside the api container or with DATABASE_URL set):
  *   pnpm --filter @pettahpro/api create-platform-admin \
  *       --email you@pettahpro.lk \
- *       --name "Dushy"
+ *       --name "Dushy" \
+ *       --role super_admin
  *
  * Prompts for a password on stdin (echo off). Refuses to run if a
  * live platform user already exists with that email — use psql to
@@ -14,20 +15,34 @@
  * admin has to come from somewhere outside the web app. This lives
  * as a one-off script; subsequent admins (once L1 v1 adds role
  * separation) get created through the console.
+ *
+ * #56 — `--role` picks from super_admin / support / billing. Defaults
+ * to super_admin so the existing bootstrap invocation ("first admin on
+ * the platform, make them an owner") still works without the flag.
+ * Promoting a fresh support/billing hire from the CLI is a valid
+ * supplement to the /platform/staff console because the console is
+ * itself super_admin-only — you still need at least one super_admin
+ * seeded out-of-band.
  */
 
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { db, schema } from "@pettahpro/db";
+import { PLATFORM_ROLES, type PlatformRole } from "@pettahpro/db";
 import { and, eq, isNull } from "drizzle-orm";
 import { hashPassword } from "../modules/identity/password.js";
 
-function parseArgs(argv: string[]): { email?: string; name?: string } {
-  const out: { email?: string; name?: string } = {};
+function parseArgs(argv: string[]): {
+  email?: string;
+  name?: string;
+  role?: string;
+} {
+  const out: { email?: string; name?: string; role?: string } = {};
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--email") out.email = argv[++i];
     else if (a === "--name") out.name = argv[++i];
+    else if (a === "--role") out.role = argv[++i];
   }
   return out;
 }
@@ -58,6 +73,15 @@ async function main() {
     console.error("error: full name is required");
     process.exit(2);
   }
+  const rawRole = (args.role ?? "super_admin").trim();
+  if (!(PLATFORM_ROLES as readonly string[]).includes(rawRole)) {
+    console.error(
+      `error: --role must be one of ${PLATFORM_ROLES.join(", ")}, got "${rawRole}"`,
+    );
+    process.exit(2);
+  }
+  const role = rawRole as PlatformRole;
+
   const password = await promptPassword(rl);
   if (password.length < 12) {
     console.error("error: password must be at least 12 characters");
@@ -83,15 +107,19 @@ async function main() {
   const passwordHash = await hashPassword(password);
   const [row] = await db
     .insert(schema.platformUsers)
-    .values({ email, fullName, passwordHash, isActive: true })
-    .returning({ id: schema.platformUsers.id, email: schema.platformUsers.email });
+    .values({ email, fullName, passwordHash, role, isActive: true })
+    .returning({
+      id: schema.platformUsers.id,
+      email: schema.platformUsers.email,
+      role: schema.platformUsers.role,
+    });
 
   if (!row) {
     console.error("error: insert returned no row");
     process.exit(1);
   }
 
-  console.log(`created platform user ${row.email} (id=${row.id})`);
+  console.log(`created platform user ${row.email} (role=${row.role}, id=${row.id})`);
   console.log("sign in at /platform/login");
   process.exit(0);
 }
