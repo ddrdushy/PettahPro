@@ -31,6 +31,7 @@ export const SUBSCRIPTION_STATUSES = [
   "trial",
   "active",
   "past_due",
+  "paused",
   "cancelled",
 ] as const;
 export type SubscriptionStatus = (typeof SUBSCRIPTION_STATUSES)[number];
@@ -70,6 +71,14 @@ export const tenantSubscriptions = pgTable(
       .default(sql`(now() + interval '30 days')`),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
     cancelReason: varchar("cancel_reason", { length: 500 }),
+    // Pause lifecycle (#125 / pricing-spec §11.3). Set when a tenant
+    // suspends billing without churning. resume_at, when set, drives
+    // automatic resume in the renewal-cron sweep.
+    pausedAt: timestamp("paused_at", { withTimezone: true }),
+    pauseReason: varchar("pause_reason", { length: 500 }),
+    resumeAt: timestamp("resume_at", { withTimezone: true }),
+    pausedByUserId: uuid("paused_by_user_id"),
+    pausedByPlatformUserId: uuid("paused_by_platform_user_id"),
     // Per-tenant quota overrides (#71). NULL = "use the plan's cap";
     // an integer overrides the plan cap for this tenant. Lets ops
     // honor custom contracts ("Starter pricing, 5,000 invoices/mo")

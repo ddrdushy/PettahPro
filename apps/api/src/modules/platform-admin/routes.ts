@@ -4147,6 +4147,182 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
   // means "freeze this resource" (useful for pausing a specific
   // capability without flipping the plan). The note is free-form
   // and exists so whoever sees the override six months from now can
+  // -------------------------------------------------------------------
+  // Platform-admin pause / resume on a tenant's subscription (#125).
+  //
+  //   * POST /tenants/:id/subscription/pause   — super_admin, audited
+  //   * POST /tenants/:id/subscription/resume  — super_admin, audited
+  //
+  // Same semantics as the tenant-side routes but operator-driven —
+  // ops can pause a tenant's subscription on their behalf (e.g.
+  // requested via support ticket, dispute resolution, etc.).
+  // -------------------------------------------------------------------
+  const PlatformPauseSchema = z.object({
+    reason: z.string().trim().min(3).max(500),
+    resumeAt: z.string().datetime().optional(),
+  });
+
+  fastify.post("/tenants/:id/subscription/pause", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+    if (!(await requirePlatformRole(req, reply, session, ["super_admin"]))) {
+      return;
+    }
+    const paramsParsed = z
+      .object({ id: z.string().uuid() })
+      .safeParse(req.params);
+    if (!paramsParsed.success) {
+      return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+    }
+    const bodyParsed = PlatformPauseSchema.safeParse(req.body);
+    if (!bodyParsed.success) {
+      return reply.status(400).send({
+        error: {
+          code: "INVALID_INPUT",
+          message:
+            bodyParsed.error.issues[0]?.message ?? "Reason is required.",
+        },
+      });
+    }
+
+    const subRows = await db
+      .select()
+      .from(schema.tenantSubscriptions)
+      .where(
+        eq(schema.tenantSubscriptions.tenantId, paramsParsed.data.id),
+      )
+      .limit(1);
+    const sub = subRows[0];
+    if (!sub) {
+      return reply.status(404).send({ error: { code: "NO_SUBSCRIPTION" } });
+    }
+    if (sub.status === "paused") {
+      return reply
+        .status(409)
+        .send({ error: { code: "ALREADY_PAUSED" } });
+    }
+    if (sub.status === "cancelled") {
+      return reply
+        .status(409)
+        .send({ error: { code: "SUBSCRIPTION_CANCELLED" } });
+    }
+
+    let resumeAt: Date | null = null;
+    if (bodyParsed.data.resumeAt) {
+      const requested = new Date(bodyParsed.data.resumeAt);
+      const now = new Date();
+      const maxResume = new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000);
+      // Platform admin gets a longer leash than tenants — up to a
+      // year. Audit captures the choice; ops can override the 90-day
+      // tenant-side limit when negotiating bespoke deals.
+      if (requested.getTime() < now.getTime()) {
+        return reply
+          .status(400)
+          .send({ error: { code: "RESUME_TOO_SOON" } });
+      }
+      if (requested.getTime() > maxResume.getTime()) {
+        return reply
+          .status(400)
+          .send({ error: { code: "PAUSE_WINDOW_TOO_LONG" } });
+      }
+      resumeAt = requested;
+    }
+
+    await db
+      .update(schema.tenantSubscriptions)
+      .set({
+        status: "paused",
+        pausedAt: new Date(),
+        pauseReason: bodyParsed.data.reason,
+        resumeAt,
+        pausedByUserId: null,
+        pausedByPlatformUserId: session.platformUserId,
+        updatedAt: new Date(),
+      })
+      .where(
+        eq(schema.tenantSubscriptions.tenantId, paramsParsed.data.id),
+      );
+
+    await recordPlatformAuditEvent({
+      platformUserId: session.platformUserId,
+      platformUserEmail: session.email,
+      kind: "platform.subscription.paused",
+      summary: `Paused tenant subscription`,
+      reason: bodyParsed.data.reason,
+      tenantId: paramsParsed.data.id,
+      ipAddress: req.ip ?? null,
+      userAgent: req.headers["user-agent"] ?? null,
+      metadata: {
+        previousStatus: sub.status,
+        resumeAt: resumeAt?.toISOString() ?? null,
+      },
+    });
+
+    return reply.send({ ok: true, status: "paused", resumeAt });
+  });
+
+  fastify.post("/tenants/:id/subscription/resume", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+    if (!(await requirePlatformRole(req, reply, session, ["super_admin"]))) {
+      return;
+    }
+    const paramsParsed = z
+      .object({ id: z.string().uuid() })
+      .safeParse(req.params);
+    if (!paramsParsed.success) {
+      return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+    }
+
+    const subRows = await db
+      .select()
+      .from(schema.tenantSubscriptions)
+      .where(
+        eq(schema.tenantSubscriptions.tenantId, paramsParsed.data.id),
+      )
+      .limit(1);
+    const sub = subRows[0];
+    if (!sub) {
+      return reply.status(404).send({ error: { code: "NO_SUBSCRIPTION" } });
+    }
+    if (sub.status !== "paused") {
+      return reply.status(409).send({ error: { code: "NOT_PAUSED" } });
+    }
+
+    const periodMs =
+      sub.billingCycle === "yearly"
+        ? 365 * 24 * 60 * 60 * 1000
+        : 30 * 24 * 60 * 60 * 1000;
+    const now = new Date();
+    await db
+      .update(schema.tenantSubscriptions)
+      .set({
+        status: "active",
+        resumeAt: null,
+        currentPeriodStart: now,
+        currentPeriodEnd: new Date(now.getTime() + periodMs),
+        updatedAt: now,
+      })
+      .where(
+        eq(schema.tenantSubscriptions.tenantId, paramsParsed.data.id),
+      );
+
+    await recordPlatformAuditEvent({
+      platformUserId: session.platformUserId,
+      platformUserEmail: session.email,
+      kind: "platform.subscription.resumed",
+      summary: `Resumed tenant subscription`,
+      tenantId: paramsParsed.data.id,
+      ipAddress: req.ip ?? null,
+      userAgent: req.headers["user-agent"] ?? null,
+      metadata: {
+        pausedAt: sub.pausedAt?.toISOString() ?? null,
+      },
+    });
+
+    return reply.send({ ok: true, status: "active" });
+  });
+
   // figure out why it's there.
   const QuotaOverrideSchema = z.object({
     maxUsers: z.number().int().min(0).max(1_000_000).nullable().optional(),

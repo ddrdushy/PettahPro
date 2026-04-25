@@ -1025,6 +1025,17 @@ export const api = {
       "/subscription/coupons/mine",
     ),
 
+  // Pause / resume (#125).
+  pauseMySubscription: (body: { reason: string; resumeAt?: string }) =>
+    request<{ ok: true; status: "paused"; resumeAt: string | null }>(
+      "/subscription/pause",
+      { method: "POST", json: body },
+    ),
+  resumeMySubscription: () =>
+    request<{ ok: true; status: "active" }>("/subscription/resume", {
+      method: "POST",
+    }),
+
   listFxRates: (filter?: { from?: string; to?: string }) => {
     const qs = new URLSearchParams();
     if (filter?.from) qs.set("from", filter.from);
@@ -5421,11 +5432,19 @@ export interface AvailablePlan {
 // can be shared by UI components that render either side.
 export interface TenantSubscriptionResponse {
   id: string;
-  status: "trial" | "active" | "past_due" | "cancelled";
+  status: "trial" | "active" | "past_due" | "paused" | "cancelled";
   billingCycle: "monthly" | "yearly";
   trialEndsAt: string | null;
   currentPeriodStart: string;
   currentPeriodEnd: string;
+  // Pause metadata (#125). Populated when status='paused' or after a
+  // recent pause-resume cycle (audit trail). resumeAt drives the
+  // auto-resume cron sweep.
+  pause?: {
+    pausedAt: string | null;
+    resumeAt: string | null;
+    reason: string | null;
+  };
   // Per-tenant quota overrides (#71). Every field null = "no custom
   // contract, use the plan's caps." A non-null integer replaces the
   // plan's cap for that resource. The tenant's own settings page (#72)
