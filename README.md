@@ -43,8 +43,8 @@ This repository holds the complete product specification (**23 specs**, ~24,200 
 A full business operating system for a Sri Lankan SME, covering:
 
 - **Accounting core** — COA, journals, fiscal periods, tax returns, period close, multi-currency, fixed assets, bank reconciliation, budgets, bad-debt relief.
-- **Sell** — quotations, orders, invoices, POS (offline-first), receipts, credit notes, recurring invoices, commission schemes.
-- **Buy** — requisitions, POs, GRNs, bills, 3-way matching, payments, recurring purchases, petty cash, supplier portal (Scale+ tier).
+- **Sell** — quotations, orders, invoices, POS (online; offline mode planned), receipts, credit notes, recurring invoices, commission schemes.
+- **Buy** — requisitions, POs, GRNs, bills, 3-way matching, payments, recurring purchases, petty cash. (Supplier portal spec'd, not yet built.)
 - **Inventory** — items, warehouses, stock ledger, perpetual valuation (FIFO / weighted average), stock counts, transfers, adjustments, landed cost.
 - **Payroll** — employees, salary structures, monthly runs, payslips, EPF / ETF / PAYE, leave, loans, final settlement, attendance devices, commission earnings.
 - **Compliance** — VAT, SSCL, WHT, PAYE, EPF, ETF, Stamp Duty, 9-state cheque lifecycle per SL Bounced Cheques Act, auto-prepared statutory filings, regulatory auto-updates.
@@ -60,8 +60,8 @@ A full business operating system for a Sri Lankan SME, covering:
 | Backend | Node.js + Postgres with Row-Level Security |
 | Async / jobs | Redis + BullMQ |
 | Search | Postgres trigram + GIN (v1) · Qdrant (Phase 2) |
-| Storage | S3-compatible (AWS S3 ap-southeast-1) |
-| OCR | Tesseract + OTR + OpenCV, CPU-only (v1) · Chandra OCR (Phase 2) |
+| Storage | S3-compatible (MinIO in dev, AWS S3 in prod) |
+| OCR | Planned for Phase 2 (Tesseract + OTR + OpenCV CPU-only baseline; Chandra OCR later) — not yet implemented |
 | Hosting | AWS Singapore (ap-southeast-1) |
 | Connection pooling | PgBouncer (transaction mode — required for RLS) |
 | Encryption | Row-level via `pgcrypto` |
@@ -173,7 +173,7 @@ A full business operating system for a Sri Lankan SME, covering:
 | Deletion | Hybrid — soft for transactional, hard for ephemeral |
 | Partitioning | Two-level: hash by `tenant_id` × range by date on high-volume tables |
 | Materialized views | Dashboards, aging reports |
-| UX | Minimal-entry first (photo / scan / barcode) · Easy / Advanced toggle · offline-first POS · real SL data |
+| UX | Minimal-entry first (photo / scan / barcode) · Easy / Advanced toggle · real SL data (offline POS planned for Phase 2) |
 | Compliance | SL-native: VAT, WHT, EPF, ETF, PAYE, SSCL, Stamp Duty, 9-state cheque lifecycle, auto-prepared filings, regulatory auto-updates |
 
 ---
@@ -181,9 +181,7 @@ A full business operating system for a Sri Lankan SME, covering:
 ## What's in · What's not
 
 ### Explicitly deferred to Phase 2
-WhatsApp API integration · voice entry · Chandra OCR · live bank feeds · MICR cheque reading · e-Invoicing (IRD) · native mobile apps · dark mode · e-store integration.
-
-> Supplier portal is built (Scale+ tier) but off by default; tenants opt in.
+WhatsApp API integration · voice entry · OCR (Tesseract baseline + Chandra later) · live bank feeds · MICR cheque reading · e-Invoicing (IRD) · native mobile apps · offline POS · dark mode · e-store integration · supplier portal (spec'd, plan-flagged, no app surface yet).
 
 ### Not planned
 Outside Sri Lanka · Enterprise ERP (>100 employees) · personal finance · cryptocurrency · white-label.
