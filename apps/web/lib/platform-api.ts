@@ -374,6 +374,29 @@ export const platformApi = {
     request<SystemHealthPayload>("/platform/system-health"),
   // #61 — pricing plans + tenant subscriptions.
   listPlans: () => request<{ plans: PlatformPlan[] }>("/platform/plans"),
+  // Plan editor (super_admin only on the server). Calls hit a 403 if a
+  // support / billing role tries to mutate; the UI hides the buttons
+  // upstream but the gate is the source of truth.
+  getPlan: (id: string) =>
+    request<{ plan: PlatformPlan }>(`/platform/plans/${id}`),
+  createPlan: (body: PlatformPlanCreateInput) =>
+    request<{ plan: PlatformPlan }>("/platform/plans", {
+      method: "POST",
+      json: body,
+    }),
+  updatePlan: (id: string, body: PlatformPlanUpdateInput) =>
+    request<{ plan: PlatformPlan }>(`/platform/plans/${id}`, {
+      method: "PATCH",
+      json: body,
+    }),
+  archivePlan: (id: string) =>
+    request<{ plan: PlatformPlan }>(`/platform/plans/${id}/archive`, {
+      method: "POST",
+    }),
+  unarchivePlan: (id: string) =>
+    request<{ plan: PlatformPlan }>(`/platform/plans/${id}/unarchive`, {
+      method: "POST",
+    }),
   getTenantSubscription: (tenantId: string) =>
     request<{ subscription: PlatformTenantSubscription }>(
       `/platform/tenants/${tenantId}/subscription`,
@@ -495,8 +518,32 @@ export interface PlatformPlan {
   maxWarehouses: number | null;
   features: string[];
   isPublic: boolean;
+  // Archive flag — wound-down plans no longer offered, but tenants
+  // currently subscribed to them stay grandfathered.
+  isArchived: boolean;
   sortOrder: number;
 }
+
+// Editor payloads. `code` only on create — renaming a plan code would
+// orphan requireFeature() calls baked into the API.
+export interface PlatformPlanCreateInput {
+  code: string;
+  name: string;
+  tagline?: string;
+  monthlyPriceCents: number;
+  yearlyPriceCents: number;
+  currency?: string;
+  maxUsers?: number | null;
+  maxInvoicesMonthly?: number | null;
+  maxBranches?: number | null;
+  maxWarehouses?: number | null;
+  features?: string[];
+  isPublic?: boolean;
+  sortOrder?: number;
+}
+export type PlatformPlanUpdateInput = Partial<
+  Omit<PlatformPlanCreateInput, "code">
+>;
 
 export interface PlatformTenantSubscription {
   id: string;

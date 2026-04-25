@@ -49,6 +49,10 @@ export const plans = pgTable(
     // about keeping the gate vocabulary free-form.
     features: jsonb("features").$type<string[]>().notNull().default([]),
     isPublic: boolean("is_public").notNull().default(true),
+    // Archived plans aren't picked anymore, but tenants currently on
+    // them stay grandfathered. Distinct from isPublic — see migration
+    // 90-plans-archive.sql for the rationale.
+    isArchived: boolean("is_archived").notNull().default(false),
     sortOrder: smallint("sort_order").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
