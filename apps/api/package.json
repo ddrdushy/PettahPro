@@ -11,7 +11,8 @@
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "create-platform-admin": "tsx src/scripts/create-platform-admin.ts"
+    "create-platform-admin": "tsx src/scripts/create-platform-admin.ts",
+    "reset-platform-password": "tsx src/scripts/reset-platform-password.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.665.0",
