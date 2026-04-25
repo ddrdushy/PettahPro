@@ -45,7 +45,9 @@ COPY --from=build /app/apps/api/dist apps/api/dist
 COPY --from=build /app/apps/api/package.json apps/api/package.json
 COPY --from=build /app/packages/db packages/db
 COPY --from=build /app/node_modules node_modules
-COPY --from=build /app/pnpm-workspace.yaml package.json .npmrc ./
+# Sources must be absolute paths from the build stage's filesystem; with
+# --from=, relative paths resolve from / not from WORKDIR.
+COPY --from=build /app/pnpm-workspace.yaml /app/package.json /app/.npmrc ./
 
 EXPOSE 4000
 CMD ["node", "apps/api/dist/index.js"]

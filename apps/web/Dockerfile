@@ -32,6 +32,8 @@ COPY --from=build /app/apps/web/.next apps/web/.next
 COPY --from=build /app/apps/web/public apps/web/public
 COPY --from=build /app/apps/web/package.json apps/web/package.json
 COPY --from=build /app/node_modules node_modules
-COPY --from=build /app/pnpm-workspace.yaml package.json .npmrc ./
+# Sources must be absolute paths from the build stage's filesystem; with
+# --from=, relative paths resolve from / not from WORKDIR.
+COPY --from=build /app/pnpm-workspace.yaml /app/package.json /app/.npmrc ./
 EXPOSE 3000
 CMD ["pnpm", "--filter", "@pettahpro/web", "start"]
