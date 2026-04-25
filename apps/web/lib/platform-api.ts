@@ -397,6 +397,19 @@ export const platformApi = {
     request<{ plan: PlatformPlan }>(`/platform/plans/${id}/unarchive`, {
       method: "POST",
     }),
+  // Plan version history (#119) — list every snapshot ever taken for
+  // a plan, with subscriber counts per version.
+  listPlanVersions: (id: string) =>
+    request<{ versions: PlatformPlanVersion[] }>(
+      `/platform/plans/${id}/versions`,
+    ),
+  // Bulk-migrate every grandfathered subscription to the plan's
+  // current version. Idempotent.
+  migratePlanSubscribers: (id: string) =>
+    request<{ migrated: number; currentVersionId: string }>(
+      `/platform/plans/${id}/migrate-subscribers`,
+      { method: "POST" },
+    ),
   getTenantSubscription: (tenantId: string) =>
     request<{ subscription: PlatformTenantSubscription }>(
       `/platform/tenants/${tenantId}/subscription`,
@@ -522,6 +535,32 @@ export interface PlatformPlan {
   // currently subscribed to them stay grandfathered.
   isArchived: boolean;
   sortOrder: number;
+  // Versioning (#119). currentVersionId always set after migration;
+  // currentVersionNumber and subscribersOnVersion are joined-in by
+  // the platform GET endpoints.
+  currentVersionId: string | null;
+  currentVersionNumber: number | null;
+  subscribersOnVersion: { current: number; older: number } | null;
+}
+
+export interface PlatformPlanVersion {
+  id: string;
+  versionNumber: number;
+  isCurrent: boolean;
+  name: string;
+  tagline: string;
+  monthlyPriceCents: number;
+  yearlyPriceCents: number;
+  currency: string;
+  maxUsers: number | null;
+  maxInvoicesMonthly: number | null;
+  maxBranches: number | null;
+  maxWarehouses: number | null;
+  features: string[];
+  createdAt: string;
+  createdByPlatformUserId: string | null;
+  notes: string | null;
+  subscriberCount: number;
 }
 
 // Editor payloads. `code` only on create — renaming a plan code would
