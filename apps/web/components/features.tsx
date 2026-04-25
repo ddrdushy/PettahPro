@@ -25,7 +25,7 @@ export function Features() {
                 <Reveal className={reversed ? "md:order-2" : ""} delay={0}>
                   <div className="flex items-center gap-2">
                     <span className="eyebrow">{f.eyebrow}</span>
-                    {f.badge && (
+                    {"badge" in f && f.badge && (
                       <span className="rounded-full border-hairline border-border-emphasis px-2 py-0.5 text-micro uppercase tracking-wide text-text-tertiary">
                         {f.badge}
                       </span>

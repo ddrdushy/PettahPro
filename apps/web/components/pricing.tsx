@@ -49,16 +49,20 @@ export function Pricing() {
         </div>
 
         <div className="mt-12 grid gap-5 md:grid-cols-3">
-          {pricingPlans.map((plan) => (
+          {pricingPlans.map((plan) => {
+            // `highlight` is only on the recommended plan; the union narrows
+            // it out, so check + read via the in-narrowing.
+            const highlighted = "highlight" in plan && plan.highlight;
+            return (
             <article
               key={plan.name}
               className={`relative flex flex-col rounded-card border-hairline p-7 transition-all duration-300 hover:-translate-y-1 hover:shadow-lg ${
-                plan.highlight
+                highlighted
                   ? "border-charcoal bg-surface-elevated shadow-md"
                   : "border-border bg-surface-elevated hover:border-charcoal"
               }`}
             >
-              {plan.highlight && (
+              {highlighted && (
                 <span className="absolute -top-3 right-6 rounded-full bg-mint px-3 py-0.5 text-micro uppercase tracking-wide text-mint-dark">
                   Most popular
                 </span>
@@ -83,13 +87,14 @@ export function Pricing() {
               <div className="mt-8">
                 <Link
                   href="https://app.pettahpro.lk/signup"
-                  className={plan.highlight ? "btn-primary w-full" : "btn-secondary w-full"}
+                  className={highlighted ? "btn-primary w-full" : "btn-secondary w-full"}
                 >
                   {plan.cta}
                 </Link>
               </div>
             </article>
-          ))}
+            );
+          })}
         </div>
 
         <dl className="mx-auto mt-12 grid max-w-3xl gap-6 text-small text-text-secondary sm:grid-cols-3">

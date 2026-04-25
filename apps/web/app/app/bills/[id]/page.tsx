@@ -35,7 +35,7 @@ async function fetchBill(id: string) {
     (a) => a.accountType === "asset" && (a.accountSubtype === "bank" || a.accountSubtype === "cash"),
   );
   const taxCodes = txRes.ok ? ((await txRes.json()) as { taxCodes: TaxCode[] }).taxCodes : [];
-  const whtTaxCodes = taxCodes.filter((t) => t.taxType === "wht");
+  const whtTaxCodes = taxCodes.filter((t) => t.taxKind === "wht");
   return { ...data, bankAccounts, whtTaxCodes };
 }
 

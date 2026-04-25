@@ -27,16 +27,20 @@ export function Migration() {
         </div>
 
         <div className="mt-12 grid gap-5 md:grid-cols-3">
-          {migrationTiers.map((t, i) => (
+          {migrationTiers.map((t, i) => {
+            // `highlight` is only on the recommended tier; the union narrows
+            // it out, so check + read via the in-narrowing.
+            const highlighted = "highlight" in t && t.highlight;
+            return (
             <Reveal key={t.name} delay={i * 120}>
               <article
                 className={`relative h-full rounded-card border-hairline p-7 transition-all duration-300 hover:-translate-y-1 hover:shadow-md ${
-                  t.highlight
+                  highlighted
                     ? "border-charcoal bg-surface-elevated shadow-sm"
                     : "border-border bg-surface-elevated hover:border-charcoal"
                 }`}
               >
-              {t.highlight && (
+              {highlighted && (
                 <span className="absolute -top-3 left-6 rounded-full bg-mint px-3 py-0.5 text-micro uppercase tracking-wide text-mint-dark">
                   Recommended
                 </span>
@@ -55,14 +59,15 @@ export function Migration() {
               <div className="mt-6">
                 <Link
                   href="/migration"
-                  className={t.highlight ? "btn-primary w-full" : "btn-secondary w-full"}
+                  className={highlighted ? "btn-primary w-full" : "btn-secondary w-full"}
                 >
                   {t.cta}
                 </Link>
               </div>
             </article>
             </Reveal>
-          ))}
+            );
+          })}
         </div>
 
         <div className="mt-10 flex items-center justify-between rounded-card border-hairline border-border bg-surface-elevated p-5">

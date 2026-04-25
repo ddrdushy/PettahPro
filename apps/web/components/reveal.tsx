@@ -14,7 +14,11 @@ export function Reveal({
   className,
 }: {
   children: ReactNode;
-  as?: keyof JSX.IntrinsicElements;
+  // Narrowed from `keyof JSX.IntrinsicElements` because the full union is too
+  // complex for TS to represent in the JSX attribute set ("union too complex
+  // to represent" build error). Only `div` (default) and `li` are used today;
+  // extend this list if you need another tag.
+  as?: "div" | "li" | "section" | "article" | "span";
   delay?: number;
   className?: string;
 }) {
