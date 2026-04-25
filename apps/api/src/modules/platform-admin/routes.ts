@@ -966,6 +966,8 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
       { userCount: number; lastLoginAt: Date | null }
     >();
     if (ids.length > 0) {
+      // IN(...) with per-element ::uuid casts: postgres.js serializes a JS
+      // string[] as a record, so `ANY(${ids}::uuid[])` errors with 42846.
       // postgres.js serializes a plain JS string[] as a composite
       // record rather than a pg array, so `$1::uuid[]` blows up with
       // "cannot cast type record to uuid[]". Build an explicit
@@ -981,6 +983,7 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
                  platform_count_users(t.id) AS user_count,
                  platform_last_login(t.id)  AS last_login_at
             FROM tenants t
+           WHERE t.id IN (${sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `)})
            WHERE t.id IN (${idSql})
         `,
       )) as unknown as Array<{
