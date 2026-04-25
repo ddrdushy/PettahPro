@@ -361,7 +361,7 @@ export function AddonsClient({
             onClick={close}
             role="presentation"
           />
-          <div className="w-full max-w-xl overflow-y-auto bg-charcoal-950 border-l border-white/10 p-6">
+          <div className="w-full max-w-xl overflow-y-auto bg-charcoal border-l border-white/10 p-6">
             <div className="flex items-center justify-between">
               <h2 className="text-h2 text-white">
                 {editing.mode === "create" ? "New add-on" : "Edit add-on"}
