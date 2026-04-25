@@ -50,6 +50,7 @@ import {
 import { recordPlatformAuditEvent } from "./audit.js";
 import { buildSystemHealthPayload } from "../../plugins/system-health.js";
 import { autoRemoveRedundantAddons } from "../../lib/plan-gate.js";
+import { runRenewalCron } from "../subscription/renewal-cron.js";
 
 const SESSION_TTL = 60 * 60 * 12; // match cookies.ts / sessions.ts
 
@@ -2261,6 +2262,37 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
 
     const payload = await buildSystemHealthPayload();
     return reply.send(payload);
+  });
+
+  // Manually fire the renewal sweep (#124). Useful for ops to flush
+  // pending state without waiting for the daily cron — e.g. confirm a
+  // grandfathered addon got cancelled after a tenant cancelled, verify
+  // a coupon ticked after a period rolled. Safe to call any time;
+  // idempotent. Runs synchronously inside the request so the operator
+  // sees the result counts inline.
+  fastify.post("/subscription/renewal-sweep", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+    if (!(await requirePlatformRole(req, reply, session, ["super_admin"]))) {
+      return;
+    }
+
+    const result = await runRenewalCron(db, {
+      info: (obj, msg) => req.log.info(obj, msg),
+      error: (obj, msg) => req.log.error(obj, msg),
+    });
+
+    await recordPlatformAuditEvent({
+      platformUserId: session.platformUserId,
+      platformUserEmail: session.email,
+      kind: "platform.subscription.renewal_sweep_run",
+      summary: `Manual renewal sweep fired by operator`,
+      ipAddress: req.ip ?? null,
+      userAgent: req.headers["user-agent"] ?? null,
+      metadata: { result },
+    });
+
+    return reply.send({ result });
   });
 
   // -------------------------------------------------------------------
