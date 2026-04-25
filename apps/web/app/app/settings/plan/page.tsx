@@ -6,11 +6,13 @@ import type {
   ActiveAddon,
   AvailableAddon,
   AvailablePlan,
+  TenantCouponRedemption,
   TenantSubscriptionResponse,
 } from "@/lib/api";
 import { PageHeader } from "@/components/app/page-header";
 import { PlanPickerClient } from "./plan-picker-client";
 import { AddonsClient } from "./addons-client";
+import { CouponsClient } from "./coupons-client";
 
 export const metadata: Metadata = { title: "Change plan" };
 
@@ -48,11 +50,22 @@ async function fetchAddons(): Promise<{
   return (await res.json()) as { catalog: AvailableAddon[]; active: ActiveAddon[] };
 }
 
+async function fetchCouponRedemptions(): Promise<TenantCouponRedemption[]> {
+  const res = await fetch(`${INTERNAL_API}/subscription/coupons/mine`, {
+    headers: { cookie: cookies().toString() },
+    cache: "no-store",
+  });
+  if (!res.ok) return [];
+  const body = (await res.json()) as { redemptions: TenantCouponRedemption[] };
+  return body.redemptions;
+}
+
 export default async function PlanPickerPage() {
-  const [plans, subscription, addons] = await Promise.all([
+  const [plans, subscription, addons, couponRedemptions] = await Promise.all([
     fetchPlans(),
     fetchSubscription(),
     fetchAddons(),
+    fetchCouponRedemptions(),
   ]);
 
   return (
@@ -84,6 +97,7 @@ export default async function PlanPickerPage() {
               currentPlanCode={subscription.plan.code}
             />
           )}
+          <CouponsClient initialRedemptions={couponRedemptions} />
         </>
       )}
     </main>
