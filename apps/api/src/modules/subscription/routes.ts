@@ -1,5 +1,5 @@
 import type { FastifyPluginAsync } from "fastify";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
@@ -504,6 +504,332 @@ export const subscriptionRoutes: FastifyPluginAsync = async (fastify) => {
           grantsFeatures: addon.grantsFeatures,
         },
       },
+    });
+  });
+
+  // ---------------------------------------------------------------
+  // Coupons (#121 / pricing-spec §8) — tenant-side validate + redeem.
+  //
+  //   GET  /subscription/coupons/lookup?code=… — preview without
+  //                                              redeeming
+  //   POST /subscription/coupons/redeem        — redeem; idempotent
+  //                                              per-tenant when the
+  //                                              coupon's onePerTenant
+  //                                              flag is true
+  //   GET  /subscription/coupons/mine          — my redemption history
+  // ---------------------------------------------------------------
+
+  function validateCoupon(
+    coupon: typeof schema.coupons.$inferSelect,
+    planCode: string | null,
+  ): { ok: true } | { ok: false; code: string; message: string } {
+    if (coupon.isArchived) {
+      return {
+        ok: false,
+        code: "COUPON_ARCHIVED",
+        message: "This coupon is no longer active.",
+      };
+    }
+    if (!coupon.isActive) {
+      return {
+        ok: false,
+        code: "COUPON_INACTIVE",
+        message: "This coupon is currently disabled.",
+      };
+    }
+    const now = Date.now();
+    if (coupon.validFrom && coupon.validFrom.getTime() > now) {
+      return {
+        ok: false,
+        code: "COUPON_NOT_YET_VALID",
+        message: "This coupon isn't valid yet.",
+      };
+    }
+    if (coupon.validUntil && coupon.validUntil.getTime() < now) {
+      return {
+        ok: false,
+        code: "COUPON_EXPIRED",
+        message: "This coupon has expired.",
+      };
+    }
+    if (
+      coupon.maxRedemptions != null &&
+      coupon.redemptionCount >= coupon.maxRedemptions
+    ) {
+      return {
+        ok: false,
+        code: "COUPON_FULLY_REDEEMED",
+        message: "This coupon has been fully redeemed.",
+      };
+    }
+    const eligible = Array.isArray(coupon.eligiblePlanCodes)
+      ? (coupon.eligiblePlanCodes as string[])
+      : [];
+    if (eligible.length > 0 && planCode && !eligible.includes(planCode)) {
+      return {
+        ok: false,
+        code: "COUPON_INELIGIBLE_PLAN",
+        message: `This coupon doesn't apply to your current plan (${planCode}).`,
+      };
+    }
+    return { ok: true };
+  }
+
+  function couponPreview(coupon: typeof schema.coupons.$inferSelect) {
+    return {
+      code: coupon.code,
+      name: coupon.name,
+      discountType: coupon.discountType,
+      discountValue: coupon.discountValue,
+      appliesFor: coupon.appliesFor,
+      appliesForMonths: coupon.appliesForMonths,
+    };
+  }
+
+  fastify.get("/coupons/lookup", async (req, reply) => {
+    const ctx = requireAuth(req, reply);
+    if (!ctx) return;
+
+    const parsed = z
+      .object({ code: z.string().trim().min(1).max(64) })
+      .safeParse(req.query);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+    }
+
+    const couponRows = await db
+      .select()
+      .from(schema.coupons)
+      .where(sql`LOWER(${schema.coupons.code}) = LOWER(${parsed.data.code})`)
+      .limit(1);
+    const coupon = couponRows[0];
+    if (!coupon) {
+      return reply.status(404).send({ error: { code: "COUPON_NOT_FOUND" } });
+    }
+
+    const subRows = await db
+      .select({ planCode: schema.plans.code })
+      .from(schema.tenantSubscriptions)
+      .leftJoin(
+        schema.plans,
+        eq(schema.plans.id, schema.tenantSubscriptions.planId),
+      )
+      .where(eq(schema.tenantSubscriptions.tenantId, ctx.tenantId))
+      .limit(1);
+    const planCode = subRows[0]?.planCode ?? null;
+
+    const validity = validateCoupon(coupon, planCode);
+    if (!validity.ok) {
+      return reply.status(400).send({
+        error: { code: validity.code, message: validity.message },
+        coupon: couponPreview(coupon),
+      });
+    }
+
+    if (coupon.onePerTenant) {
+      const dup = await db
+        .select({ id: schema.couponRedemptions.id })
+        .from(schema.couponRedemptions)
+        .where(
+          and(
+            eq(schema.couponRedemptions.couponId, coupon.id),
+            eq(schema.couponRedemptions.tenantId, ctx.tenantId),
+            inArray(schema.couponRedemptions.status, ["active", "consumed"]),
+          ),
+        )
+        .limit(1);
+      if (dup.length > 0) {
+        return reply.status(400).send({
+          error: {
+            code: "COUPON_ALREADY_REDEEMED",
+            message: "You've already redeemed this coupon.",
+          },
+          coupon: couponPreview(coupon),
+        });
+      }
+    }
+
+    return reply.send({ coupon: couponPreview(coupon) });
+  });
+
+  fastify.post("/coupons/redeem", async (req, reply) => {
+    const ctx = await requirePermission(req, reply, "settings.manage");
+    if (!ctx) return;
+
+    const parsed = z
+      .object({ code: z.string().trim().min(1).max(64) })
+      .safeParse(req.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+    }
+
+    const result = await db.transaction(async (tx) => {
+      const couponRows = await tx
+        .select()
+        .from(schema.coupons)
+        .where(sql`LOWER(${schema.coupons.code}) = LOWER(${parsed.data.code})`)
+        .limit(1);
+      const coupon = couponRows[0];
+      if (!coupon)
+        return { ok: false as const, status: 404, code: "COUPON_NOT_FOUND" };
+
+      const subRows = await tx
+        .select({
+          planId: schema.tenantSubscriptions.planId,
+          planVersionId: schema.tenantSubscriptions.planVersionId,
+          planCode: schema.plans.code,
+        })
+        .from(schema.tenantSubscriptions)
+        .leftJoin(
+          schema.plans,
+          eq(schema.plans.id, schema.tenantSubscriptions.planId),
+        )
+        .where(eq(schema.tenantSubscriptions.tenantId, ctx.tenantId))
+        .limit(1);
+      const sub = subRows[0];
+
+      const validity = validateCoupon(coupon, sub?.planCode ?? null);
+      if (!validity.ok) {
+        return {
+          ok: false as const,
+          status: 400,
+          code: validity.code,
+          message: validity.message,
+        };
+      }
+
+      if (coupon.onePerTenant) {
+        const dup = await tx
+          .select({ id: schema.couponRedemptions.id })
+          .from(schema.couponRedemptions)
+          .where(
+            and(
+              eq(schema.couponRedemptions.couponId, coupon.id),
+              eq(schema.couponRedemptions.tenantId, ctx.tenantId),
+              inArray(schema.couponRedemptions.status, ["active", "consumed"]),
+            ),
+          )
+          .limit(1);
+        if (dup.length > 0) {
+          return {
+            ok: false as const,
+            status: 400,
+            code: "COUPON_ALREADY_REDEEMED",
+            message: "You've already redeemed this coupon.",
+          };
+        }
+      }
+
+      const [redemption] = await tx
+        .insert(schema.couponRedemptions)
+        .values({
+          couponId: coupon.id,
+          tenantId: ctx.tenantId,
+          discountType: coupon.discountType,
+          discountValue: coupon.discountValue,
+          appliesFor: coupon.appliesFor,
+          appliesForMonths: coupon.appliesForMonths,
+          planId: sub?.planId ?? null,
+          planVersionId: sub?.planVersionId ?? null,
+          status: "active",
+          redeemedByUserId: ctx.userId,
+        })
+        .returning();
+      if (!redemption) {
+        return { ok: false as const, status: 500, code: "REDEEM_FAILED" };
+      }
+
+      await tx
+        .update(schema.coupons)
+        .set({
+          redemptionCount: coupon.redemptionCount + 1,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.coupons.id, coupon.id));
+
+      return { ok: true as const, redemption, coupon };
+    });
+
+    if (!result.ok) {
+      return reply
+        .status(result.status)
+        .send({ error: { code: result.code, message: result.message } });
+    }
+
+    try {
+      await db.insert(schema.platformAuditLog).values({
+        platformUserId: null,
+        platformUserEmail: "self-serve@pettahpro.lk",
+        kind: "subscription.coupon.redeemed",
+        summary: `Tenant redeemed coupon ${result.coupon.code}`,
+        reason: null,
+        tenantId: ctx.tenantId,
+        ipAddress: req.ip ?? null,
+        userAgent: req.headers["user-agent"]
+          ? String(req.headers["user-agent"]).slice(0, 512)
+          : null,
+        metadata: {
+          tenantUserId: ctx.userId,
+          couponId: result.coupon.id,
+          couponCode: result.coupon.code,
+          discountType: result.coupon.discountType,
+          discountValue: result.coupon.discountValue,
+        },
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("coupon redemption audit write failed", err);
+    }
+
+    return reply.status(201).send({
+      redemption: {
+        id: result.redemption.id,
+        couponCode: result.coupon.code,
+        couponName: result.coupon.name,
+        discountType: result.redemption.discountType,
+        discountValue: result.redemption.discountValue,
+        appliesFor: result.redemption.appliesFor,
+        appliesForMonths: result.redemption.appliesForMonths,
+        status: result.redemption.status,
+        redeemedAt: result.redemption.redeemedAt,
+      },
+    });
+  });
+
+  fastify.get("/coupons/mine", async (req, reply) => {
+    const ctx = requireAuth(req, reply);
+    if (!ctx) return;
+
+    const rows = await db
+      .select({
+        redemption: schema.couponRedemptions,
+        coupon: schema.coupons,
+      })
+      .from(schema.couponRedemptions)
+      .leftJoin(
+        schema.coupons,
+        eq(schema.coupons.id, schema.couponRedemptions.couponId),
+      )
+      .where(eq(schema.couponRedemptions.tenantId, ctx.tenantId))
+      .orderBy(asc(schema.couponRedemptions.redeemedAt));
+
+    return reply.send({
+      redemptions: rows
+        .filter((r) => r.coupon !== null)
+        .map((r) => ({
+          id: r.redemption.id,
+          couponCode: r.coupon!.code,
+          couponName: r.coupon!.name,
+          discountType: r.redemption.discountType,
+          discountValue: r.redemption.discountValue,
+          appliesFor: r.redemption.appliesFor,
+          appliesForMonths: r.redemption.appliesForMonths,
+          status: r.redemption.status,
+          monthsApplied: r.redemption.monthsApplied,
+          redeemedAt: r.redemption.redeemedAt,
+          consumedAt: r.redemption.consumedAt,
+          cancelledAt: r.redemption.cancelledAt,
+        })),
     });
   });
 

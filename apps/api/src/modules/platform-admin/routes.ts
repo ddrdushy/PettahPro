@@ -3179,6 +3179,333 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
     },
   );
 
+  // -------------------------------------------------------------------
+  // Coupons (#121 / pricing-spec §8).
+  //
+  //   * GET    /coupons                — catalog, any role
+  //   * GET    /coupons/:id            — one with redemption summary
+  //   * POST   /coupons                — create, super_admin
+  //   * PATCH  /coupons/:id            — update, super_admin
+  //   * POST   /coupons/:id/archive    — super_admin
+  //   * POST   /coupons/:id/unarchive  — super_admin
+  //   * GET    /coupons/:id/redemptions — list, super_admin or billing
+  //
+  // No DELETE — FK on coupon_redemptions is RESTRICT and archive is
+  // the supported wind-down (matches plans / addons semantics).
+  // -------------------------------------------------------------------
+
+  const CouponCodeSchema = z
+    .string()
+    .trim()
+    .min(2)
+    .max(64)
+    .regex(/^[A-Z0-9_-]+$/, "Code must be uppercase letters, digits, underscore, or hyphen.");
+
+  const CreateCouponSchema = z.object({
+    code: CouponCodeSchema,
+    name: z.string().trim().min(3).max(160),
+    discountType: z.enum(["percent_off", "amount_off_cents"]),
+    discountValue: z.number().int().nonnegative(),
+    appliesFor: z.enum(["once", "forever", "months"]).default("once"),
+    appliesForMonths: z.number().int().min(1).max(120).optional(),
+    eligiblePlanCodes: z.array(z.string().min(1).max(32)).max(8).default([]),
+    newSignupsOnly: z.boolean().default(false),
+    validFrom: z.string().datetime().optional(),
+    validUntil: z.string().datetime().optional(),
+    maxRedemptions: z.number().int().positive().optional(),
+    onePerTenant: z.boolean().default(true),
+    isActive: z.boolean().default(true),
+    notes: z.string().max(2000).optional(),
+  }).refine(
+    (v) => v.discountType !== "percent_off" || v.discountValue <= 10_000,
+    { message: "Percent-off can't exceed 100% (10000 bps)." },
+  ).refine(
+    (v) => v.appliesFor !== "months" || (v.appliesForMonths != null && v.appliesForMonths >= 1),
+    { message: "appliesForMonths is required when appliesFor='months'." },
+  );
+
+  const UpdateCouponSchema = z
+    .object({
+      name: z.string().trim().min(3).max(160).optional(),
+      discountType: z.enum(["percent_off", "amount_off_cents"]).optional(),
+      discountValue: z.number().int().nonnegative().optional(),
+      appliesFor: z.enum(["once", "forever", "months"]).optional(),
+      appliesForMonths: z.number().int().min(1).max(120).nullable().optional(),
+      eligiblePlanCodes: z.array(z.string().min(1).max(32)).max(8).optional(),
+      newSignupsOnly: z.boolean().optional(),
+      validFrom: z.string().datetime().nullable().optional(),
+      validUntil: z.string().datetime().nullable().optional(),
+      maxRedemptions: z.number().int().positive().nullable().optional(),
+      onePerTenant: z.boolean().optional(),
+      isActive: z.boolean().optional(),
+      notes: z.string().max(2000).nullable().optional(),
+    })
+    .refine((v) => Object.keys(v).length > 0, {
+      message: "At least one field is required.",
+    });
+
+  function couponToWire(c: typeof schema.coupons.$inferSelect) {
+    return {
+      id: c.id,
+      code: c.code,
+      name: c.name,
+      discountType: c.discountType,
+      discountValue: c.discountValue,
+      appliesFor: c.appliesFor,
+      appliesForMonths: c.appliesForMonths,
+      eligiblePlanCodes: c.eligiblePlanCodes,
+      newSignupsOnly: c.newSignupsOnly,
+      validFrom: c.validFrom,
+      validUntil: c.validUntil,
+      maxRedemptions: c.maxRedemptions,
+      redemptionCount: c.redemptionCount,
+      onePerTenant: c.onePerTenant,
+      isActive: c.isActive,
+      isArchived: c.isArchived,
+      notes: c.notes,
+      createdAt: c.createdAt,
+    };
+  }
+
+  fastify.get("/coupons", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+
+    const rows = await db
+      .select()
+      .from(schema.coupons)
+      .orderBy(desc(schema.coupons.createdAt));
+    return reply.send({ coupons: rows.map(couponToWire) });
+  });
+
+  fastify.get("/coupons/:id", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+
+    const parsed = z.object({ id: z.string().uuid() }).safeParse(req.params);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+    }
+    const rows = await db
+      .select()
+      .from(schema.coupons)
+      .where(eq(schema.coupons.id, parsed.data.id))
+      .limit(1);
+    const row = rows[0];
+    if (!row) return reply.status(404).send({ error: { code: "NOT_FOUND" } });
+    return reply.send({ coupon: couponToWire(row) });
+  });
+
+  fastify.post("/coupons", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+    if (!(await requirePlatformRole(req, reply, session, ["super_admin"]))) {
+      return;
+    }
+
+    const parsed = CreateCouponSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: {
+          code: "INVALID_INPUT",
+          message: parsed.error.issues[0]?.message ?? "Invalid coupon payload.",
+        },
+      });
+    }
+
+    // Code uniqueness — friendly 409 ahead of the unique-index 500.
+    const existing = await db
+      .select({ id: schema.coupons.id })
+      .from(schema.coupons)
+      .where(sql`LOWER(${schema.coupons.code}) = LOWER(${parsed.data.code})`)
+      .limit(1);
+    if (existing.length > 0) {
+      return reply.status(409).send({ error: { code: "COUPON_CODE_TAKEN" } });
+    }
+
+    const [created] = await db
+      .insert(schema.coupons)
+      .values({
+        code: parsed.data.code,
+        name: parsed.data.name,
+        discountType: parsed.data.discountType,
+        discountValue: parsed.data.discountValue,
+        appliesFor: parsed.data.appliesFor,
+        appliesForMonths: parsed.data.appliesForMonths ?? null,
+        eligiblePlanCodes: parsed.data.eligiblePlanCodes,
+        newSignupsOnly: parsed.data.newSignupsOnly,
+        validFrom: parsed.data.validFrom ? new Date(parsed.data.validFrom) : null,
+        validUntil: parsed.data.validUntil ? new Date(parsed.data.validUntil) : null,
+        maxRedemptions: parsed.data.maxRedemptions ?? null,
+        onePerTenant: parsed.data.onePerTenant,
+        isActive: parsed.data.isActive,
+        notes: parsed.data.notes ?? null,
+        createdByPlatformUserId: session.platformUserId,
+      })
+      .returning();
+    if (!created) {
+      return reply.status(500).send({ error: { code: "CREATE_FAILED" } });
+    }
+
+    await recordPlatformAuditEvent({
+      platformUserId: session.platformUserId,
+      platformUserEmail: session.email,
+      kind: "platform.coupon.created",
+      summary: `Created coupon ${created.code}`,
+      ipAddress: req.ip ?? null,
+      userAgent: req.headers["user-agent"] ?? null,
+      metadata: {
+        couponId: created.id,
+        code: created.code,
+        discountType: created.discountType,
+        discountValue: created.discountValue,
+      },
+    });
+    return reply.status(201).send({ coupon: couponToWire(created) });
+  });
+
+  fastify.patch("/coupons/:id", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+    if (!(await requirePlatformRole(req, reply, session, ["super_admin"]))) {
+      return;
+    }
+
+    const paramsParsed = z.object({ id: z.string().uuid() }).safeParse(req.params);
+    if (!paramsParsed.success) {
+      return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+    }
+    const bodyParsed = UpdateCouponSchema.safeParse(req.body);
+    if (!bodyParsed.success) {
+      return reply.status(400).send({
+        error: {
+          code: "INVALID_INPUT",
+          message: bodyParsed.error.issues[0]?.message ?? "Invalid coupon payload.",
+        },
+      });
+    }
+
+    // Coerce datetime strings to Date for the DB write.
+    const patch: Record<string, unknown> = { ...bodyParsed.data, updatedAt: new Date() };
+    if ("validFrom" in patch && patch.validFrom != null) {
+      patch.validFrom = new Date(patch.validFrom as string);
+    }
+    if ("validUntil" in patch && patch.validUntil != null) {
+      patch.validUntil = new Date(patch.validUntil as string);
+    }
+
+    const [updated] = await db
+      .update(schema.coupons)
+      .set(patch as Partial<typeof schema.coupons.$inferInsert>)
+      .where(eq(schema.coupons.id, paramsParsed.data.id))
+      .returning();
+    if (!updated) {
+      return reply.status(404).send({ error: { code: "NOT_FOUND" } });
+    }
+
+    await recordPlatformAuditEvent({
+      platformUserId: session.platformUserId,
+      platformUserEmail: session.email,
+      kind: "platform.coupon.updated",
+      summary: `Updated coupon ${updated.code}`,
+      ipAddress: req.ip ?? null,
+      userAgent: req.headers["user-agent"] ?? null,
+      metadata: { couponId: updated.id, code: updated.code, changes: bodyParsed.data },
+    });
+    return reply.send({ coupon: couponToWire(updated) });
+  });
+
+  for (const flag of ["archive", "unarchive"] as const) {
+    fastify.post(`/coupons/:id/${flag}`, async (req, reply) => {
+      const session = await requirePlatformSession(req, reply);
+      if (!session) return;
+      if (!(await requirePlatformRole(req, reply, session, ["super_admin"]))) {
+        return;
+      }
+
+      const parsed = z.object({ id: z.string().uuid() }).safeParse(req.params);
+      if (!parsed.success) {
+        return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+      }
+
+      const [updated] = await db
+        .update(schema.coupons)
+        .set({ isArchived: flag === "archive", updatedAt: new Date() })
+        .where(eq(schema.coupons.id, parsed.data.id))
+        .returning();
+      if (!updated) {
+        return reply.status(404).send({ error: { code: "NOT_FOUND" } });
+      }
+
+      await recordPlatformAuditEvent({
+        platformUserId: session.platformUserId,
+        platformUserEmail: session.email,
+        kind: `platform.coupon.${flag}d`,
+        summary: `${flag === "archive" ? "Archived" : "Unarchived"} coupon ${updated.code}`,
+        ipAddress: req.ip ?? null,
+        userAgent: req.headers["user-agent"] ?? null,
+        metadata: { couponId: updated.id, code: updated.code },
+      });
+      return reply.send({ coupon: couponToWire(updated) });
+    });
+  }
+
+  // Redemption history per coupon. Includes tenant identity (super-
+  // admin can already see tenant directories elsewhere; coupon-side
+  // is the same realm). For ops "did the campaign land any signups?"
+  fastify.get("/coupons/:id/redemptions", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+    // Billing role can see redemptions (revenue analytics) but
+    // can't mutate; super_admin and support also pass.
+    if (
+      !(await requirePlatformRole(req, reply, session, [
+        "super_admin",
+        "support",
+        "billing",
+      ]))
+    ) {
+      return;
+    }
+
+    const parsed = z.object({ id: z.string().uuid() }).safeParse(req.params);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+    }
+
+    const rows = await db
+      .select({
+        redemption: schema.couponRedemptions,
+        tenant: schema.tenants,
+      })
+      .from(schema.couponRedemptions)
+      .leftJoin(
+        schema.tenants,
+        eq(schema.tenants.id, schema.couponRedemptions.tenantId),
+      )
+      .where(eq(schema.couponRedemptions.couponId, parsed.data.id))
+      .orderBy(desc(schema.couponRedemptions.redeemedAt));
+
+    return reply.send({
+      redemptions: rows.map((r) => ({
+        id: r.redemption.id,
+        tenantId: r.redemption.tenantId,
+        tenantName: r.tenant?.businessName ?? null,
+        tenantSlug: r.tenant?.slug ?? null,
+        discountType: r.redemption.discountType,
+        discountValue: r.redemption.discountValue,
+        appliesFor: r.redemption.appliesFor,
+        appliesForMonths: r.redemption.appliesForMonths,
+        status: r.redemption.status,
+        monthsApplied: r.redemption.monthsApplied,
+        redeemedAt: r.redemption.redeemedAt,
+        consumedAt: r.redemption.consumedAt,
+        cancelledAt: r.redemption.cancelledAt,
+        cancelReason: r.redemption.cancelReason,
+      })),
+    });
+  });
+
   fastify.post("/plans", async (req, reply) => {
     const session = await requirePlatformSession(req, reply);
     if (!session) return;
