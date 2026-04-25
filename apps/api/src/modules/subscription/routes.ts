@@ -231,10 +231,14 @@ export const subscriptionRoutes: FastifyPluginAsync = async (fastify) => {
     const periodInterval =
       nextCycle === "yearly" ? "365 days" : "30 days";
 
+    // Bind to the target plan's CURRENT version. Self-serve plan
+    // change is an explicit "I want the latest published tier"
+    // action — same semantic as the platform-admin change-plan path.
     const [updated] = await db
       .update(schema.tenantSubscriptions)
       .set({
         planId: targetPlan.id,
+        planVersionId: targetPlan.currentVersionId,
         status: nextStatus,
         billingCycle: nextCycle,
         trialEndsAt: null,

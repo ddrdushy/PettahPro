@@ -46,6 +46,13 @@ export const tenantSubscriptions = pgTable(
       .default(sql`uuid_generate_v7()`),
     tenantId: uuid("tenant_id").notNull(),
     planId: uuid("plan_id").notNull(),
+    // Bound at signup or change-plan to a specific plan_versions row
+    // (#119). Edits to the plan catalogue do NOT touch existing
+    // subscriptions — they stay on their bound version until an
+    // explicit migrate-to-current action. Nullable for back-compat
+    // with rows created before the versioning migration; the app
+    // populates it on every write going forward.
+    planVersionId: uuid("plan_version_id"),
     status: varchar("status", { length: 16 }).notNull(),
     billingCycle: varchar("billing_cycle", { length: 8 })
       .notNull()
@@ -84,6 +91,9 @@ export const tenantSubscriptions = pgTable(
       t.tenantId,
     ),
     planIdx: index("tenant_subscriptions_plan_idx").on(t.planId),
+    planVersionIdx: index("tenant_subscriptions_plan_version_idx").on(
+      t.planVersionId,
+    ),
     statusIdx: index("tenant_subscriptions_status_idx").on(t.status),
   }),
 );
