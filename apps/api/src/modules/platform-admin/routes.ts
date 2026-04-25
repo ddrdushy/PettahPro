@@ -2297,9 +2297,368 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
         maxWarehouses: p.maxWarehouses,
         features: p.features,
         isPublic: p.isPublic,
+        isArchived: p.isArchived,
         sortOrder: p.sortOrder,
       })),
     });
+  });
+
+  // -------------------------------------------------------------------
+  // Plan editor (super_admin only). Closes the "edit prices outside of
+  // a migration" todo on the read-only catalogue page from #61.
+  //
+  //   * GET    /plans/:id            — single plan, any role
+  //   * POST   /plans                — create, super_admin
+  //   * PATCH  /plans/:id            — update, super_admin
+  //   * POST   /plans/:id/archive    — wind down, super_admin
+  //   * POST   /plans/:id/unarchive  — resume selling, super_admin
+  //
+  // No DELETE on purpose. Hard-deleting a plan would orphan every
+  // tenant_subscription row pointing at it (FK is RESTRICT). Archive
+  // is the supported removal path; existing tenants stay grandfathered.
+  // -------------------------------------------------------------------
+
+  // Shared validators. Code is the stable machine handle (referenced by
+  // requireFeature() / change-plan endpoints) so it's locked on update.
+  const PlanCodeSchema = z
+    .string()
+    .trim()
+    .min(2)
+    .max(32)
+    .regex(/^[a-z][a-z0-9_]*$/, "Code must be lowercase letters, digits, or underscores starting with a letter.");
+  const NullableNonNegInt = z
+    .number()
+    .int()
+    .nonnegative()
+    .nullable();
+  const FeatureCode = z.string().trim().min(1).max(64);
+  const FeaturesArray = z.array(FeatureCode).max(64);
+
+  const CreatePlanSchema = z.object({
+    code: PlanCodeSchema,
+    name: z.string().trim().min(1).max(80),
+    tagline: z.string().trim().max(200).default(""),
+    monthlyPriceCents: z.number().int().nonnegative(),
+    yearlyPriceCents: z.number().int().nonnegative(),
+    currency: z.string().trim().length(3).toUpperCase().default("LKR"),
+    maxUsers: NullableNonNegInt.default(null),
+    maxInvoicesMonthly: NullableNonNegInt.default(null),
+    maxBranches: NullableNonNegInt.default(null),
+    maxWarehouses: NullableNonNegInt.default(null),
+    features: FeaturesArray.default([]),
+    isPublic: z.boolean().default(true),
+    sortOrder: z.number().int().min(0).max(32_767).default(0),
+  });
+
+  // Update is partial — every field optional, but at least one required
+  // so an empty PATCH is a 400 rather than a silent no-op. Code is
+  // intentionally absent: renaming the stable handle would orphan
+  // requireFeature() calls + change-plan payloads. New plan = new code.
+  const UpdatePlanSchema = z
+    .object({
+      name: z.string().trim().min(1).max(80).optional(),
+      tagline: z.string().trim().max(200).optional(),
+      monthlyPriceCents: z.number().int().nonnegative().optional(),
+      yearlyPriceCents: z.number().int().nonnegative().optional(),
+      currency: z.string().trim().length(3).toUpperCase().optional(),
+      maxUsers: NullableNonNegInt.optional(),
+      maxInvoicesMonthly: NullableNonNegInt.optional(),
+      maxBranches: NullableNonNegInt.optional(),
+      maxWarehouses: NullableNonNegInt.optional(),
+      features: FeaturesArray.optional(),
+      isPublic: z.boolean().optional(),
+      sortOrder: z.number().int().min(0).max(32_767).optional(),
+    })
+    .refine((v) => Object.keys(v).length > 0, {
+      message: "At least one field is required.",
+    });
+
+  function planToWire(p: typeof schema.plans.$inferSelect) {
+    return {
+      id: p.id,
+      code: p.code,
+      name: p.name,
+      tagline: p.tagline,
+      monthlyPriceCents: p.monthlyPriceCents,
+      yearlyPriceCents: p.yearlyPriceCents,
+      currency: p.currency,
+      maxUsers: p.maxUsers,
+      maxInvoicesMonthly: p.maxInvoicesMonthly,
+      maxBranches: p.maxBranches,
+      maxWarehouses: p.maxWarehouses,
+      features: p.features,
+      isPublic: p.isPublic,
+      isArchived: p.isArchived,
+      sortOrder: p.sortOrder,
+    };
+  }
+
+  // Compute a shallow diff between two plan rows for the audit metadata.
+  // Strings, numbers, booleans compared by `!==`; features array by
+  // length + sorted-stringify so reordering doesn't show as a diff.
+  function diffPlan(
+    before: typeof schema.plans.$inferSelect,
+    after: typeof schema.plans.$inferSelect,
+  ): Record<string, { from: unknown; to: unknown }> {
+    const out: Record<string, { from: unknown; to: unknown }> = {};
+    const scalarKeys = [
+      "name",
+      "tagline",
+      "monthlyPriceCents",
+      "yearlyPriceCents",
+      "currency",
+      "maxUsers",
+      "maxInvoicesMonthly",
+      "maxBranches",
+      "maxWarehouses",
+      "isPublic",
+      "isArchived",
+      "sortOrder",
+    ] as const;
+    for (const k of scalarKeys) {
+      if (before[k] !== after[k]) {
+        out[k] = { from: before[k], to: after[k] };
+      }
+    }
+    const beforeFeatures = [...(before.features ?? [])].sort();
+    const afterFeatures = [...(after.features ?? [])].sort();
+    if (
+      beforeFeatures.length !== afterFeatures.length ||
+      beforeFeatures.some((v, i) => v !== afterFeatures[i])
+    ) {
+      out.features = { from: before.features, to: after.features };
+    }
+    return out;
+  }
+
+  fastify.get("/plans/:id", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+
+    const parsed = z.object({ id: z.string().uuid() }).safeParse(req.params);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+    }
+    const rows = await db
+      .select()
+      .from(schema.plans)
+      .where(eq(schema.plans.id, parsed.data.id))
+      .limit(1);
+    const row = rows[0];
+    if (!row) return reply.status(404).send({ error: { code: "NOT_FOUND" } });
+    return reply.send({ plan: planToWire(row) });
+  });
+
+  fastify.post("/plans", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+    if (!(await requirePlatformRole(req, reply, session, ["super_admin"]))) {
+      return;
+    }
+
+    const parsed = CreatePlanSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: {
+          code: "INVALID_INPUT",
+          message: parsed.error.issues[0]?.message ?? "Invalid plan payload.",
+        },
+      });
+    }
+
+    // Code uniqueness — the partial unique index would catch this at
+    // insert time too, but a clean 409 is friendlier than a generic 500
+    // dressed up from a Postgres unique-violation surfacing through
+    // Drizzle.
+    const existing = await db
+      .select({ id: schema.plans.id })
+      .from(schema.plans)
+      .where(eq(schema.plans.code, parsed.data.code))
+      .limit(1);
+    if (existing.length > 0) {
+      return reply.status(409).send({ error: { code: "PLAN_CODE_TAKEN" } });
+    }
+
+    const [created] = await db
+      .insert(schema.plans)
+      .values({
+        code: parsed.data.code,
+        name: parsed.data.name,
+        tagline: parsed.data.tagline,
+        monthlyPriceCents: parsed.data.monthlyPriceCents,
+        yearlyPriceCents: parsed.data.yearlyPriceCents,
+        currency: parsed.data.currency,
+        maxUsers: parsed.data.maxUsers,
+        maxInvoicesMonthly: parsed.data.maxInvoicesMonthly,
+        maxBranches: parsed.data.maxBranches,
+        maxWarehouses: parsed.data.maxWarehouses,
+        features: parsed.data.features,
+        isPublic: parsed.data.isPublic,
+        sortOrder: parsed.data.sortOrder,
+      })
+      .returning();
+
+    if (!created) {
+      return reply.status(500).send({ error: { code: "CREATE_FAILED" } });
+    }
+
+    await recordPlatformAuditEvent({
+      platformUserId: session.platformUserId,
+      platformUserEmail: session.email,
+      kind: "platform.plan.created",
+      summary: `Created plan ${created.code}`,
+      ipAddress: req.ip ?? null,
+      userAgent: req.headers["user-agent"] ?? null,
+      metadata: {
+        planId: created.id,
+        code: created.code,
+        monthlyPriceCents: created.monthlyPriceCents,
+        yearlyPriceCents: created.yearlyPriceCents,
+        features: created.features,
+      },
+    });
+
+    return reply.status(201).send({ plan: planToWire(created) });
+  });
+
+  fastify.patch("/plans/:id", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+    if (!(await requirePlatformRole(req, reply, session, ["super_admin"]))) {
+      return;
+    }
+
+    const paramsParsed = z
+      .object({ id: z.string().uuid() })
+      .safeParse(req.params);
+    if (!paramsParsed.success) {
+      return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+    }
+    const bodyParsed = UpdatePlanSchema.safeParse(req.body);
+    if (!bodyParsed.success) {
+      return reply.status(400).send({
+        error: {
+          code: "INVALID_INPUT",
+          message: bodyParsed.error.issues[0]?.message ?? "Invalid plan payload.",
+        },
+      });
+    }
+
+    const before = await db
+      .select()
+      .from(schema.plans)
+      .where(eq(schema.plans.id, paramsParsed.data.id))
+      .limit(1);
+    const beforeRow = before[0];
+    if (!beforeRow) {
+      return reply.status(404).send({ error: { code: "NOT_FOUND" } });
+    }
+
+    const [updated] = await db
+      .update(schema.plans)
+      .set({
+        ...bodyParsed.data,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.plans.id, paramsParsed.data.id))
+      .returning();
+
+    if (!updated) {
+      return reply.status(500).send({ error: { code: "UPDATE_FAILED" } });
+    }
+
+    const diff = diffPlan(beforeRow, updated);
+    if (Object.keys(diff).length > 0) {
+      await recordPlatformAuditEvent({
+        platformUserId: session.platformUserId,
+        platformUserEmail: session.email,
+        kind: "platform.plan.updated",
+        summary: `Updated plan ${updated.code}`,
+        ipAddress: req.ip ?? null,
+        userAgent: req.headers["user-agent"] ?? null,
+        metadata: {
+          planId: updated.id,
+          code: updated.code,
+          changes: diff,
+        },
+      });
+    }
+
+    return reply.send({ plan: planToWire(updated) });
+  });
+
+  // Archive is just a flag flip, but we route it as its own endpoint
+  // (rather than PATCH { isArchived: true }) so the audit row reads
+  // "Archived plan starter" instead of "Updated plan starter (changes:
+  // isArchived)". The semantic distinction matters when an operator
+  // is reading the audit log a year later trying to figure out why a
+  // plan disappeared from the picker.
+  fastify.post("/plans/:id/archive", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+    if (!(await requirePlatformRole(req, reply, session, ["super_admin"]))) {
+      return;
+    }
+
+    const parsed = z.object({ id: z.string().uuid() }).safeParse(req.params);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+    }
+
+    const [updated] = await db
+      .update(schema.plans)
+      .set({ isArchived: true, updatedAt: new Date() })
+      .where(eq(schema.plans.id, parsed.data.id))
+      .returning();
+    if (!updated) {
+      return reply.status(404).send({ error: { code: "NOT_FOUND" } });
+    }
+
+    await recordPlatformAuditEvent({
+      platformUserId: session.platformUserId,
+      platformUserEmail: session.email,
+      kind: "platform.plan.archived",
+      summary: `Archived plan ${updated.code}`,
+      ipAddress: req.ip ?? null,
+      userAgent: req.headers["user-agent"] ?? null,
+      metadata: { planId: updated.id, code: updated.code },
+    });
+
+    return reply.send({ plan: planToWire(updated) });
+  });
+
+  fastify.post("/plans/:id/unarchive", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+    if (!(await requirePlatformRole(req, reply, session, ["super_admin"]))) {
+      return;
+    }
+
+    const parsed = z.object({ id: z.string().uuid() }).safeParse(req.params);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+    }
+
+    const [updated] = await db
+      .update(schema.plans)
+      .set({ isArchived: false, updatedAt: new Date() })
+      .where(eq(schema.plans.id, parsed.data.id))
+      .returning();
+    if (!updated) {
+      return reply.status(404).send({ error: { code: "NOT_FOUND" } });
+    }
+
+    await recordPlatformAuditEvent({
+      platformUserId: session.platformUserId,
+      platformUserEmail: session.email,
+      kind: "platform.plan.unarchived",
+      summary: `Unarchived plan ${updated.code}`,
+      ipAddress: req.ip ?? null,
+      userAgent: req.headers["user-agent"] ?? null,
+      metadata: { planId: updated.id, code: updated.code },
+    });
+
+    return reply.send({ plan: planToWire(updated) });
   });
 
   fastify.get("/tenants/:id/subscription", async (req, reply) => {
