@@ -162,10 +162,12 @@ export async function accrueOnPayment(
 
   // Load the invoices to find their salesperson tags.
   const invIds = input.allocations.map((a) => a.invoiceId);
+  // IN(...) with per-element ::uuid casts: postgres.js serializes a JS
+  // string[] as a record, so `ANY(${invIds}::uuid[])` errors with 42846.
   const invs = await tx.execute(sql`
     SELECT id, salesperson_user_id, invoice_number, total_cents
     FROM invoices
-    WHERE id = ANY(${invIds}::uuid[])
+    WHERE id IN (${sql.join(invIds.map((id) => sql`${id}::uuid`), sql`, `)})
       AND tenant_id = current_tenant_id()
   `);
   type Row = { id: string; salesperson_user_id: string | null; invoice_number: string | null; total_cents: number | string };

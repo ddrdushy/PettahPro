@@ -882,13 +882,15 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
       { userCount: number; lastLoginAt: Date | null }
     >();
     if (ids.length > 0) {
+      // IN(...) with per-element ::uuid casts: postgres.js serializes a JS
+      // string[] as a record, so `ANY(${ids}::uuid[])` errors with 42846.
       const aggRows = (await db.execute(
         sql`
           SELECT t.id AS tenant_id,
                  platform_count_users(t.id) AS user_count,
                  platform_last_login(t.id)  AS last_login_at
             FROM tenants t
-           WHERE t.id = ANY(${ids}::uuid[])
+           WHERE t.id IN (${sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `)})
         `,
       )) as unknown as Array<{
         tenant_id: string;

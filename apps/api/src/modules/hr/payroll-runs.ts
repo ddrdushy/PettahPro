@@ -762,6 +762,9 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
       // Claim IDs are stamped atomically after the run line is inserted (same
       // idiom as commissions and loan schedule). Void releases via
       // applied_in_run_id=NULL in the void endpoint.
+      // IN(...) with per-element ::uuid casts: postgres.js serializes a JS
+      // string[] as a record, so `ANY(${employeeIds}::uuid[])` errors with 42846.
+      const eligibleIds = eligible.map((x) => x.id);
       const expenseClaimRows = eligible.length
         ? ((await tx.execute(sql`
             SELECT ec.id                 AS claim_id,
@@ -778,7 +781,7 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
               AND ec.claim_date <= ${periodEnd}::date
               AND ec.void_at IS NULL
               AND ec.deleted_at IS NULL
-              AND ec.employee_id = ANY(${eligible.map((x) => x.id)}::uuid[])
+              AND ec.employee_id IN (${sql.join(eligibleIds.map((id) => sql`${id}::uuid`), sql`, `)})
           `)) as unknown as Array<{
             claim_id: string;
             employee_id: string;
@@ -1346,13 +1349,15 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
       // endpoint for payroll runs MUST release these (set paid_in_run_id =
       // NULL, status back to 'accrued') or earnings will stay stuck.
       if (consumedEarningIds.length > 0) {
+        // IN(...) with per-element ::uuid casts: postgres.js serializes a JS
+        // string[] as a record, so `ANY(${consumedEarningIds}::uuid[])` errors with 42846.
         await tx.execute(sql`
           UPDATE commission_earnings
              SET paid_in_run_id = ${run.id}::uuid,
                  status         = 'paid',
                  updated_at     = now()
            WHERE tenant_id = current_tenant_id()
-             AND id = ANY(${consumedEarningIds}::uuid[])
+             AND id IN (${sql.join(consumedEarningIds.map((id) => sql`${id}::uuid`), sql`, `)})
         `);
       }
 
