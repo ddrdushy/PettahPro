@@ -9,6 +9,7 @@ import { runScheduledStatementEmails } from "./modules/operations/customer-state
 import { runStaleChequeFlagging } from "./modules/cheques/stale-flag.js";
 import { runMonthlyDepreciationForAllTenants } from "./modules/accounting/fixed-assets.js";
 import { runNotificationDigests } from "./modules/notifications/digest-cron.js";
+import { runTrialExpiryJob } from "./modules/subscription/trial-expiry.js";
 import {
   initErrorTrackingForWorker,
   captureException,
@@ -123,6 +124,23 @@ async function registerSchedules() {
   );
   log.info("scheduled: run-monthly-depreciation (daily; fires on 1st)");
 
+  // Trial expiry + grace-period runner (#63). Fires daily — flips
+  // `trial` rows whose trial_ends_at has passed to `past_due` with a
+  // 7-day grace window, then cancels `past_due` rows whose grace
+  // window has elapsed. Idempotent, so running daily (rather than
+  // hourly) keeps platform_audit_log noise-free while being plenty
+  // responsive for a billing cycle measured in days.
+  await scheduledQueue.add(
+    "expire-trials",
+    {},
+    {
+      repeat: { every: 24 * 60 * 60 * 1000 }, // 24h
+      removeOnComplete: 50,
+      removeOnFail: 50,
+    },
+  );
+  log.info("scheduled: expire-trials (daily)");
+
   // Notification digest dispatcher (roadmap #45). Fires hourly because the
   // tenant-local hour gate is checked inside the runner — one cron cadence
   // across every tenant regardless of timezone. The runner dedupes via
@@ -170,6 +188,9 @@ async function runScheduledJob(name: string): Promise<unknown> {
   }
   if (name === "send-notification-digests") {
     return runNotificationDigests(db, log);
+  }
+  if (name === "expire-trials") {
+    return runTrialExpiryJob(db, log);
   }
   return null; // unknown
 }

@@ -70,3 +70,6 @@ export * from "./platform-audit-log.js";
 export * from "./platform-user-mfa.js";
 export * from "./impersonation-requests.js";
 export * from "./impersonation-sessions.js";
+export * from "./platform-saved-views.js";
+export * from "./plans.js";
+export * from "./tenant-subscriptions.js";

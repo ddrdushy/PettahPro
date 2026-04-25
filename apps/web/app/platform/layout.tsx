@@ -57,7 +57,19 @@ export default async function PlatformLayout({ children }: { children: ReactNode
           </Link>
           <nav className="flex items-center gap-4 text-small text-white/80">
             <Link href="/platform" className="hover:text-white">
+              Overview
+            </Link>
+            <Link href="/platform/tenants" className="hover:text-white">
               Tenants
+            </Link>
+            <Link href="/platform/audit" className="hover:text-white">
+              Audit
+            </Link>
+            <Link href="/platform/health" className="hover:text-white">
+              Health
+            </Link>
+            <Link href="/platform/plans" className="hover:text-white">
+              Plans
             </Link>
             {canImpersonate && (
               <Link href="/platform/impersonation" className="hover:text-white">

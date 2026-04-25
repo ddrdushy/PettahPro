@@ -1,6 +1,16 @@
 import { randomBytes } from "node:crypto";
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
-import { and, desc, eq, isNull, sql, ilike, or, count } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  isNotNull,
+  isNull,
+  sql,
+  ilike,
+  or,
+  count,
+} from "drizzle-orm";
 import IORedis from "ioredis";
 import { z } from "zod";
 import { db, schema } from "@pettahpro/db";
@@ -37,6 +47,7 @@ import {
   setPlatformSessionCookie,
 } from "./cookies.js";
 import { recordPlatformAuditEvent } from "./audit.js";
+import { buildSystemHealthPayload } from "../../plugins/system-health.js";
 
 const SESSION_TTL = 60 * 60 * 12; // match cookies.ts / sessions.ts
 
@@ -84,6 +95,22 @@ const ListTenantsQuerySchema = z.object({
     .enum(["all", "active", "suspended", "trial", "past-due", "churned"])
     .optional()
     .default("all"),
+  // #66 — Plan / subscription filters. These live alongside the existing
+  // `status` (tenant-lifecycle) filter because the two concepts drifted
+  // apart once #61 introduced its own subscriptions.status. Billing ops
+  // typically filters on subscription state ("who's past_due?"), lifecycle
+  // ops filters on tenant state ("who did we suspend?"). Both stay.
+  plan: z.string().trim().max(32).optional(),
+  subscriptionStatus: z
+    .enum(["all", "trial", "active", "past_due", "cancelled"])
+    .optional()
+    .default("all"),
+  // "Trials ending in the next 7 days" shortcut for revenue outreach.
+  // Narrower window than the trial_ends_at ever — we want the list ops
+  // should call TODAY, not the full trial pool.
+  trialEndingSoon: z
+    .union([z.literal("true"), z.literal("false"), z.literal("")])
+    .optional(),
   search: z.string().trim().max(128).optional(),
   limit: z.coerce.number().int().min(1).max(200).optional().default(50),
   offset: z.coerce.number().int().min(0).optional().default(0),
@@ -818,7 +845,15 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
     if (!parsed.success) {
       return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
     }
-    const { status, search, limit, offset } = parsed.data;
+    const {
+      status,
+      plan,
+      subscriptionStatus,
+      trialEndingSoon,
+      search,
+      limit,
+      offset,
+    } = parsed.data;
 
     // Filter clauses. Status "all" is a no-op.
     const clauses = [isNull(schema.tenants.deletedAt)];
@@ -833,6 +868,29 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
       );
       if (matcher) clauses.push(matcher);
     }
+    // Subscription / plan filters (#66). tenant_subscriptions has no RLS
+    // (#61) so we can join + filter server-side. plans.code is unique,
+    // so filtering by plan code is O(index-seek) even on big tables.
+    if (subscriptionStatus !== "all") {
+      clauses.push(eq(schema.tenantSubscriptions.status, subscriptionStatus));
+    }
+    if (plan && plan.length > 0) {
+      clauses.push(eq(schema.plans.code, plan));
+    }
+    // "Ends in the next 7 days AND not past it yet". The grace-period
+    // job (#63) flips past_due → cancelled 7 days AFTER trial_ends_at,
+    // so this window gives ops a full 7 days of notice before any
+    // automation fires. We require subscriptionStatus='trial' implicitly
+    // via trial_ends_at IS NOT NULL + being in the future.
+    if (trialEndingSoon === "true") {
+      clauses.push(isNotNull(schema.tenantSubscriptions.trialEndsAt));
+      clauses.push(
+        sql`${schema.tenantSubscriptions.trialEndsAt} >= NOW()`,
+      );
+      clauses.push(
+        sql`${schema.tenantSubscriptions.trialEndsAt} < NOW() + interval '7 days'`,
+      );
+    }
 
     // Correlated subqueries for user count + last login per tenant.
     // Tenants table has no RLS so a direct query works; users/mfa do
@@ -843,6 +901,10 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
     // column from outer won't go through RLS cleanly, use a separate
     // aggregate pull after the main tenant list and stitch client-side.
     const whereClause = and(...clauses);
+    // LEFT JOIN subscription + plan so a tenant without a subscription row
+    // (pre-backfill gap) still appears in the list — the UI just shows "—"
+    // for plan. If we INNER-joined, those tenants would vanish and ops
+    // would have no way to find them.
     const tenants = await db
       .select({
         id: schema.tenants.id,
@@ -853,8 +915,22 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
         status: schema.tenants.status,
         createdAt: schema.tenants.createdAt,
         notes: schema.tenants.notes,
+        subscriptionStatus: schema.tenantSubscriptions.status,
+        billingCycle: schema.tenantSubscriptions.billingCycle,
+        trialEndsAt: schema.tenantSubscriptions.trialEndsAt,
+        currentPeriodEnd: schema.tenantSubscriptions.currentPeriodEnd,
+        planCode: schema.plans.code,
+        planName: schema.plans.name,
       })
       .from(schema.tenants)
+      .leftJoin(
+        schema.tenantSubscriptions,
+        eq(schema.tenantSubscriptions.tenantId, schema.tenants.id),
+      )
+      .leftJoin(
+        schema.plans,
+        eq(schema.plans.id, schema.tenantSubscriptions.planId),
+      )
       .where(whereClause)
       .orderBy(desc(schema.tenants.createdAt))
       .limit(limit)
@@ -863,6 +939,14 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
     const totalRows = await db
       .select({ count: count() })
       .from(schema.tenants)
+      .leftJoin(
+        schema.tenantSubscriptions,
+        eq(schema.tenantSubscriptions.tenantId, schema.tenants.id),
+      )
+      .leftJoin(
+        schema.plans,
+        eq(schema.plans.id, schema.tenantSubscriptions.planId),
+      )
       .where(whereClause);
     const total = totalRows[0]?.count ?? 0;
 
@@ -884,6 +968,15 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
     if (ids.length > 0) {
       // IN(...) with per-element ::uuid casts: postgres.js serializes a JS
       // string[] as a record, so `ANY(${ids}::uuid[])` errors with 42846.
+      // postgres.js serializes a plain JS string[] as a composite
+      // record rather than a pg array, so `$1::uuid[]` blows up with
+      // "cannot cast type record to uuid[]". Build an explicit
+      // parametrised IN list via sql.join instead — each id is cast
+      // individually and the driver binds them as uuids.
+      const idSql = sql.join(
+        ids.map((id) => sql`${id}::uuid`),
+        sql`, `,
+      );
       const aggRows = (await db.execute(
         sql`
           SELECT t.id AS tenant_id,
@@ -891,6 +984,7 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
                  platform_last_login(t.id)  AS last_login_at
             FROM tenants t
            WHERE t.id IN (${sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `)})
+           WHERE t.id IN (${idSql})
         `,
       )) as unknown as Array<{
         tenant_id: string;
@@ -922,6 +1016,15 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
         notes: t.notes,
         userCount: aggregates.get(t.id)?.userCount ?? 0,
         lastLoginAt: aggregates.get(t.id)?.lastLoginAt ?? null,
+        // #66 — plan + subscription summary. All nullable: a tenant with
+        // no subscription row (pre-backfill) returns null for each, which
+        // the UI renders as "—".
+        planCode: t.planCode,
+        planName: t.planName,
+        subscriptionStatus: t.subscriptionStatus,
+        billingCycle: t.billingCycle,
+        trialEndsAt: t.trialEndsAt,
+        currentPeriodEnd: t.currentPeriodEnd,
       })),
     });
   });
@@ -1106,6 +1209,72 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
   // Reactivate flips back to 'active'. Idempotent on both sides.
   // -------------------------------------------------------------------
 
+  // #59 — Core status-flip used by the single /suspend + /reactivate
+  // endpoints AND the /tenants/bulk-action endpoint. Returns an outcome
+  // rather than writing the response so the caller can aggregate
+  // results across many tenants. All audit writes happen in here so
+  // the single/bulk callers emit identical audit rows per tenant.
+  type ApplyStatusOutcome =
+    | { outcome: "ok"; status: "suspended" | "active" }
+    | { outcome: "noop"; status: "suspended" | "active" | string }
+    | { outcome: "not_found" };
+
+  async function applyStatusToTenant(
+    session: PlatformSession,
+    tenantId: string,
+    reason: string,
+    nextStatus: "suspended" | "active",
+    kind: "platform.tenant_suspended" | "platform.tenant_reactivated",
+    summaryVerb: string,
+    reqMeta: { ip: string | null; userAgent: string | null },
+  ): Promise<ApplyStatusOutcome> {
+    const rows = await db
+      .select()
+      .from(schema.tenants)
+      .where(
+        and(eq(schema.tenants.id, tenantId), isNull(schema.tenants.deletedAt)),
+      )
+      .limit(1);
+    const tenant = rows[0];
+    if (!tenant) return { outcome: "not_found" };
+
+    // Idempotent — if already in the target state, audit the attempt
+    // and return success. Avoids UI flicker on a double-click and keeps
+    // the bulk endpoint honest (we want an audit row for every tenant
+    // the operator thought they were acting on, even the no-ops).
+    if (tenant.status === nextStatus) {
+      await recordPlatformAuditEvent({
+        platformUserId: session.platformUserId,
+        platformUserEmail: session.email,
+        kind: `${kind}.noop` as string,
+        summary: `${summaryVerb} (no-op, already ${nextStatus}): ${tenant.businessName}`,
+        reason,
+        tenantId,
+        ipAddress: reqMeta.ip,
+        userAgent: reqMeta.userAgent,
+      });
+      return { outcome: "noop", status: tenant.status };
+    }
+
+    await db
+      .update(schema.tenants)
+      .set({ status: nextStatus, updatedAt: new Date() })
+      .where(eq(schema.tenants.id, tenantId));
+
+    await recordPlatformAuditEvent({
+      platformUserId: session.platformUserId,
+      platformUserEmail: session.email,
+      kind,
+      summary: `${summaryVerb}: ${tenant.businessName}`,
+      reason,
+      tenantId,
+      ipAddress: reqMeta.ip,
+      userAgent: reqMeta.userAgent,
+    });
+
+    return { outcome: "ok", status: nextStatus };
+  }
+
   async function applyStatus(
     req: FastifyRequest,
     reply: FastifyReply,
@@ -1139,52 +1308,21 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
         },
       });
     }
-    const tenantId = paramsParsed.data.id;
-    const reason = bodyParsed.data.reason;
 
-    const rows = await db
-      .select()
-      .from(schema.tenants)
-      .where(and(eq(schema.tenants.id, tenantId), isNull(schema.tenants.deletedAt)))
-      .limit(1);
-    const tenant = rows[0];
-    if (!tenant) {
+    const outcome = await applyStatusToTenant(
+      session,
+      paramsParsed.data.id,
+      bodyParsed.data.reason,
+      nextStatus,
+      kind,
+      summaryVerb,
+      { ip: req.ip ?? null, userAgent: req.headers["user-agent"] ?? null },
+    );
+
+    if (outcome.outcome === "not_found") {
       return reply.status(404).send({ error: { code: "NOT_FOUND" } });
     }
-
-    // Idempotent — if already in the target state, audit the attempt
-    // and return success. Avoids UI flicker on a double-click.
-    if (tenant.status === nextStatus) {
-      await recordPlatformAuditEvent({
-        platformUserId: session.platformUserId,
-        platformUserEmail: session.email,
-        kind: `${kind}.noop` as string,
-        summary: `${summaryVerb} (no-op, already ${nextStatus}): ${tenant.businessName}`,
-        reason,
-        tenantId,
-        ipAddress: req.ip ?? null,
-        userAgent: req.headers["user-agent"] ?? null,
-      });
-      return reply.send({ ok: true, status: tenant.status });
-    }
-
-    await db
-      .update(schema.tenants)
-      .set({ status: nextStatus, updatedAt: new Date() })
-      .where(eq(schema.tenants.id, tenantId));
-
-    await recordPlatformAuditEvent({
-      platformUserId: session.platformUserId,
-      platformUserEmail: session.email,
-      kind,
-      summary: `${summaryVerb}: ${tenant.businessName}`,
-      reason,
-      tenantId,
-      ipAddress: req.ip ?? null,
-      userAgent: req.headers["user-agent"] ?? null,
-    });
-
-    return reply.send({ ok: true, status: nextStatus });
+    return reply.send({ ok: true, status: outcome.status });
   }
 
   fastify.post("/tenants/:id/suspend", async (req, reply) => {
@@ -1193,6 +1331,121 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.post("/tenants/:id/reactivate", async (req, reply) => {
     return applyStatus(req, reply, "active", "platform.tenant_reactivated", "Reactivated tenant");
+  });
+
+  // -------------------------------------------------------------------
+  // #59 — POST /tenants/bulk-action
+  //
+  // Operator ergonomics. Ticking 20 rows in the tenant list and hitting
+  // "Suspend selected" is table stakes for a platform console. We fan
+  // out to applyStatusToTenant for each id so the audit trail, idempotency,
+  // and role check are identical to the single-tenant endpoint — no
+  // parallel code path.
+  //
+  // A single reason covers the whole batch. The batch itself also gets
+  // a dedicated audit row (`platform.tenants_bulk_acted`) so if anyone
+  // later wonders "why did 14 tenants get suspended in the same minute?"
+  // there's one row to anchor the investigation, plus 14 per-tenant
+  // rows linked to it via a batchId in metadata.
+  //
+  // Limits: up to 100 ids per call. Larger than that is almost certainly
+  // a mistake (or scripted — use the DB for that).
+  // -------------------------------------------------------------------
+  const BulkActionSchema = z.object({
+    action: z.enum(["suspend", "reactivate"]),
+    tenantIds: z.array(z.string().uuid()).min(1).max(100),
+    reason: z.string().min(3).max(500),
+  });
+
+  fastify.post("/tenants/bulk-action", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+    // Same gate as the single endpoints.
+    if (!(await requirePlatformRole(req, reply, session, ["super_admin"]))) {
+      return;
+    }
+
+    const parsed = BulkActionSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: { code: "INVALID_INPUT", message: parsed.error.message },
+      });
+    }
+    const { action, tenantIds, reason } = parsed.data;
+    const nextStatus = action === "suspend" ? "suspended" : "active";
+    const kind =
+      action === "suspend"
+        ? "platform.tenant_suspended"
+        : "platform.tenant_reactivated";
+    const summaryVerb =
+      action === "suspend" ? "Suspended tenant" : "Reactivated tenant";
+
+    // Dedupe ids so the operator can't accidentally double-count one
+    // tenant as both a success and a no-op just because the UI let a
+    // duplicate slip through.
+    const uniqueIds = Array.from(new Set(tenantIds));
+    const batchId = randomBytes(12).toString("hex");
+    const reqMeta = {
+      ip: req.ip ?? null,
+      userAgent: req.headers["user-agent"] ?? null,
+    };
+
+    const results: Array<{
+      tenantId: string;
+      outcome: "ok" | "noop" | "not_found";
+      status?: string;
+    }> = [];
+
+    // Serial. These are short UPDATEs, 100 of them at the absolute max,
+    // and we'd rather preserve per-tenant audit ordering than parallelise
+    // and race the audit writes.
+    for (const id of uniqueIds) {
+      const res = await applyStatusToTenant(
+        session,
+        id,
+        `[batch ${batchId}] ${reason}`,
+        nextStatus,
+        kind,
+        summaryVerb,
+        reqMeta,
+      );
+      results.push({
+        tenantId: id,
+        outcome: res.outcome,
+        status: res.outcome === "not_found" ? undefined : res.status,
+      });
+    }
+
+    const okCount = results.filter((r) => r.outcome === "ok").length;
+    const noopCount = results.filter((r) => r.outcome === "noop").length;
+    const missingCount = results.filter((r) => r.outcome === "not_found").length;
+
+    // Batch-level audit anchor — metadata carries the per-tenant
+    // outcomes so the full picture is reconstructible without joining
+    // every individual tenant row.
+    await recordPlatformAuditEvent({
+      platformUserId: session.platformUserId,
+      platformUserEmail: session.email,
+      kind: "platform.tenants_bulk_acted",
+      summary: `Bulk ${action}: ${okCount} ok, ${noopCount} no-op, ${missingCount} missing`,
+      reason,
+      tenantId: null,
+      ipAddress: reqMeta.ip,
+      userAgent: reqMeta.userAgent,
+      metadata: {
+        batchId,
+        action,
+        requested: uniqueIds.length,
+        results,
+      },
+    });
+
+    return reply.send({
+      ok: true,
+      batchId,
+      counts: { ok: okCount, noop: noopCount, notFound: missingCount },
+      results,
+    });
   });
 
   // -------------------------------------------------------------------
@@ -1588,4 +1841,851 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
 
     return reply.send({ ok: true });
   });
+
+  // -------------------------------------------------------------------
+  // #58 — Platform overview dashboard
+  //
+  // One endpoint, one round-trip, all the signals an ops human wants at
+  // a glance: tenants-by-status, recent signups, active users on the
+  // platform this week, impersonation pressure, and a short recent-audit
+  // strip.  Readable by all three platform roles — billing needs the
+  // MRR-shaped shape of this data as much as support does.  (No MRR
+  // yet — #58 is scaffolding; pricing-engine will backfill.)
+  //
+  // All aggregates are a single DB round-trip via a CTE so the
+  // dashboard doesn't fan out N counts.  Counts on tables outside RLS
+  // (tenants / impersonation_* / platform_audit_log) use direct
+  // filtered COUNTs; cross-tenant user counts go through the
+  // SECURITY DEFINER helpers in 86-platform-overview.sql because
+  // `users` is under RLS.
+  // -------------------------------------------------------------------
+  fastify.get("/overview", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+
+    const statusRows = (await db.execute(sql`
+      SELECT status, COUNT(*)::bigint AS n
+        FROM tenants
+       WHERE deleted_at IS NULL
+       GROUP BY status
+    `)) as unknown as Array<{ status: string; n: number | string }>;
+
+    const signupRows = (await db.execute(sql`
+      SELECT
+        COUNT(*) FILTER (WHERE created_at >= now() - interval '7 days')::bigint AS last_7,
+        COUNT(*) FILTER (WHERE created_at >= now() - interval '30 days')::bigint AS last_30
+        FROM tenants
+       WHERE deleted_at IS NULL
+    `)) as unknown as Array<{ last_7: number | string; last_30: number | string }>;
+
+    const userRows = (await db.execute(sql`
+      SELECT
+        platform_total_user_count() AS total,
+        platform_users_active_since(7) AS active_7,
+        platform_users_active_since(30) AS active_30
+    `)) as unknown as Array<{
+      total: number | string;
+      active_7: number | string;
+      active_30: number | string;
+    }>;
+
+    // Impersonation counters — lazy sweep first so expired rows don't
+    // show up as "pending" in the dashboard number.  This is the same
+    // sweep the impersonation list endpoints do on read.
+    await db.execute(sql`SELECT impersonation_sweep_expired()`);
+    const impRows = (await db.execute(sql`
+      SELECT
+        (SELECT COUNT(*)::bigint FROM impersonation_requests WHERE status = 'pending') AS pending,
+        (SELECT COUNT(*)::bigint FROM impersonation_requests WHERE status = 'approved') AS approved_waiting,
+        (SELECT COUNT(*)::bigint FROM impersonation_sessions WHERE ended_at IS NULL) AS active
+    `)) as unknown as Array<{
+      pending: number | string;
+      approved_waiting: number | string;
+      active: number | string;
+    }>;
+
+    const recentAudit = await db
+      .select({
+        id: schema.platformAuditLog.id,
+        platformUserEmail: schema.platformAuditLog.platformUserEmail,
+        kind: schema.platformAuditLog.kind,
+        summary: schema.platformAuditLog.summary,
+        reason: schema.platformAuditLog.reason,
+        tenantId: schema.platformAuditLog.tenantId,
+        createdAt: schema.platformAuditLog.createdAt,
+      })
+      .from(schema.platformAuditLog)
+      .orderBy(desc(schema.platformAuditLog.createdAt))
+      .limit(15);
+
+    // Normalise the status map.  Every status in the CHECK constraint
+    // is returned as a key — 0 where absent — so the UI doesn't need
+    // fallback logic per-status.
+    const byStatus: Record<string, number> = {
+      active: 0,
+      trial: 0,
+      "past-due": 0,
+      suspended: 0,
+      churned: 0,
+    };
+    let totalTenants = 0;
+    for (const r of statusRows) {
+      const n = Number(r.n) || 0;
+      byStatus[r.status] = n;
+      totalTenants += n;
+    }
+
+    const signup = signupRows[0] ?? { last_7: 0, last_30: 0 };
+    const usage = userRows[0] ?? { total: 0, active_7: 0, active_30: 0 };
+    const imp = impRows[0] ?? { pending: 0, approved_waiting: 0, active: 0 };
+
+    return reply.send({
+      tenants: {
+        total: totalTenants,
+        byStatus,
+        signupsLast7Days: Number(signup.last_7) || 0,
+        signupsLast30Days: Number(signup.last_30) || 0,
+      },
+      users: {
+        total: Number(usage.total) || 0,
+        activeLast7Days: Number(usage.active_7) || 0,
+        activeLast30Days: Number(usage.active_30) || 0,
+      },
+      impersonation: {
+        pendingRequests: Number(imp.pending) || 0,
+        approvedWaiting: Number(imp.approved_waiting) || 0,
+        activeSessions: Number(imp.active) || 0,
+      },
+      recentAudit,
+    });
+  });
+
+  // -------------------------------------------------------------------
+  // #58 — Global platform audit feed
+  //
+  // The per-tenant /tenants/:id/platform-audit endpoint answers "what
+  // did platform staff do to THIS business?".  This endpoint answers
+  // "what did platform staff do, full stop?" — essential for a
+  // security-conscious ops team doing periodic review (and for
+  // answering the audit questions that come with B2B SaaS
+  // procurement).
+  //
+  // Filters:
+  //   - kind   : exact match on audit event kind
+  //   - actor  : exact email match on the platform user
+  //   - limit  : 1..500 (default 100)
+  //   - offset : pagination
+  // -------------------------------------------------------------------
+  const ListAuditQuerySchema = z.object({
+    kind: z.string().min(1).max(64).optional(),
+    actor: z.string().email().optional(),
+    limit: z.coerce.number().int().min(1).max(500).default(100),
+    offset: z.coerce.number().int().min(0).default(0),
+  });
+
+  fastify.get("/audit", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+
+    const parsed = ListAuditQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+    }
+    const { kind, actor, limit, offset } = parsed.data;
+
+    const clauses = [];
+    if (kind) clauses.push(eq(schema.platformAuditLog.kind, kind));
+    if (actor) clauses.push(eq(schema.platformAuditLog.platformUserEmail, actor));
+    const whereClause = clauses.length > 0 ? and(...clauses) : undefined;
+
+    const rows = await db
+      .select({
+        id: schema.platformAuditLog.id,
+        platformUserEmail: schema.platformAuditLog.platformUserEmail,
+        kind: schema.platformAuditLog.kind,
+        summary: schema.platformAuditLog.summary,
+        reason: schema.platformAuditLog.reason,
+        tenantId: schema.platformAuditLog.tenantId,
+        createdAt: schema.platformAuditLog.createdAt,
+      })
+      .from(schema.platformAuditLog)
+      .where(whereClause)
+      .orderBy(desc(schema.platformAuditLog.createdAt))
+      .limit(limit)
+      .offset(offset);
+
+    const totalRows = await db
+      .select({ count: count() })
+      .from(schema.platformAuditLog)
+      .where(whereClause);
+    const total = Number(totalRows[0]?.count ?? 0);
+
+    return reply.send({ total, limit, offset, entries: rows });
+  });
+
+  // -------------------------------------------------------------------
+  // #58 — PATCH /tenants/:id
+  //
+  // Narrow by design — only the `notes` field is editable here.  Ops
+  // humans annotate tenants ("watch this one, payment failed twice,"
+  // "migrating from Tally, expect support ticket volume") and want
+  // somewhere persistent to write it that isn't a Slack message.
+  //
+  // Status changes stay on the dedicated suspend/reactivate endpoints
+  // because they have a REASON_REQUIRED contract + audit kinds we
+  // don't want to collapse into a generic PATCH.
+  //
+  // super_admin and support can both write notes; billing is
+  // read-only on tenant data by convention and sits this one out.
+  // -------------------------------------------------------------------
+  const PatchTenantSchema = z.object({
+    notes: z.string().max(4000).nullable().optional(),
+  });
+
+  fastify.patch("/tenants/:id", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+    if (
+      !(await requirePlatformRole(req, reply, session, [
+        "super_admin",
+        "support",
+      ]))
+    ) {
+      return;
+    }
+
+    const paramsParsed = z.object({ id: z.string().uuid() }).safeParse(req.params);
+    if (!paramsParsed.success) {
+      return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+    }
+    const bodyParsed = PatchTenantSchema.safeParse(req.body);
+    if (!bodyParsed.success) {
+      return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+    }
+    const tenantId = paramsParsed.data.id;
+    const { notes } = bodyParsed.data;
+
+    // Look up the current tenant so the audit diff is meaningful (we
+    // log both the old and new notes as metadata).  If nothing is in
+    // the patch body, we treat it as a no-op 204-style success rather
+    // than a 400 — the UI can submit an empty PATCH as "touch" to
+    // refresh updated_at without caring about the diff.
+    const rows = await db
+      .select({
+        id: schema.tenants.id,
+        businessName: schema.tenants.businessName,
+        notes: schema.tenants.notes,
+      })
+      .from(schema.tenants)
+      .where(
+        and(eq(schema.tenants.id, tenantId), isNull(schema.tenants.deletedAt)),
+      )
+      .limit(1);
+    const tenant = rows[0];
+    if (!tenant) {
+      return reply.status(404).send({ error: { code: "NOT_FOUND" } });
+    }
+
+    if (notes !== undefined && notes !== tenant.notes) {
+      await db
+        .update(schema.tenants)
+        .set({
+          notes: notes ?? null,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.tenants.id, tenantId));
+
+      await recordPlatformAuditEvent({
+        platformUserId: session.platformUserId,
+        platformUserEmail: session.email,
+        kind: "platform.tenant_notes_updated",
+        summary: `Updated notes on ${tenant.businessName}`,
+        tenantId,
+        ipAddress: req.ip ?? null,
+        userAgent: req.headers["user-agent"] ?? null,
+        metadata: {
+          before: tenant.notes ?? "",
+          after: notes ?? "",
+        },
+      });
+    }
+
+    return reply.send({ ok: true });
+  });
+
+  // -------------------------------------------------------------------
+  // #59 — Per-user saved views for /platform/tenants + /platform/audit.
+  //
+  // Just named querystrings, pinned to one platform user. Strictly
+  // scoped: every query filters by platform_user_id so nobody sees
+  // another operator's views, and every mutation is gated to the same.
+  // No audit — these are personal preferences, not state changes anyone
+  // else cares about.
+  //
+  // The list is small (humans create, at most, a dozen views each) so
+  // we don't paginate. One call returns them all for a scope.
+  // -------------------------------------------------------------------
+  const SavedViewScopeSchema = z.enum(["tenants", "audit"]);
+
+  const CreateSavedViewSchema = z.object({
+    scope: SavedViewScopeSchema,
+    name: z.string().trim().min(1).max(80),
+    queryString: z.string().max(2000).default(""),
+  });
+
+  fastify.get("/saved-views", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+
+    const parsed = z
+      .object({ scope: SavedViewScopeSchema })
+      .safeParse(req.query);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+    }
+
+    const rows = await db
+      .select({
+        id: schema.platformUserSavedViews.id,
+        scope: schema.platformUserSavedViews.scope,
+        name: schema.platformUserSavedViews.name,
+        queryString: schema.platformUserSavedViews.queryString,
+        createdAt: schema.platformUserSavedViews.createdAt,
+        updatedAt: schema.platformUserSavedViews.updatedAt,
+      })
+      .from(schema.platformUserSavedViews)
+      .where(
+        and(
+          eq(
+            schema.platformUserSavedViews.platformUserId,
+            session.platformUserId,
+          ),
+          eq(schema.platformUserSavedViews.scope, parsed.data.scope),
+        ),
+      )
+      .orderBy(schema.platformUserSavedViews.name);
+
+    return reply.send({ views: rows });
+  });
+
+  fastify.post("/saved-views", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+
+    const parsed = CreateSavedViewSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: { code: "INVALID_INPUT", message: parsed.error.message },
+      });
+    }
+    const { scope, name, queryString } = parsed.data;
+
+    // Strip a leading `?` if the client pasted a full URL's search part.
+    const qs = queryString.startsWith("?") ? queryString.slice(1) : queryString;
+
+    try {
+      const rows = await db
+        .insert(schema.platformUserSavedViews)
+        .values({
+          platformUserId: session.platformUserId,
+          scope,
+          name,
+          queryString: qs,
+        })
+        .returning({
+          id: schema.platformUserSavedViews.id,
+          scope: schema.platformUserSavedViews.scope,
+          name: schema.platformUserSavedViews.name,
+          queryString: schema.platformUserSavedViews.queryString,
+          createdAt: schema.platformUserSavedViews.createdAt,
+          updatedAt: schema.platformUserSavedViews.updatedAt,
+        });
+      return reply.send({ view: rows[0] });
+    } catch (err: unknown) {
+      // Treat the unique-constraint violation as a soft conflict — the
+      // user probably meant to update the existing view. We surface
+      // NAME_TAKEN so the UI can prompt for a different name (or offer
+      // overwrite). An explicit PUT endpoint is overkill for this list
+      // size; delete-then-create is enough.
+      const code = (err as { code?: string } | null)?.code;
+      if (code === "23505") {
+        return reply
+          .status(409)
+          .send({ error: { code: "NAME_TAKEN", message: "Name in use." } });
+      }
+      throw err;
+    }
+  });
+
+  fastify.delete("/saved-views/:id", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+
+    const parsed = z.object({ id: z.string().uuid() }).safeParse(req.params);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+    }
+
+    // Scope the delete by platformUserId so a crafted id from another
+    // operator's view can never be removed. Returning no row = 404.
+    const deleted = await db
+      .delete(schema.platformUserSavedViews)
+      .where(
+        and(
+          eq(schema.platformUserSavedViews.id, parsed.data.id),
+          eq(
+            schema.platformUserSavedViews.platformUserId,
+            session.platformUserId,
+          ),
+        ),
+      )
+      .returning({ id: schema.platformUserSavedViews.id });
+
+    if (deleted.length === 0) {
+      return reply.status(404).send({ error: { code: "NOT_FOUND" } });
+    }
+    return reply.send({ ok: true });
+  });
+
+  // #60 — Observability read-out for /platform/health.
+  //
+  // Intentionally open to all three platform roles: support/billing
+  // engineers need to see whether the platform is healthy to triage
+  // user complaints, even though they can't act on tenants. Nothing
+  // here is tenant-private — it's aggregate API/infra state.
+  fastify.get("/system-health", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+
+    const payload = await buildSystemHealthPayload();
+    return reply.send(payload);
+  });
+
+  // -------------------------------------------------------------------
+  // #61 — Pricing plans + tenant subscriptions.
+  //
+  // Three endpoints in this PR:
+  //   * GET  /plans                          — catalogue, any role
+  //   * GET  /tenants/:id/subscription       — current subscription, any role
+  //   * POST /tenants/:id/subscription/change-plan — super_admin, audited
+  //
+  // Billing role sees plans + subscriptions read-only (they need the
+  // number to chase receivables), but only super_admin flips plans.
+  // Self-serve plan change + payment collection lives in later PRs.
+  // -------------------------------------------------------------------
+
+  fastify.get("/plans", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+
+    const rows = await db
+      .select()
+      .from(schema.plans)
+      .orderBy(schema.plans.sortOrder, schema.plans.code);
+    return reply.send({
+      plans: rows.map((p) => ({
+        id: p.id,
+        code: p.code,
+        name: p.name,
+        tagline: p.tagline,
+        monthlyPriceCents: p.monthlyPriceCents,
+        yearlyPriceCents: p.yearlyPriceCents,
+        currency: p.currency,
+        maxUsers: p.maxUsers,
+        maxInvoicesMonthly: p.maxInvoicesMonthly,
+        maxBranches: p.maxBranches,
+        maxWarehouses: p.maxWarehouses,
+        features: p.features,
+        isPublic: p.isPublic,
+        sortOrder: p.sortOrder,
+      })),
+    });
+  });
+
+  fastify.get("/tenants/:id/subscription", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+
+    const parsed = z.object({ id: z.string().uuid() }).safeParse(req.params);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+    }
+
+    // LEFT JOIN on plans because we want the plan's marketing fields
+    // in one trip. Join is safe even under unusual data — plan_id is
+    // NOT NULL + FK, so a tenant with a subscription always has a plan.
+    const rows = await db
+      .select({
+        subscription: schema.tenantSubscriptions,
+        plan: schema.plans,
+      })
+      .from(schema.tenantSubscriptions)
+      .leftJoin(
+        schema.plans,
+        eq(schema.plans.id, schema.tenantSubscriptions.planId),
+      )
+      .where(eq(schema.tenantSubscriptions.tenantId, parsed.data.id))
+      .limit(1);
+
+    const row = rows[0];
+    if (!row || !row.plan) {
+      // No subscription = tenant exists but the backfill missed it, or
+      // tenant is unknown. 404 either way; the caller can disambiguate
+      // by hitting /tenants/:id separately.
+      return reply.status(404).send({ error: { code: "NO_SUBSCRIPTION" } });
+    }
+
+    return reply.send({
+      subscription: {
+        id: row.subscription.id,
+        tenantId: row.subscription.tenantId,
+        status: row.subscription.status,
+        billingCycle: row.subscription.billingCycle,
+        trialEndsAt: row.subscription.trialEndsAt,
+        currentPeriodStart: row.subscription.currentPeriodStart,
+        currentPeriodEnd: row.subscription.currentPeriodEnd,
+        cancelledAt: row.subscription.cancelledAt,
+        cancelReason: row.subscription.cancelReason,
+        createdAt: row.subscription.createdAt,
+        updatedAt: row.subscription.updatedAt,
+        // Per-tenant overrides (#71). NULL = using the plan default.
+        // UI branches on nullness to render "Custom: 5,000" vs the
+        // plan cap in grey.
+        customLimits: {
+          maxUsers: row.subscription.customMaxUsers,
+          maxInvoicesMonthly: row.subscription.customMaxInvoicesMonthly,
+          maxBranches: row.subscription.customMaxBranches,
+          maxWarehouses: row.subscription.customMaxWarehouses,
+          note: row.subscription.customLimitsNote,
+        },
+        plan: {
+          id: row.plan.id,
+          code: row.plan.code,
+          name: row.plan.name,
+          tagline: row.plan.tagline,
+          monthlyPriceCents: row.plan.monthlyPriceCents,
+          yearlyPriceCents: row.plan.yearlyPriceCents,
+          currency: row.plan.currency,
+          maxUsers: row.plan.maxUsers,
+          maxInvoicesMonthly: row.plan.maxInvoicesMonthly,
+          maxBranches: row.plan.maxBranches,
+          maxWarehouses: row.plan.maxWarehouses,
+          features: row.plan.features,
+        },
+      },
+    });
+  });
+
+  // Plan-change payload. `planCode` (not `planId`) so the UI can hit
+  // this endpoint armed with nothing more than the seed catalogue —
+  // one fewer round-trip to resolve a uuid. `billingCycle` is optional
+  // so an operator swapping plans keeps the existing cycle by default.
+  const ChangePlanSchema = z.object({
+    planCode: z.string().min(1).max(32),
+    billingCycle: z.enum(["monthly", "yearly"]).optional(),
+    // Keep/reset trial: when moving a mid-trial tenant to a different
+    // plan, by default we keep their existing trialEndsAt. Set
+    // `endTrial: true` to flip them to `active` immediately (useful
+    // when they've paid and want the plan upgraded mid-trial).
+    endTrial: z.boolean().optional().default(false),
+    reason: z.string().trim().min(3).max(500),
+  });
+
+  fastify.post(
+    "/tenants/:id/subscription/change-plan",
+    async (req, reply) => {
+      const session = await requirePlatformSession(req, reply);
+      if (!session) return;
+
+      if (
+        !(await requirePlatformRole(req, reply, session, ["super_admin"]))
+      ) {
+        return;
+      }
+
+      const paramsParsed = z
+        .object({ id: z.string().uuid() })
+        .safeParse(req.params);
+      if (!paramsParsed.success) {
+        return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+      }
+      const tenantId = paramsParsed.data.id;
+
+      const bodyParsed = ChangePlanSchema.safeParse(req.body);
+      if (!bodyParsed.success) {
+        return reply.status(400).send({
+          error: {
+            code: "INVALID_INPUT",
+            message:
+              bodyParsed.error.issues[0]?.message ??
+              "Plan code, billing cycle, and reason are required.",
+          },
+        });
+      }
+
+      // Resolve the target plan first — if the code is bogus we want
+      // a clean 400 before we touch anything.
+      const planRows = await db
+        .select()
+        .from(schema.plans)
+        .where(eq(schema.plans.code, bodyParsed.data.planCode))
+        .limit(1);
+      const targetPlan = planRows[0];
+      if (!targetPlan) {
+        return reply
+          .status(400)
+          .send({ error: { code: "UNKNOWN_PLAN" } });
+      }
+
+      // Fetch the current subscription row so we can (a) detect noop,
+      // (b) include a diff in the audit line.
+      const existingRows = await db
+        .select({
+          subscription: schema.tenantSubscriptions,
+          plan: schema.plans,
+        })
+        .from(schema.tenantSubscriptions)
+        .leftJoin(
+          schema.plans,
+          eq(schema.plans.id, schema.tenantSubscriptions.planId),
+        )
+        .where(eq(schema.tenantSubscriptions.tenantId, tenantId))
+        .limit(1);
+      const existing = existingRows[0];
+      if (!existing) {
+        return reply
+          .status(404)
+          .send({ error: { code: "NO_SUBSCRIPTION" } });
+      }
+
+      const wasSamePlan =
+        existing.subscription.planId === targetPlan.id &&
+        (bodyParsed.data.billingCycle == null ||
+          existing.subscription.billingCycle ===
+            bodyParsed.data.billingCycle) &&
+        !bodyParsed.data.endTrial;
+      if (wasSamePlan) {
+        // Idempotent noop. Still return 200 so the UI doesn't need a
+        // separate "nothing changed" branch, but skip the audit line
+        // (nothing happened) to keep the log honest.
+        return reply.send({
+          ok: true,
+          changed: false,
+          subscription: {
+            ...existing.subscription,
+            plan: existing.plan,
+          },
+        });
+      }
+
+      // Status transition: if endTrial is set, move trial → active;
+      // otherwise preserve whatever status the subscription was in.
+      // 'cancelled' rows can't be re-upgraded via this endpoint — the
+      // operator should reactivate (separate endpoint in #62).
+      if (existing.subscription.status === "cancelled") {
+        return reply
+          .status(409)
+          .send({ error: { code: "SUBSCRIPTION_CANCELLED" } });
+      }
+
+      const nextStatus =
+        bodyParsed.data.endTrial && existing.subscription.status === "trial"
+          ? "active"
+          : existing.subscription.status;
+      const nextCycle =
+        bodyParsed.data.billingCycle ?? existing.subscription.billingCycle;
+
+      const [updated] = await db
+        .update(schema.tenantSubscriptions)
+        .set({
+          planId: targetPlan.id,
+          status: nextStatus,
+          billingCycle: nextCycle,
+          // Clear trialEndsAt when we explicitly end the trial; otherwise
+          // leave it alone — a mid-trial plan change keeps the clock.
+          trialEndsAt: bodyParsed.data.endTrial
+            ? null
+            : existing.subscription.trialEndsAt,
+        })
+        .where(eq(schema.tenantSubscriptions.tenantId, tenantId))
+        .returning();
+
+      await recordPlatformAuditEvent({
+        platformUserId: session.platformUserId,
+        platformUserEmail: session.email,
+        kind: "platform.subscription_changed",
+        summary: `Changed plan: ${existing.plan?.code ?? "?"} → ${targetPlan.code}`,
+        tenantId,
+        ipAddress: req.ip ?? null,
+        userAgent: req.headers["user-agent"] ?? null,
+        metadata: {
+          fromPlanCode: existing.plan?.code ?? null,
+          toPlanCode: targetPlan.code,
+          fromBillingCycle: existing.subscription.billingCycle,
+          toBillingCycle: nextCycle,
+          fromStatus: existing.subscription.status,
+          toStatus: nextStatus,
+          endedTrial: Boolean(bodyParsed.data.endTrial),
+          reason: bodyParsed.data.reason,
+        },
+      });
+
+      return reply.send({
+        ok: true,
+        changed: true,
+        subscription: { ...updated, plan: targetPlan },
+      });
+    },
+  );
+
+  // #71 — Per-tenant quota overrides. Escape hatch for custom
+  // contracts: "Starter pricing, 5,000 invoices/month" goes here,
+  // not into a bespoke plan row. All four caps are nullable in the
+  // DB; null means "inherit from the plan". The API accepts
+  // `undefined` to leave a field untouched and explicit `null` to
+  // clear an existing override.
+  //
+  // Negative values rejected at the schema layer. 0 is legal — it
+  // means "freeze this resource" (useful for pausing a specific
+  // capability without flipping the plan). The note is free-form
+  // and exists so whoever sees the override six months from now can
+  // figure out why it's there.
+  const QuotaOverrideSchema = z.object({
+    maxUsers: z.number().int().min(0).max(1_000_000).nullable().optional(),
+    maxInvoicesMonthly: z
+      .number()
+      .int()
+      .min(0)
+      .max(10_000_000)
+      .nullable()
+      .optional(),
+    maxBranches: z.number().int().min(0).max(10_000).nullable().optional(),
+    maxWarehouses: z.number().int().min(0).max(10_000).nullable().optional(),
+    note: z.string().trim().max(500).nullable().optional(),
+    reason: z.string().trim().min(3).max(500),
+  });
+
+  fastify.patch(
+    "/tenants/:id/subscription/overrides",
+    async (req, reply) => {
+      const session = await requirePlatformSession(req, reply);
+      if (!session) return;
+
+      // Gated to super_admin, same as change-plan. Bespoke quota deals
+      // are a billing-sensitive action — billing-role staff can read
+      // them but shouldn't be able to silently 10x a tenant's cap.
+      if (
+        !(await requirePlatformRole(req, reply, session, ["super_admin"]))
+      ) {
+        return;
+      }
+
+      const paramsParsed = z
+        .object({ id: z.string().uuid() })
+        .safeParse(req.params);
+      if (!paramsParsed.success) {
+        return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+      }
+      const tenantId = paramsParsed.data.id;
+
+      const bodyParsed = QuotaOverrideSchema.safeParse(req.body);
+      if (!bodyParsed.success) {
+        return reply.status(400).send({
+          error: {
+            code: "INVALID_INPUT",
+            message:
+              bodyParsed.error.issues[0]?.message ??
+              "One or more override values are invalid.",
+          },
+        });
+      }
+
+      // Load the current subscription so we can diff for the audit
+      // line. 404 here mirrors the change-plan behaviour — no
+      // subscription row means nothing to override.
+      const existingRows = await db
+        .select()
+        .from(schema.tenantSubscriptions)
+        .where(eq(schema.tenantSubscriptions.tenantId, tenantId))
+        .limit(1);
+      const existing = existingRows[0];
+      if (!existing) {
+        return reply
+          .status(404)
+          .send({ error: { code: "NO_SUBSCRIPTION" } });
+      }
+
+      // Build the update set by picking only the fields the caller
+      // actually sent. `undefined` means "leave alone"; explicit
+      // `null` means "clear the override". Without the `in` check
+      // Drizzle would overwrite unspecified fields with undefined,
+      // which serialises to NULL — exactly the bug we want to avoid.
+      const body = bodyParsed.data;
+      const updateSet: Record<string, number | string | null> = {};
+      if ("maxUsers" in body) updateSet.customMaxUsers = body.maxUsers ?? null;
+      if ("maxInvoicesMonthly" in body)
+        updateSet.customMaxInvoicesMonthly = body.maxInvoicesMonthly ?? null;
+      if ("maxBranches" in body)
+        updateSet.customMaxBranches = body.maxBranches ?? null;
+      if ("maxWarehouses" in body)
+        updateSet.customMaxWarehouses = body.maxWarehouses ?? null;
+      if ("note" in body) updateSet.customLimitsNote = body.note ?? null;
+
+      if (Object.keys(updateSet).length === 0) {
+        return reply.status(400).send({
+          error: {
+            code: "INVALID_INPUT",
+            message: "At least one override field is required.",
+          },
+        });
+      }
+
+      const [updated] = await db
+        .update(schema.tenantSubscriptions)
+        .set(updateSet)
+        .where(eq(schema.tenantSubscriptions.tenantId, tenantId))
+        .returning();
+
+      // Audit every override mutation with before/after values for
+      // each field. Matters for bespoke-contract disputes six months
+      // later — "who set this to 5000 and why?" gets a real answer.
+      await recordPlatformAuditEvent({
+        platformUserId: session.platformUserId,
+        platformUserEmail: session.email,
+        kind: "platform.subscription_overrides_changed",
+        summary: `Updated quota overrides for tenant`,
+        tenantId,
+        ipAddress: req.ip ?? null,
+        userAgent: req.headers["user-agent"] ?? null,
+        metadata: {
+          from: {
+            maxUsers: existing.customMaxUsers,
+            maxInvoicesMonthly: existing.customMaxInvoicesMonthly,
+            maxBranches: existing.customMaxBranches,
+            maxWarehouses: existing.customMaxWarehouses,
+            note: existing.customLimitsNote,
+          },
+          to: {
+            maxUsers: updated?.customMaxUsers ?? null,
+            maxInvoicesMonthly: updated?.customMaxInvoicesMonthly ?? null,
+            maxBranches: updated?.customMaxBranches ?? null,
+            maxWarehouses: updated?.customMaxWarehouses ?? null,
+            note: updated?.customLimitsNote ?? null,
+          },
+          reason: body.reason,
+        },
+      });
+
+      return reply.send({
+        ok: true,
+        customLimits: {
+          maxUsers: updated?.customMaxUsers ?? null,
+          maxInvoicesMonthly: updated?.customMaxInvoicesMonthly ?? null,
+          maxBranches: updated?.customMaxBranches ?? null,
+          maxWarehouses: updated?.customMaxWarehouses ?? null,
+          note: updated?.customLimitsNote ?? null,
+        },
+      });
+    },
+  );
 };

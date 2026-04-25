@@ -12,6 +12,26 @@ export class ApiError extends Error {
    * WEAK_PASSWORD from #49). UI surfaces these verbatim as a bullet list.
    */
   reasons?: string[];
+  /**
+   * Plan-gate payload from `requireFeature()` — #62. Populated for
+   * PLAN_REQUIRED (user is on a lower plan) AND SUBSCRIPTION_CANCELLED
+   * (#63 — trial expired, grace elapsed). The UI branches on `code` to
+   * render either an upgrade CTA or a "contact support" dialog;
+   * `currentPlanCode` is useful in both cases.
+   */
+  feature?: string;
+  currentPlanCode?: string | null;
+  upgradeToPlanCodes?: string[];
+  /**
+   * Quota-gate payload from `requireQuota()` — #65. Populated for
+   * QUOTA_EXCEEDED (the tenant already hit the cap for a resource on
+   * their plan). `resource` is one of "invoices_monthly", "branches",
+   * "warehouses"; `current` and `max` let the UI render "500 / 500
+   * invoices" inline without a second round-trip.
+   */
+  resource?: string;
+  quotaCurrent?: number;
+  quotaMax?: number;
 
   constructor(
     status: number,
@@ -19,12 +39,28 @@ export class ApiError extends Error {
     message: string,
     issues?: unknown,
     reasons?: string[],
+    planMeta?: {
+      feature?: string;
+      currentPlanCode?: string | null;
+      upgradeToPlanCodes?: string[];
+      resource?: string;
+      quotaCurrent?: number;
+      quotaMax?: number;
+    },
   ) {
     super(message);
     this.status = status;
     this.code = code;
     this.issues = issues;
     this.reasons = reasons;
+    if (planMeta) {
+      this.feature = planMeta.feature;
+      this.currentPlanCode = planMeta.currentPlanCode;
+      this.upgradeToPlanCodes = planMeta.upgradeToPlanCodes;
+      this.resource = planMeta.resource;
+      this.quotaCurrent = planMeta.quotaCurrent;
+      this.quotaMax = planMeta.quotaMax;
+    }
   }
 }
 
@@ -93,6 +129,24 @@ async function request<T>(
       err?.message ?? res.statusText,
       err?.issues,
       Array.isArray(err?.reasons) ? err.reasons : undefined,
+      err?.code === "PLAN_REQUIRED" ||
+      err?.code === "SUBSCRIPTION_CANCELLED" ||
+      err?.code === "QUOTA_EXCEEDED"
+        ? {
+            feature: typeof err.feature === "string" ? err.feature : undefined,
+            currentPlanCode:
+              typeof err.currentPlanCode === "string"
+                ? err.currentPlanCode
+                : null,
+            upgradeToPlanCodes: Array.isArray(err.upgradeToPlanCodes)
+              ? err.upgradeToPlanCodes
+              : [],
+            resource: typeof err.resource === "string" ? err.resource : undefined,
+            quotaCurrent:
+              typeof err.current === "number" ? err.current : undefined,
+            quotaMax: typeof err.max === "number" ? err.max : undefined,
+          }
+        : undefined,
     );
   }
 
@@ -902,6 +956,43 @@ export const api = {
   getSettings: () => request<TenantSettingsResponse>("/settings"),
   updateSettings: (body: Partial<TenantSettings>) =>
     request<TenantSettingsResponse>("/settings", { method: "PATCH", json: body }),
+
+  // Tenant-side view of the current subscription (#62). Used by the
+  // "Your plan" card on /app/settings and by upgrade-CTA dialogs that
+  // need to render "Upgrade to <plan>" copy.
+  getSubscription: () =>
+    request<{ subscription: TenantSubscriptionResponse }>("/subscription"),
+
+  // Public plan catalogue (#64). Filters to is_public=true server-side
+  // so hidden / grandfathered plans never reach the picker.
+  listAvailablePlans: () =>
+    request<{ plans: AvailablePlan[] }>("/subscription/plans"),
+
+  // Current quota usage (#65). Drives the "23 / 500 invoices this month"
+  // chips on /app/settings. Each resource returns `{ current, max }`
+  // where max=null means unlimited (render as "—" or "Unlimited" in the
+  // UI). Runs the same count math as the POST-side gate, so the numbers
+  // won't drift between what the card shows and what creating a new
+  // invoice actually enforces.
+  getUsage: () =>
+    request<{
+      usage: {
+        invoicesMonthly: { current: number; max: number | null };
+        branches: { current: number; max: number | null };
+        warehouses: { current: number; max: number | null };
+      };
+    }>("/subscription/usage"),
+
+  // Self-serve plan change (#64). Requires settings.manage. Flips
+  // past_due → active as a side effect ("payment received" contract).
+  // Gated server-side by SUBSCRIPTION_PAYMENT_STUB env flag until a
+  // real payment provider lands — calling without it returns 503.
+  changeMyPlan: (body: { planCode: string; billingCycle?: "monthly" | "yearly" }) =>
+    request<{
+      ok: true;
+      changed: boolean;
+      subscription: TenantSubscriptionResponse;
+    }>("/subscription/change-plan", { method: "POST", json: body }),
 
   listFxRates: (filter?: { from?: string; to?: string }) => {
     const qs = new URLSearchParams();
@@ -5273,6 +5364,64 @@ export interface FiscalPeriod {
 export interface TenantSettingsResponse {
   settings: TenantSettings;
   defaults: TenantSettings;
+}
+
+// Public plan entry returned by GET /subscription/plans (#64). Same
+// shape as the plan sub-object on TenantSubscriptionResponse but
+// includes sortOrder so the picker can preserve catalogue order.
+export interface AvailablePlan {
+  id: string;
+  code: string;
+  name: string;
+  tagline: string;
+  monthlyPriceCents: number;
+  yearlyPriceCents: number;
+  currency: string;
+  maxUsers: number | null;
+  maxInvoicesMonthly: number | null;
+  maxBranches: number | null;
+  maxWarehouses: number | null;
+  features: string[];
+  sortOrder: number;
+}
+
+// Subscription shape returned by GET /subscription (#62). Mirrors the
+// richer shape returned by the platform-admin endpoint so the types
+// can be shared by UI components that render either side.
+export interface TenantSubscriptionResponse {
+  id: string;
+  status: "trial" | "active" | "past_due" | "cancelled";
+  billingCycle: "monthly" | "yearly";
+  trialEndsAt: string | null;
+  currentPeriodStart: string;
+  currentPeriodEnd: string;
+  // Per-tenant quota overrides (#71). Every field null = "no custom
+  // contract, use the plan's caps." A non-null integer replaces the
+  // plan's cap for that resource. The tenant's own settings page (#72)
+  // renders effective caps (`custom ?? plan`) and surfaces the note so
+  // the plan card matches what the usage chips show — checkQuota already
+  // coalesces override-first on the API side.
+  customLimits: {
+    maxUsers: number | null;
+    maxInvoicesMonthly: number | null;
+    maxBranches: number | null;
+    maxWarehouses: number | null;
+    note: string | null;
+  };
+  plan: {
+    id: string;
+    code: string;
+    name: string;
+    tagline: string;
+    monthlyPriceCents: number;
+    yearlyPriceCents: number;
+    currency: string;
+    maxUsers: number | null;
+    maxInvoicesMonthly: number | null;
+    maxBranches: number | null;
+    maxWarehouses: number | null;
+    features: string[];
+  };
 }
 
 export interface FxRate {

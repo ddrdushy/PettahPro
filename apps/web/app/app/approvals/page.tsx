@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import { ClipboardCheck } from "lucide-react";
 import type { ApprovalRequest } from "@/lib/api";
 import { PageHeader } from "@/components/app/page-header";
+import { PlanFeatureGate } from "@/components/app/plan-feature-gate";
 import { ApprovalsQueueClient } from "./queue-client";
 
 export const metadata: Metadata = { title: "Approvals" };
@@ -27,6 +28,16 @@ async function fetchScope(
 }
 
 export default async function ApprovalsPage() {
+  // Plan gate short-circuits the three scope fetches on tenants without
+  // approval_workflows — no wasted round trips, upgrade card instead.
+  return (
+    <PlanFeatureGate feature="approval_workflows">
+      <ApprovalsPageContent />
+    </PlanFeatureGate>
+  );
+}
+
+async function ApprovalsPageContent() {
   const cookie = cookies().toString();
   const [mine, submitted, all] = await Promise.all([
     fetchScope("mine", cookie),

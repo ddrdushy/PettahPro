@@ -4,6 +4,7 @@ import { z } from "zod";
 import { withTenant, schema, nextDocumentNumber } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
 import { requirePermission } from "../../lib/permissions.js";
+import { requireFeature } from "../../lib/plan-gate.js";
 import { postJournal } from "../accounting/journal-posting.js";
 import {
   computePayrollFromComponents,
@@ -433,6 +434,10 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
   // POST /payroll-runs — draft for a given period, snapshotting every
   // active employee's pay line
   fastify.post("/", async (req, reply) => {
+    // #62 — plan gate first: Starter doesn't include payroll. Runs
+    // before the permission check so a tenant without the feature
+    // gets a clean PLAN_REQUIRED, not a misleading FORBIDDEN.
+    if (!(await requireFeature(req, reply, "payroll"))) return;
     const ctx = await requirePermission(req, reply, "payroll.manage");
     if (!ctx) return;
 
@@ -1442,6 +1447,7 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
   // policy exists the immediate path still works — same backward-
   // compatible shape as #43b (bills).
   fastify.post<{ Params: { id: string } }>("/:id/post", async (req, reply) => {
+    if (!(await requireFeature(req, reply, "payroll"))) return;
     const ctx = await requirePermission(req, reply, "payroll.manage");
     if (!ctx) return;
 
@@ -1566,6 +1572,7 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
   });
 
   fastify.post<{ Params: { id: string } }>("/:id/pay", async (req, reply) => {
+    if (!(await requireFeature(req, reply, "payroll"))) return;
     const ctx = await requirePermission(req, reply, "payroll.manage");
     if (!ctx) return;
 
@@ -1984,6 +1991,7 @@ export const payrollRunsRoutes: FastifyPluginAsync = async (fastify) => {
     reason: z.string().min(3).max(500),
   });
   fastify.post<{ Params: { id: string } }>("/:id/void", async (req, reply) => {
+    if (!(await requireFeature(req, reply, "payroll"))) return;
     const ctx = await requirePermission(req, reply, "payroll.manage");
     if (!ctx) return;
 

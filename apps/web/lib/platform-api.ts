@@ -112,6 +112,15 @@ export interface TenantSummary {
   notes: string | null;
   userCount: number;
   lastLoginAt: string | null;
+  // #66 — plan + subscription summary. All nullable: a tenant without a
+  // subscription row (pre-backfill edge case) returns null for each, and
+  // the UI renders "—".
+  planCode: string | null;
+  planName: string | null;
+  subscriptionStatus: string | null;
+  billingCycle: string | null;
+  trialEndsAt: string | null;
+  currentPeriodEnd: string | null;
 }
 
 export interface TenantDetail extends TenantSummary {
@@ -267,6 +276,61 @@ export const platformApi = {
     request<{ ok: true }>(`/platform/platform-users/${id}`, {
       method: "DELETE",
     }),
+  // #58 — platform overview + global audit + tenant notes PATCH.
+  getOverview: () => request<PlatformOverview>("/platform/overview"),
+  listPlatformAudit: (params: {
+    kind?: string;
+    actor?: string;
+    limit?: number;
+    offset?: number;
+  } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.kind) qs.set("kind", params.kind);
+    if (params.actor) qs.set("actor", params.actor);
+    if (params.limit != null) qs.set("limit", String(params.limit));
+    if (params.offset != null) qs.set("offset", String(params.offset));
+    const q = qs.toString();
+    return request<{
+      total: number;
+      limit: number;
+      offset: number;
+      entries: PlatformAuditEntryWithTenant[];
+    }>(`/platform/audit${q ? `?${q}` : ""}`);
+  },
+  updateTenant: (id: string, body: { notes?: string | null }) =>
+    request<{ ok: true }>(`/platform/tenants/${id}`, {
+      method: "PATCH",
+      json: body,
+    }),
+  // #59 — ops density. Bulk suspend/reactivate + per-user saved views.
+  bulkTenantAction: (body: {
+    action: "suspend" | "reactivate";
+    tenantIds: string[];
+    reason: string;
+  }) =>
+    request<PlatformBulkTenantActionResponse>("/platform/tenants/bulk-action", {
+      method: "POST",
+      json: body,
+    }),
+  listSavedViews: (scope: PlatformSavedViewScope) => {
+    const qs = new URLSearchParams({ scope });
+    return request<{ views: PlatformSavedView[] }>(
+      `/platform/saved-views?${qs.toString()}`,
+    );
+  },
+  createSavedView: (body: {
+    scope: PlatformSavedViewScope;
+    name: string;
+    queryString: string;
+  }) =>
+    request<{ view: PlatformSavedView }>("/platform/saved-views", {
+      method: "POST",
+      json: body,
+    }),
+  deleteSavedView: (id: string) =>
+    request<{ ok: true }>(`/platform/saved-views/${id}`, {
+      method: "DELETE",
+    }),
   // #57 / gap L1 v1 — operator impersonation. Platform-side. Tenant-side
   // sits in lib/api.ts (different cookie realm).
   createImpersonationRequest: (
@@ -305,7 +369,219 @@ export const platformApi = {
       method: "POST",
       json: body,
     }),
+  // #60 — observability read-out for /platform/health.
+  getSystemHealth: () =>
+    request<SystemHealthPayload>("/platform/system-health"),
+  // #61 — pricing plans + tenant subscriptions.
+  listPlans: () => request<{ plans: PlatformPlan[] }>("/platform/plans"),
+  getTenantSubscription: (tenantId: string) =>
+    request<{ subscription: PlatformTenantSubscription }>(
+      `/platform/tenants/${tenantId}/subscription`,
+    ),
+  changeTenantPlan: (
+    tenantId: string,
+    body: {
+      planCode: string;
+      billingCycle?: "monthly" | "yearly";
+      endTrial?: boolean;
+      reason: string;
+    },
+  ) =>
+    request<{
+      ok: true;
+      changed: boolean;
+      subscription: PlatformTenantSubscription;
+    }>(`/platform/tenants/${tenantId}/subscription/change-plan`, {
+      method: "POST",
+      json: body,
+    }),
+
+  // #71 — Per-tenant quota override. Each numeric field is
+  // optionally number | null | undefined. `undefined` means "leave
+  // alone"; `null` means "clear the override back to the plan
+  // default". Reason string is required for audit.
+  setTenantOverrides: (
+    tenantId: string,
+    body: {
+      maxUsers?: number | null;
+      maxInvoicesMonthly?: number | null;
+      maxBranches?: number | null;
+      maxWarehouses?: number | null;
+      note?: string | null;
+      reason: string;
+    },
+  ) =>
+    request<{
+      ok: true;
+      customLimits: PlatformTenantCustomLimits;
+    }>(`/platform/tenants/${tenantId}/subscription/overrides`, {
+      method: "PATCH",
+      json: body,
+    }),
 };
+
+// #60 — observability payload shape. Mirrors SystemHealthPayload in
+// apps/api/src/plugins/system-health.ts. Keep the two in sync if you
+// add fields — there's no shared types package for this slice (yet).
+export interface SystemHealthRouteStat {
+  route: string;
+  method: string;
+  count: number;
+  errors: number;
+  avgLatencyMs: number;
+}
+
+export interface SystemHealthPayload {
+  server: {
+    uptimeSeconds: number;
+    startedAt: string;
+    nodeVersion: string;
+    pid: number;
+    memory: { rssMb: number; heapUsedMb: number; heapTotalMb: number };
+  };
+  http: {
+    totalRequests: number;
+    errorRequests: number;
+    errorRate5m: number;
+    errorRate1h: number;
+    ratePerMin5m: number;
+    ratePerMin1h: number;
+    timeline: Array<{ tsMs: number; requests: number; errors: number }>;
+    topSlowRoutes: SystemHealthRouteStat[];
+    topErrorRoutes: SystemHealthRouteStat[];
+  };
+  db: {
+    activeConnections: number;
+    idleConnections: number;
+    totalConnections: number;
+    maxConnections: number | null;
+  };
+  redis: {
+    connected: boolean;
+    memoryUsedBytes: number | null;
+    uptimeSeconds: number | null;
+    queueDepths: Record<string, number>;
+  };
+}
+
+// #61 — plans + subscriptions.  Keep in lockstep with the server
+// schema (packages/db/src/schema/plans.ts + tenant-subscriptions.ts).
+// Prices are LKR cents; divide at the edge only.
+export const PLAN_CODES = ["starter", "growth", "scale"] as const;
+export type PlanCode = (typeof PLAN_CODES)[number];
+
+export const SUBSCRIPTION_STATUSES = [
+  "trial",
+  "active",
+  "past_due",
+  "cancelled",
+] as const;
+export type SubscriptionStatus = (typeof SUBSCRIPTION_STATUSES)[number];
+
+export const BILLING_CYCLES = ["monthly", "yearly"] as const;
+export type BillingCycle = (typeof BILLING_CYCLES)[number];
+
+export interface PlatformPlan {
+  id: string;
+  code: string;
+  name: string;
+  tagline: string;
+  monthlyPriceCents: number;
+  yearlyPriceCents: number;
+  currency: string;
+  maxUsers: number | null;
+  maxInvoicesMonthly: number | null;
+  maxBranches: number | null;
+  maxWarehouses: number | null;
+  features: string[];
+  isPublic: boolean;
+  sortOrder: number;
+}
+
+export interface PlatformTenantSubscription {
+  id: string;
+  tenantId: string;
+  status: SubscriptionStatus;
+  billingCycle: BillingCycle;
+  trialEndsAt: string | null;
+  currentPeriodStart: string;
+  currentPeriodEnd: string;
+  cancelledAt: string | null;
+  cancelReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+  // Per-tenant quota overrides (#71). Each field is nullable — null
+  // means "inherit from plan". When both are null the tenant is on
+  // the standard plan cap; when an override is set, the gate uses
+  // the override regardless of what the plan says.
+  customLimits: PlatformTenantCustomLimits;
+  plan: PlatformPlan;
+}
+
+export interface PlatformTenantCustomLimits {
+  maxUsers: number | null;
+  maxInvoicesMonthly: number | null;
+  maxBranches: number | null;
+  maxWarehouses: number | null;
+  note: string | null;
+}
+
+// #58 — the global audit feed includes tenantId so the UI can link
+// each row to /platform/tenants/:id; per-tenant audit doesn't need it.
+export interface PlatformAuditEntryWithTenant extends PlatformAuditEntry {
+  tenantId: string | null;
+}
+
+// #59 — saved views and bulk tenant actions.
+export const PLATFORM_SAVED_VIEW_SCOPES = ["tenants", "audit"] as const;
+export type PlatformSavedViewScope =
+  (typeof PLATFORM_SAVED_VIEW_SCOPES)[number];
+
+export interface PlatformSavedView {
+  id: string;
+  scope: PlatformSavedViewScope;
+  name: string;
+  queryString: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PlatformBulkTenantActionResult {
+  tenantId: string;
+  outcome: "ok" | "noop" | "not_found";
+  status?: string;
+}
+
+export interface PlatformBulkTenantActionResponse {
+  ok: true;
+  batchId: string;
+  counts: { ok: number; noop: number; notFound: number };
+  results: PlatformBulkTenantActionResult[];
+}
+
+// #58 — shape of the GET /platform/overview payload.  Deliberately
+// flat by section so a renaming of a stat doesn't ripple through the
+// whole client.  byStatus always carries every status key with 0 as
+// the fallback, so consumers never need `?? 0`.
+export interface PlatformOverview {
+  tenants: {
+    total: number;
+    byStatus: Record<string, number>;
+    signupsLast7Days: number;
+    signupsLast30Days: number;
+  };
+  users: {
+    total: number;
+    activeLast7Days: number;
+    activeLast30Days: number;
+  };
+  impersonation: {
+    pendingRequests: number;
+    approvedWaiting: number;
+    activeSessions: number;
+  };
+  recentAudit: PlatformAuditEntryWithTenant[];
+}
 
 export interface PlatformImpersonationRequest {
   id: string;
