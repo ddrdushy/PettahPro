@@ -994,6 +994,22 @@ export const api = {
       subscription: TenantSubscriptionResponse;
     }>("/subscription/change-plan", { method: "POST", json: body }),
 
+  // Add-ons (#120) — self-serve picker.
+  listMyAddons: () =>
+    request<{ catalog: AvailableAddon[]; active: ActiveAddon[] }>(
+      "/subscription/addons",
+    ),
+  purchaseAddon: (body: { addonCode: string; billingCycle?: "monthly" | "yearly" }) =>
+    request<{ tenantAddon: ActiveAddon }>("/subscription/addons", {
+      method: "POST",
+      json: body,
+    }),
+  cancelAddon: (id: string) =>
+    request<{ ok: true; status: string; activeUntil: string }>(
+      `/subscription/addons/${id}/cancel`,
+      { method: "POST" },
+    ),
+
   listFxRates: (filter?: { from?: string; to?: string }) => {
     const qs = new URLSearchParams();
     if (filter?.from) qs.set("from", filter.from);
@@ -5421,6 +5437,40 @@ export interface TenantSubscriptionResponse {
     maxBranches: number | null;
     maxWarehouses: number | null;
     features: string[];
+  };
+}
+
+// Add-ons (#120). The catalog is what's available to buy; active is
+// what the tenant is paying for right now. Effective feature set is
+// the union of plan.features + every active addon.grantsFeatures.
+export interface AvailableAddon {
+  id: string;
+  code: string;
+  name: string;
+  tagline: string;
+  monthlyPriceCents: number;
+  yearlyPriceCents: number;
+  currency: string;
+  grantsFeatures: string[];
+  eligiblePlanCodes: string[];
+}
+
+export interface ActiveAddon {
+  id: string;
+  status: "active" | "pending_removal" | "cancelled";
+  billingCycle: "monthly" | "yearly";
+  activatedAt: string;
+  currentPeriodStart?: string;
+  currentPeriodEnd: string;
+  cancelledAt: string | null;
+  autoRemovedAt: string | null;
+  addon: {
+    id: string;
+    code: string;
+    name: string;
+    monthlyPriceCents: number;
+    yearlyPriceCents: number;
+    grantsFeatures: string[];
   };
 }
 

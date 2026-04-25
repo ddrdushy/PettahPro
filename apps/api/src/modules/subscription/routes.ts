@@ -1,10 +1,14 @@
 import type { FastifyPluginAsync } from "fastify";
-import { eq, asc } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { db, schema } from "@pettahpro/db";
 import { requireAuth } from "../../lib/with-tenant.js";
 import { requirePermission } from "../../lib/permissions.js";
-import { checkQuota, getTenantSubscription } from "../../lib/plan-gate.js";
+import {
+  autoRemoveRedundantAddons,
+  checkQuota,
+  getTenantSubscription,
+} from "../../lib/plan-gate.js";
 
 /**
  * Tenant-side subscription surface.
@@ -231,10 +235,14 @@ export const subscriptionRoutes: FastifyPluginAsync = async (fastify) => {
     const periodInterval =
       nextCycle === "yearly" ? "365 days" : "30 days";
 
+    // Bind to the target plan's CURRENT version. Self-serve plan
+    // change is an explicit "I want the latest published tier"
+    // action — same semantic as the platform-admin change-plan path.
     const [updated] = await db
       .update(schema.tenantSubscriptions)
       .set({
         planId: targetPlan.id,
+        planVersionId: targetPlan.currentVersionId,
         status: nextStatus,
         billingCycle: nextCycle,
         trialEndsAt: null,
@@ -245,6 +253,17 @@ export const subscriptionRoutes: FastifyPluginAsync = async (fastify) => {
       })
       .where(eq(schema.tenantSubscriptions.tenantId, ctx.tenantId))
       .returning();
+
+    // Auto-remove addons whose features are now part of the new plan
+    // (spec §7.1). Same call shape as the platform admin change-plan
+    // path; the helper is idempotent, so partial overlap with prior
+    // plan features is fine.
+    await autoRemoveRedundantAddons(
+      ctx.tenantId,
+      Array.isArray(targetPlan.features)
+        ? (targetPlan.features as string[])
+        : [],
+    );
 
     // Audit. Self-serve plan changes write to the same log as the
     // admin-driven change-plan (#61) — the kind field distinguishes
@@ -284,6 +303,276 @@ export const subscriptionRoutes: FastifyPluginAsync = async (fastify) => {
       ok: true,
       changed: true,
       subscription: { ...updated, plan: targetPlan },
+    });
+  });
+
+  // ---------------------------------------------------------------
+  // Add-ons (#120 / pricing-spec §7) — tenant-side self-serve.
+  //
+  //   GET    /subscription/addons          — catalog + active for me
+  //   POST   /subscription/addons          — purchase
+  //   POST   /subscription/addons/:id/cancel — schedule removal at
+  //                                            current period end
+  //
+  // Self-serve mutations gated on SUBSCRIPTION_PAYMENT_STUB=1 — same
+  // policy as /change-plan since both pretend to take a payment we're
+  // not actually charging yet. Platform admin grant lives on the
+  // platform-admin side and is not gated.
+  // ---------------------------------------------------------------
+
+  fastify.get("/addons", async (req, reply) => {
+    const ctx = requireAuth(req, reply);
+    if (!ctx) return;
+
+    // Catalog: public, non-archived addons.
+    const catalog = await db
+      .select()
+      .from(schema.addons)
+      .where(
+        eq(schema.addons.isArchived, false),
+      )
+      .orderBy(asc(schema.addons.sortOrder), asc(schema.addons.code));
+
+    // Active addons for this tenant.
+    const active = await db
+      .select({
+        tenantAddon: schema.tenantAddons,
+        addon: schema.addons,
+      })
+      .from(schema.tenantAddons)
+      .leftJoin(
+        schema.addons,
+        eq(schema.addons.id, schema.tenantAddons.addonId),
+      )
+      .where(eq(schema.tenantAddons.tenantId, ctx.tenantId));
+
+    return reply.send({
+      catalog: catalog
+        .filter((a) => a.isPublic)
+        .map((a) => ({
+          id: a.id,
+          code: a.code,
+          name: a.name,
+          tagline: a.tagline,
+          monthlyPriceCents: a.monthlyPriceCents,
+          yearlyPriceCents: a.yearlyPriceCents,
+          currency: a.currency,
+          grantsFeatures: a.grantsFeatures,
+          eligiblePlanCodes: a.eligiblePlanCodes,
+        })),
+      active: active
+        .filter((r) => r.addon !== null)
+        .map((r) => ({
+          id: r.tenantAddon.id,
+          status: r.tenantAddon.status,
+          billingCycle: r.tenantAddon.billingCycle,
+          activatedAt: r.tenantAddon.activatedAt,
+          currentPeriodEnd: r.tenantAddon.currentPeriodEnd,
+          cancelledAt: r.tenantAddon.cancelledAt,
+          autoRemovedAt: r.tenantAddon.autoRemovedAt,
+          addon: {
+            id: r.addon!.id,
+            code: r.addon!.code,
+            name: r.addon!.name,
+            monthlyPriceCents: r.addon!.monthlyPriceCents,
+            yearlyPriceCents: r.addon!.yearlyPriceCents,
+            grantsFeatures: r.addon!.grantsFeatures,
+          },
+        })),
+    });
+  });
+
+  const PurchaseAddonSchema = z.object({
+    addonCode: z.string().trim().min(1).max(48),
+    billingCycle: z.enum(["monthly", "yearly"]).default("monthly"),
+  });
+
+  fastify.post("/addons", async (req, reply) => {
+    const ctx = await requirePermission(req, reply, "settings.manage");
+    if (!ctx) return;
+
+    if (process.env.SUBSCRIPTION_PAYMENT_STUB !== "1") {
+      return reply.status(503).send({
+        error: {
+          code: "PAYMENT_PROVIDER_UNAVAILABLE",
+          message:
+            "Self-serve add-on purchase requires a payment provider, which isn't configured yet. Contact support.",
+        },
+      });
+    }
+
+    const parsed = PurchaseAddonSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: {
+          code: "INVALID_INPUT",
+          message: parsed.error.issues[0]?.message ?? "Add-on code is required.",
+        },
+      });
+    }
+
+    const addonRows = await db
+      .select()
+      .from(schema.addons)
+      .where(eq(schema.addons.code, parsed.data.addonCode))
+      .limit(1);
+    const addon = addonRows[0];
+    if (!addon || !addon.isPublic || addon.isArchived) {
+      return reply.status(400).send({ error: { code: "UNKNOWN_ADDON" } });
+    }
+
+    // Duplicate guard: clean 409 instead of letting the partial-unique
+    // index surface a generic 500. Filter by both tenant and addon so
+    // the index is hit.
+    const dup = await db
+      .select({ id: schema.tenantAddons.id })
+      .from(schema.tenantAddons)
+      .where(
+        and(
+          eq(schema.tenantAddons.tenantId, ctx.tenantId),
+          eq(schema.tenantAddons.addonId, addon.id),
+          inArray(schema.tenantAddons.status, ["active", "pending_removal"]),
+        ),
+      )
+      .limit(1);
+    if (dup.length > 0) {
+      return reply
+        .status(409)
+        .send({ error: { code: "ADDON_ALREADY_ACTIVE" } });
+    }
+
+    const periodMs =
+      parsed.data.billingCycle === "yearly"
+        ? 365 * 24 * 60 * 60 * 1000
+        : 30 * 24 * 60 * 60 * 1000;
+    const [created] = await db
+      .insert(schema.tenantAddons)
+      .values({
+        tenantId: ctx.tenantId,
+        addonId: addon.id,
+        status: "active",
+        billingCycle: parsed.data.billingCycle,
+        currentPeriodStart: new Date(),
+        currentPeriodEnd: new Date(Date.now() + periodMs),
+        activatedAt: new Date(),
+        activatedByUserId: ctx.userId,
+      })
+      .returning();
+    if (!created) {
+      return reply.status(500).send({ error: { code: "PURCHASE_FAILED" } });
+    }
+
+    try {
+      await db.insert(schema.platformAuditLog).values({
+        platformUserId: null,
+        platformUserEmail: "self-serve@pettahpro.lk",
+        kind: "subscription.addon.self_serve_purchased",
+        summary: `Self-serve addon purchase: ${addon.code}`,
+        reason: null,
+        tenantId: ctx.tenantId,
+        ipAddress: req.ip ?? null,
+        userAgent: req.headers["user-agent"]
+          ? String(req.headers["user-agent"]).slice(0, 512)
+          : null,
+        metadata: {
+          tenantUserId: ctx.userId,
+          tenantAddonId: created.id,
+          addonCode: addon.code,
+          billingCycle: parsed.data.billingCycle,
+          paymentStub: true,
+        },
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("self-serve addon audit write failed", err);
+    }
+
+    return reply.status(201).send({
+      tenantAddon: {
+        id: created.id,
+        status: created.status,
+        billingCycle: created.billingCycle,
+        activatedAt: created.activatedAt,
+        currentPeriodStart: created.currentPeriodStart,
+        currentPeriodEnd: created.currentPeriodEnd,
+        addon: {
+          id: addon.id,
+          code: addon.code,
+          name: addon.name,
+          monthlyPriceCents: addon.monthlyPriceCents,
+          yearlyPriceCents: addon.yearlyPriceCents,
+          grantsFeatures: addon.grantsFeatures,
+        },
+      },
+    });
+  });
+
+  fastify.post("/addons/:id/cancel", async (req, reply) => {
+    const ctx = await requirePermission(req, reply, "settings.manage");
+    if (!ctx) return;
+
+    const parsed = z.object({ id: z.string().uuid() }).safeParse(req.params);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+    }
+
+    const rows = await db
+      .select({ tenantAddon: schema.tenantAddons, addon: schema.addons })
+      .from(schema.tenantAddons)
+      .leftJoin(
+        schema.addons,
+        eq(schema.addons.id, schema.tenantAddons.addonId),
+      )
+      .where(eq(schema.tenantAddons.id, parsed.data.id))
+      .limit(1);
+    const row = rows[0];
+    if (!row || row.tenantAddon.tenantId !== ctx.tenantId) {
+      return reply.status(404).send({ error: { code: "NOT_FOUND" } });
+    }
+    if (row.tenantAddon.status === "cancelled") {
+      return reply.status(409).send({ error: { code: "ALREADY_CANCELLED" } });
+    }
+
+    // Self-serve cancel is always "schedule removal at next renewal"
+    // per spec §7.1. The cron sweep flips pending_removal → cancelled
+    // after currentPeriodEnd.
+    await db
+      .update(schema.tenantAddons)
+      .set({
+        status: "pending_removal",
+        cancelReason: "Cancelled by tenant",
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.tenantAddons.id, parsed.data.id));
+
+    try {
+      await db.insert(schema.platformAuditLog).values({
+        platformUserId: null,
+        platformUserEmail: "self-serve@pettahpro.lk",
+        kind: "subscription.addon.self_serve_cancelled",
+        summary: `Self-serve addon cancellation scheduled: ${row.addon?.code ?? "?"}`,
+        reason: null,
+        tenantId: ctx.tenantId,
+        ipAddress: req.ip ?? null,
+        userAgent: req.headers["user-agent"]
+          ? String(req.headers["user-agent"]).slice(0, 512)
+          : null,
+        metadata: {
+          tenantUserId: ctx.userId,
+          tenantAddonId: row.tenantAddon.id,
+          addonCode: row.addon?.code,
+          activeUntil: row.tenantAddon.currentPeriodEnd,
+        },
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("self-serve addon cancel audit write failed", err);
+    }
+
+    return reply.send({
+      ok: true,
+      status: "pending_removal",
+      activeUntil: row.tenantAddon.currentPeriodEnd,
     });
   });
 };

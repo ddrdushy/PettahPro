@@ -1,5 +1,5 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db, schema, withTenant } from "@pettahpro/db";
 import { requireAuth } from "./with-tenant.js";
 
@@ -68,18 +68,29 @@ declare module "fastify" {
 }
 
 async function loadPlanContext(tenantId: string): Promise<PlanContext> {
+  // Two joins: plan_versions for the *bound* version's value-bearing
+  // fields (features, caps), plans for the catalog identity (code).
+  // The COALESCE pattern keeps back-compat with rows that somehow
+  // didn't get backfilled — fall through to plans.* if the version
+  // row is missing. After 91-plan-versions.sql every row should have
+  // plan_version_id set, but defensive coding here is cheap.
   const rows = await db
     .select({
       status: schema.tenantSubscriptions.status,
       planCode: schema.plans.code,
-      features: schema.plans.features,
+      // Versioned fields — read from plan_versions when bound, else
+      // fall back to plans (the denormalised "current" snapshot).
+      versionFeatures: schema.planVersions.features,
+      versionMaxInvoicesMonthly: schema.planVersions.maxInvoicesMonthly,
+      versionMaxBranches: schema.planVersions.maxBranches,
+      versionMaxWarehouses: schema.planVersions.maxWarehouses,
+      versionMaxUsers: schema.planVersions.maxUsers,
+      planFeatures: schema.plans.features,
       planMaxInvoicesMonthly: schema.plans.maxInvoicesMonthly,
       planMaxBranches: schema.plans.maxBranches,
       planMaxWarehouses: schema.plans.maxWarehouses,
       planMaxUsers: schema.plans.maxUsers,
-      // Per-tenant overrides (#71). These take precedence when non-null;
-      // the COALESCE happens below in TS so the gate logic is explicit
-      // and auditable, not hidden in a SQL expression.
+      // Per-tenant overrides (#71). Beat both version and plan caps.
       customMaxInvoicesMonthly: schema.tenantSubscriptions.customMaxInvoicesMonthly,
       customMaxBranches: schema.tenantSubscriptions.customMaxBranches,
       customMaxWarehouses: schema.tenantSubscriptions.customMaxWarehouses,
@@ -89,6 +100,10 @@ async function loadPlanContext(tenantId: string): Promise<PlanContext> {
     .leftJoin(
       schema.plans,
       eq(schema.plans.id, schema.tenantSubscriptions.planId),
+    )
+    .leftJoin(
+      schema.planVersions,
+      eq(schema.planVersions.id, schema.tenantSubscriptions.planVersionId),
     )
     .where(eq(schema.tenantSubscriptions.tenantId, tenantId))
     .limit(1);
@@ -109,22 +124,66 @@ async function loadPlanContext(tenantId: string): Promise<PlanContext> {
       maxUsers: null,
     };
   }
+  // Effective values: bound version wins; fall back to current plan
+  // row when the sub somehow has no plan_version_id (shouldn't happen
+  // after the migration, but defensive coding is cheap on a hot path).
+  // Version field present? use it. Otherwise plan field.
+  const effectiveFeatures = Array.isArray(row.versionFeatures)
+    ? (row.versionFeatures as string[])
+    : Array.isArray(row.planFeatures)
+      ? (row.planFeatures as string[])
+      : [];
+  const effectiveCap = (
+    versionVal: number | null,
+    planVal: number | null,
+  ): number | null => versionVal ?? planVal ?? null;
+
+  // Add-on features (#120). Active and pending_removal addons grant
+  // their features through the period end — pending_removal is "I'm
+  // paying through this cycle, then dropping" and the spec is explicit
+  // about not yanking access mid-period. Cancelled rows do not grant.
+  const addonRows = await db
+    .select({
+      grantsFeatures: schema.addons.grantsFeatures,
+    })
+    .from(schema.tenantAddons)
+    .leftJoin(schema.addons, eq(schema.addons.id, schema.tenantAddons.addonId))
+    .where(
+      and(
+        eq(schema.tenantAddons.tenantId, tenantId),
+        inArray(schema.tenantAddons.status, ["active", "pending_removal"]),
+      ),
+    );
+  const addonFeatures = new Set<string>();
+  for (const r of addonRows) {
+    if (Array.isArray(r.grantsFeatures)) {
+      for (const f of r.grantsFeatures as string[]) addonFeatures.add(f);
+    }
+  }
+  const unionedFeatures = Array.from(
+    new Set([...effectiveFeatures, ...addonFeatures]),
+  );
+
   return {
     subscriptionStatus: row.status,
     planCode: row.planCode,
-    // features is jsonb string[]; defensively coerce in case Drizzle
-    // hands us `unknown`.
-    features: Array.isArray(row.features) ? (row.features as string[]) : [],
-    // Effective caps: per-tenant override wins when set, otherwise fall
-    // through to the plan row. `?? null` preserves "unlimited" when
-    // both are null — we never want "0" (the falsy-but-legitimate
-    // "freeze this resource" value) to collapse to the plan default,
-    // so explicit null-coalescing rather than `||`.
+    features: unionedFeatures,
+    // Per-tenant override wins; otherwise version cap; otherwise plan cap.
+    // `?? null` preserves "unlimited" when all are null — never let "0"
+    // (the falsy-but-legitimate "freeze this resource" value) collapse to
+    // a fallback. (Cap-delta addons are deferred — see 92-addons.sql.)
     maxInvoicesMonthly:
-      row.customMaxInvoicesMonthly ?? row.planMaxInvoicesMonthly ?? null,
-    maxBranches: row.customMaxBranches ?? row.planMaxBranches ?? null,
-    maxWarehouses: row.customMaxWarehouses ?? row.planMaxWarehouses ?? null,
-    maxUsers: row.customMaxUsers ?? row.planMaxUsers ?? null,
+      row.customMaxInvoicesMonthly ??
+      effectiveCap(row.versionMaxInvoicesMonthly, row.planMaxInvoicesMonthly),
+    maxBranches:
+      row.customMaxBranches ??
+      effectiveCap(row.versionMaxBranches, row.planMaxBranches),
+    maxWarehouses:
+      row.customMaxWarehouses ??
+      effectiveCap(row.versionMaxWarehouses, row.planMaxWarehouses),
+    maxUsers:
+      row.customMaxUsers ??
+      effectiveCap(row.versionMaxUsers, row.planMaxUsers),
   };
 }
 
@@ -133,9 +192,9 @@ async function loadPlanContext(tenantId: string): Promise<PlanContext> {
  * body so the UI can say "Upgrade to Growth or Scale" instead of a
  * bare "upgrade" — much kinder to the human on the other end.
  *
- * Reads the live catalogue rather than hard-coding so new plans or
- * reshuffled feature lists don't drift out of sync with the error
- * message.
+ * Reads the live catalogue (plans.features = current published version)
+ * because the upgrade suggestion is "what would you get if you switch
+ * NOW" — not "what would your current grandfathered version offer."
  */
 async function plansGranting(feature: string): Promise<string[]> {
   const rows = await db
@@ -448,9 +507,19 @@ function quotaMessage(
 
 /**
  * Load a tenant's own subscription — used by `GET /subscription` on
- * the tenant-side so the settings page can render "Your plan". Same
- * query as loadPlanContext but returns the richer shape that matches
- * the platform-admin endpoint so the UI types can be shared.
+ * the tenant-side so the settings page can render "Your plan".
+ *
+ * Returns three views of the plan:
+ *   * `plan` — the catalog identity (code, name) plus the BOUND
+ *     version's effective values (the prices/caps/features the
+ *     tenant actually pays for and gets). Reads from
+ *     plan_versions.* via plan_version_id when bound; falls back to
+ *     plans.* (current snapshot) for back-compat.
+ *   * `boundVersion` — the version_number + raw plan_versions row,
+ *     null if not bound (rare, back-compat case).
+ *   * `currentVersion` — the plan's current published version. When
+ *     boundVersion.versionNumber < currentVersion.versionNumber the
+ *     UI knows to render "version 2 published — migrate?".
  */
 export async function getTenantSubscription(tenantId: string): Promise<{
   id: string;
@@ -459,12 +528,7 @@ export async function getTenantSubscription(tenantId: string): Promise<{
   trialEndsAt: Date | null;
   currentPeriodStart: Date;
   currentPeriodEnd: Date;
-  // Per-tenant quota overrides (#71). NULL on every field = "no override,
-  // use the plan's caps." Any non-null integer replaces the plan cap for
-  // that resource. Exposed on the tenant-side read so the settings UI (#72)
-  // can render the effective caps and the "Custom contract" note instead
-  // of the raw plan-catalogue values — those don't match the usage chips
-  // driven by checkQuota when overrides are active.
+  // Per-tenant quota overrides (#71).
   customLimits: {
     maxUsers: number | null;
     maxInvoicesMonthly: number | null;
@@ -486,21 +550,71 @@ export async function getTenantSubscription(tenantId: string): Promise<{
     maxWarehouses: number | null;
     features: string[];
   };
+  // The version this subscription is bound to. Null only for legacy
+  // subscriptions that escaped the backfill in 91-plan-versions.sql.
+  boundVersion: {
+    id: string;
+    versionNumber: number;
+  } | null;
+  // The plan's current published version_number. May exceed
+  // boundVersion.versionNumber when the catalogue has been edited
+  // since this tenant signed up — the UI uses the gap to surface
+  // a "newer pricing available" prompt.
+  currentVersionNumber: number | null;
+  // Active + pending_removal add-ons (#120). Cancelled addons are
+  // hidden from this list — they're audit-only.
+  addons: {
+    id: string;
+    addonId: string;
+    code: string;
+    name: string;
+    monthlyPriceCents: number;
+    yearlyPriceCents: number;
+    grantsFeatures: string[];
+    status: string;
+    billingCycle: string;
+    currentPeriodEnd: Date;
+    cancelledAt: Date | null;
+  }[];
 } | null> {
   const rows = await db
     .select({
       subscription: schema.tenantSubscriptions,
       plan: schema.plans,
+      boundVersion: schema.planVersions,
     })
     .from(schema.tenantSubscriptions)
     .leftJoin(
       schema.plans,
       eq(schema.plans.id, schema.tenantSubscriptions.planId),
     )
+    .leftJoin(
+      schema.planVersions,
+      eq(schema.planVersions.id, schema.tenantSubscriptions.planVersionId),
+    )
     .where(eq(schema.tenantSubscriptions.tenantId, tenantId))
     .limit(1);
   const row = rows[0];
   if (!row || !row.plan) return null;
+
+  // Resolve the plan's current version_number — same plan_id, plan's
+  // current_version_id pointer.
+  let currentVersionNumber: number | null = null;
+  if (row.plan.currentVersionId) {
+    const cur = await db
+      .select({ versionNumber: schema.planVersions.versionNumber })
+      .from(schema.planVersions)
+      .where(eq(schema.planVersions.id, row.plan.currentVersionId))
+      .limit(1);
+    currentVersionNumber = cur[0]?.versionNumber ?? null;
+  }
+
+  // Effective values from boundVersion when present, plan otherwise.
+  const eff = row.boundVersion ?? row.plan;
+  const features = Array.isArray(eff.features)
+    ? (eff.features as string[])
+    : [];
+
   return {
     id: row.subscription.id,
     status: row.subscription.status,
@@ -518,18 +632,150 @@ export async function getTenantSubscription(tenantId: string): Promise<{
     plan: {
       id: row.plan.id,
       code: row.plan.code,
-      name: row.plan.name,
-      tagline: row.plan.tagline,
-      monthlyPriceCents: row.plan.monthlyPriceCents,
-      yearlyPriceCents: row.plan.yearlyPriceCents,
-      currency: row.plan.currency,
-      maxUsers: row.plan.maxUsers,
-      maxInvoicesMonthly: row.plan.maxInvoicesMonthly,
-      maxBranches: row.plan.maxBranches,
-      maxWarehouses: row.plan.maxWarehouses,
-      features: Array.isArray(row.plan.features)
-        ? (row.plan.features as string[])
-        : [],
+      // name/tagline/currency/prices/caps/features come from the
+      // BOUND version (or plan as fallback). A grandfathered tenant
+      // sees the price they bought, not the latest.
+      name: eff.name,
+      tagline: eff.tagline,
+      monthlyPriceCents: eff.monthlyPriceCents,
+      yearlyPriceCents: eff.yearlyPriceCents,
+      currency: eff.currency,
+      maxUsers: eff.maxUsers,
+      maxInvoicesMonthly: eff.maxInvoicesMonthly,
+      maxBranches: eff.maxBranches,
+      maxWarehouses: eff.maxWarehouses,
+      features,
     },
+    boundVersion: row.boundVersion
+      ? {
+          id: row.boundVersion.id,
+          versionNumber: row.boundVersion.versionNumber,
+        }
+      : null,
+    currentVersionNumber,
+    addons: await listActiveTenantAddons(tenantId),
   };
+}
+
+/**
+ * Auto-cancel any active addons whose granted features are now
+ * redundantly supplied by the tenant's plan (#120 / pricing-spec §7.1
+ * "auto-removal on tier upgrade"). Called by every change-plan path
+ * (platform admin + tenant self-serve) AFTER the subscription row has
+ * been updated to the new plan.
+ *
+ * Idempotent — re-calling on a tenant whose addons are already
+ * non-redundant is a no-op. Returns the list of addons that were
+ * auto-removed so the caller can audit them or surface a confirmation
+ * message.
+ */
+export async function autoRemoveRedundantAddons(
+  tenantId: string,
+  newPlanFeatures: string[],
+): Promise<{ tenantAddonId: string; addonCode: string }[]> {
+  if (newPlanFeatures.length === 0) return [];
+
+  const rows = await db
+    .select({
+      tenantAddonId: schema.tenantAddons.id,
+      addonId: schema.addons.id,
+      addonCode: schema.addons.code,
+      addonName: schema.addons.name,
+      grantsFeatures: schema.addons.grantsFeatures,
+    })
+    .from(schema.tenantAddons)
+    .leftJoin(schema.addons, eq(schema.addons.id, schema.tenantAddons.addonId))
+    .where(
+      and(
+        eq(schema.tenantAddons.tenantId, tenantId),
+        inArray(schema.tenantAddons.status, ["active", "pending_removal"]),
+      ),
+    );
+
+  const planFeatureSet = new Set(newPlanFeatures);
+  const redundant = rows.filter((r) => {
+    const grants = Array.isArray(r.grantsFeatures)
+      ? (r.grantsFeatures as string[])
+      : [];
+    if (grants.length === 0) return false;
+    // Redundant when EVERY granted feature is already in the plan.
+    // A partial overlap (addon grants A+B; plan only has A) means the
+    // user is still getting value from the addon — leave it active.
+    return grants.every((f) => planFeatureSet.has(f));
+  });
+
+  if (redundant.length === 0) return [];
+
+  await db
+    .update(schema.tenantAddons)
+    .set({
+      status: "cancelled",
+      cancelledAt: new Date(),
+      autoRemovedAt: new Date(),
+      cancelReason: "Auto-removed: included in new plan",
+      updatedAt: new Date(),
+    })
+    .where(
+      inArray(
+        schema.tenantAddons.id,
+        redundant.map((r) => r.tenantAddonId),
+      ),
+    );
+
+  return redundant.map((r) => ({
+    tenantAddonId: r.tenantAddonId,
+    addonCode: r.addonCode ?? "?",
+  }));
+}
+
+/**
+ * Active + pending_removal addons for a tenant. Skips cancelled rows.
+ * Used by getTenantSubscription so the settings page can render the
+ * add-on shelf inline with the plan card.
+ */
+async function listActiveTenantAddons(tenantId: string): Promise<
+  {
+    id: string;
+    addonId: string;
+    code: string;
+    name: string;
+    monthlyPriceCents: number;
+    yearlyPriceCents: number;
+    grantsFeatures: string[];
+    status: string;
+    billingCycle: string;
+    currentPeriodEnd: Date;
+    cancelledAt: Date | null;
+  }[]
+> {
+  const rows = await db
+    .select({
+      tenantAddon: schema.tenantAddons,
+      addon: schema.addons,
+    })
+    .from(schema.tenantAddons)
+    .leftJoin(schema.addons, eq(schema.addons.id, schema.tenantAddons.addonId))
+    .where(
+      and(
+        eq(schema.tenantAddons.tenantId, tenantId),
+        inArray(schema.tenantAddons.status, ["active", "pending_removal"]),
+      ),
+    );
+  return rows
+    .filter((r) => r.addon !== null)
+    .map((r) => ({
+      id: r.tenantAddon.id,
+      addonId: r.tenantAddon.addonId,
+      code: r.addon!.code,
+      name: r.addon!.name,
+      monthlyPriceCents: r.addon!.monthlyPriceCents,
+      yearlyPriceCents: r.addon!.yearlyPriceCents,
+      grantsFeatures: Array.isArray(r.addon!.grantsFeatures)
+        ? (r.addon!.grantsFeatures as string[])
+        : [],
+      status: r.tenantAddon.status,
+      billingCycle: r.tenantAddon.billingCycle,
+      currentPeriodEnd: r.tenantAddon.currentPeriodEnd,
+      cancelledAt: r.tenantAddon.cancelledAt,
+    }));
 }
