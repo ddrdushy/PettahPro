@@ -4,6 +4,7 @@ import {
   and,
   desc,
   eq,
+  inArray,
   isNotNull,
   isNull,
   sql,
@@ -48,6 +49,7 @@ import {
 } from "./cookies.js";
 import { recordPlatformAuditEvent } from "./audit.js";
 import { buildSystemHealthPayload } from "../../plugins/system-health.js";
+import { autoRemoveRedundantAddons } from "../../lib/plan-gate.js";
 
 const SESSION_TTL = 60 * 60 * 12; // match cookies.ts / sessions.ts
 
@@ -2674,6 +2676,509 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
     });
   });
 
+  // -------------------------------------------------------------------
+  // Add-ons (#120 / pricing-spec §7).
+  //
+  //   * GET    /addons                — catalog, any role
+  //   * GET    /addons/:id            — one, any role
+  //   * POST   /addons                — create, super_admin
+  //   * PATCH  /addons/:id            — update, super_admin
+  //   * POST   /addons/:id/archive    — archive, super_admin
+  //   * POST   /addons/:id/unarchive  — unarchive, super_admin
+  //
+  //   * GET    /tenants/:id/addons             — list active for tenant
+  //   * POST   /tenants/:id/addons             — grant (super_admin)
+  //   * POST   /tenants/:id/addons/:tenantAddonId/cancel — cancel
+  //
+  // No DELETE on the catalog — FK on tenant_addons is RESTRICT and the
+  // supported wind-down is archive (mirrors plans semantics).
+  // -------------------------------------------------------------------
+
+  const AddonCodeSchema = z
+    .string()
+    .trim()
+    .min(2)
+    .max(48)
+    .regex(/^[a-z][a-z0-9_]*$/, "Code must be lowercase letters, digits, or underscores starting with a letter.");
+
+  const CreateAddonSchema = z.object({
+    code: AddonCodeSchema,
+    name: z.string().trim().min(1).max(80),
+    tagline: z.string().trim().max(200).default(""),
+    monthlyPriceCents: z.number().int().nonnegative(),
+    yearlyPriceCents: z.number().int().nonnegative(),
+    currency: z.string().trim().length(3).toUpperCase().default("LKR"),
+    grantsFeatures: z.array(z.string().trim().min(1).max(64)).max(32).default([]),
+    eligiblePlanCodes: z.array(z.string().trim().min(1).max(32)).max(8).default([]),
+    isPublic: z.boolean().default(true),
+    sortOrder: z.number().int().min(0).max(32_767).default(0),
+  });
+
+  const UpdateAddonSchema = z
+    .object({
+      name: z.string().trim().min(1).max(80).optional(),
+      tagline: z.string().trim().max(200).optional(),
+      monthlyPriceCents: z.number().int().nonnegative().optional(),
+      yearlyPriceCents: z.number().int().nonnegative().optional(),
+      currency: z.string().trim().length(3).toUpperCase().optional(),
+      grantsFeatures: z.array(z.string().trim().min(1).max(64)).max(32).optional(),
+      eligiblePlanCodes: z.array(z.string().trim().min(1).max(32)).max(8).optional(),
+      isPublic: z.boolean().optional(),
+      sortOrder: z.number().int().min(0).max(32_767).optional(),
+    })
+    .refine((v) => Object.keys(v).length > 0, {
+      message: "At least one field is required.",
+    });
+
+  function addonToWire(
+    a: typeof schema.addons.$inferSelect,
+    extras?: { activeSubscribers?: number },
+  ) {
+    return {
+      id: a.id,
+      code: a.code,
+      name: a.name,
+      tagline: a.tagline,
+      monthlyPriceCents: a.monthlyPriceCents,
+      yearlyPriceCents: a.yearlyPriceCents,
+      currency: a.currency,
+      grantsFeatures: a.grantsFeatures,
+      eligiblePlanCodes: a.eligiblePlanCodes,
+      isPublic: a.isPublic,
+      isArchived: a.isArchived,
+      sortOrder: a.sortOrder,
+      activeSubscribers: extras?.activeSubscribers ?? 0,
+    };
+  }
+
+  fastify.get("/addons", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+
+    const rows = await db
+      .select()
+      .from(schema.addons)
+      .orderBy(schema.addons.sortOrder, schema.addons.code);
+
+    // Active-subscriber rollup per addon.
+    const subRows = await db
+      .select({
+        addonId: schema.tenantAddons.addonId,
+        count: sql<number>`COUNT(*)::int`,
+      })
+      .from(schema.tenantAddons)
+      .where(inArray(schema.tenantAddons.status, ["active", "pending_removal"]))
+      .groupBy(schema.tenantAddons.addonId);
+    const byAddon = new Map<string, number>();
+    for (const s of subRows) byAddon.set(s.addonId, s.count);
+
+    return reply.send({
+      addons: rows.map((a) =>
+        addonToWire(a, { activeSubscribers: byAddon.get(a.id) ?? 0 }),
+      ),
+    });
+  });
+
+  fastify.get("/addons/:id", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+
+    const parsed = z.object({ id: z.string().uuid() }).safeParse(req.params);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+    }
+    const rows = await db
+      .select()
+      .from(schema.addons)
+      .where(eq(schema.addons.id, parsed.data.id))
+      .limit(1);
+    const row = rows[0];
+    if (!row) return reply.status(404).send({ error: { code: "NOT_FOUND" } });
+    return reply.send({ addon: addonToWire(row) });
+  });
+
+  fastify.post("/addons", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+    if (!(await requirePlatformRole(req, reply, session, ["super_admin"]))) {
+      return;
+    }
+
+    const parsed = CreateAddonSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: {
+          code: "INVALID_INPUT",
+          message: parsed.error.issues[0]?.message ?? "Invalid addon payload.",
+        },
+      });
+    }
+
+    const existing = await db
+      .select({ id: schema.addons.id })
+      .from(schema.addons)
+      .where(eq(schema.addons.code, parsed.data.code))
+      .limit(1);
+    if (existing.length > 0) {
+      return reply.status(409).send({ error: { code: "ADDON_CODE_TAKEN" } });
+    }
+
+    const [created] = await db.insert(schema.addons).values(parsed.data).returning();
+    if (!created) {
+      return reply.status(500).send({ error: { code: "CREATE_FAILED" } });
+    }
+
+    await recordPlatformAuditEvent({
+      platformUserId: session.platformUserId,
+      platformUserEmail: session.email,
+      kind: "platform.addon.created",
+      summary: `Created addon ${created.code}`,
+      ipAddress: req.ip ?? null,
+      userAgent: req.headers["user-agent"] ?? null,
+      metadata: {
+        addonId: created.id,
+        code: created.code,
+        monthlyPriceCents: created.monthlyPriceCents,
+        grantsFeatures: created.grantsFeatures,
+      },
+    });
+    return reply.status(201).send({ addon: addonToWire(created) });
+  });
+
+  fastify.patch("/addons/:id", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+    if (!(await requirePlatformRole(req, reply, session, ["super_admin"]))) {
+      return;
+    }
+
+    const paramsParsed = z.object({ id: z.string().uuid() }).safeParse(req.params);
+    if (!paramsParsed.success) {
+      return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+    }
+    const bodyParsed = UpdateAddonSchema.safeParse(req.body);
+    if (!bodyParsed.success) {
+      return reply.status(400).send({
+        error: {
+          code: "INVALID_INPUT",
+          message: bodyParsed.error.issues[0]?.message ?? "Invalid addon payload.",
+        },
+      });
+    }
+
+    const before = await db
+      .select()
+      .from(schema.addons)
+      .where(eq(schema.addons.id, paramsParsed.data.id))
+      .limit(1);
+    const beforeRow = before[0];
+    if (!beforeRow) {
+      return reply.status(404).send({ error: { code: "NOT_FOUND" } });
+    }
+
+    const [updated] = await db
+      .update(schema.addons)
+      .set({ ...bodyParsed.data, updatedAt: new Date() })
+      .where(eq(schema.addons.id, paramsParsed.data.id))
+      .returning();
+    if (!updated) {
+      return reply.status(500).send({ error: { code: "UPDATE_FAILED" } });
+    }
+
+    await recordPlatformAuditEvent({
+      platformUserId: session.platformUserId,
+      platformUserEmail: session.email,
+      kind: "platform.addon.updated",
+      summary: `Updated addon ${updated.code}`,
+      ipAddress: req.ip ?? null,
+      userAgent: req.headers["user-agent"] ?? null,
+      metadata: { addonId: updated.id, code: updated.code, changes: bodyParsed.data },
+    });
+    return reply.send({ addon: addonToWire(updated) });
+  });
+
+  for (const flag of ["archive", "unarchive"] as const) {
+    fastify.post(`/addons/:id/${flag}`, async (req, reply) => {
+      const session = await requirePlatformSession(req, reply);
+      if (!session) return;
+      if (!(await requirePlatformRole(req, reply, session, ["super_admin"]))) {
+        return;
+      }
+
+      const parsed = z.object({ id: z.string().uuid() }).safeParse(req.params);
+      if (!parsed.success) {
+        return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+      }
+
+      const [updated] = await db
+        .update(schema.addons)
+        .set({ isArchived: flag === "archive", updatedAt: new Date() })
+        .where(eq(schema.addons.id, parsed.data.id))
+        .returning();
+      if (!updated) {
+        return reply.status(404).send({ error: { code: "NOT_FOUND" } });
+      }
+
+      await recordPlatformAuditEvent({
+        platformUserId: session.platformUserId,
+        platformUserEmail: session.email,
+        kind: `platform.addon.${flag}d`,
+        summary: `${flag === "archive" ? "Archived" : "Unarchived"} addon ${updated.code}`,
+        ipAddress: req.ip ?? null,
+        userAgent: req.headers["user-agent"] ?? null,
+        metadata: { addonId: updated.id, code: updated.code },
+      });
+      return reply.send({ addon: addonToWire(updated) });
+    });
+  }
+
+  // -------------------------------------------------------------------
+  // Per-tenant addon management (super_admin grant / cancel).
+  // -------------------------------------------------------------------
+
+  fastify.get("/tenants/:id/addons", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+
+    const parsed = z.object({ id: z.string().uuid() }).safeParse(req.params);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+    }
+    const rows = await db
+      .select({ tenantAddon: schema.tenantAddons, addon: schema.addons })
+      .from(schema.tenantAddons)
+      .leftJoin(schema.addons, eq(schema.addons.id, schema.tenantAddons.addonId))
+      .where(eq(schema.tenantAddons.tenantId, parsed.data.id))
+      .orderBy(desc(schema.tenantAddons.activatedAt));
+    return reply.send({
+      tenantAddons: rows
+        .filter((r) => r.addon !== null)
+        .map((r) => ({
+          id: r.tenantAddon.id,
+          status: r.tenantAddon.status,
+          billingCycle: r.tenantAddon.billingCycle,
+          activatedAt: r.tenantAddon.activatedAt,
+          cancelledAt: r.tenantAddon.cancelledAt,
+          cancelReason: r.tenantAddon.cancelReason,
+          autoRemovedAt: r.tenantAddon.autoRemovedAt,
+          currentPeriodStart: r.tenantAddon.currentPeriodStart,
+          currentPeriodEnd: r.tenantAddon.currentPeriodEnd,
+          addon: addonToWire(r.addon!),
+        })),
+    });
+  });
+
+  const GrantAddonSchema = z.object({
+    addonCode: z.string().trim().min(1).max(48),
+    billingCycle: z.enum(["monthly", "yearly"]).default("monthly"),
+    reason: z.string().trim().min(3).max(500),
+  });
+
+  fastify.post("/tenants/:id/addons", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+    if (!(await requirePlatformRole(req, reply, session, ["super_admin"]))) {
+      return;
+    }
+
+    const paramsParsed = z.object({ id: z.string().uuid() }).safeParse(req.params);
+    if (!paramsParsed.success) {
+      return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+    }
+    const bodyParsed = GrantAddonSchema.safeParse(req.body);
+    if (!bodyParsed.success) {
+      return reply.status(400).send({
+        error: {
+          code: "INVALID_INPUT",
+          message: bodyParsed.error.issues[0]?.message ?? "Invalid input.",
+        },
+      });
+    }
+
+    const addonRows = await db
+      .select()
+      .from(schema.addons)
+      .where(eq(schema.addons.code, bodyParsed.data.addonCode))
+      .limit(1);
+    const addon = addonRows[0];
+    if (!addon) {
+      return reply.status(400).send({ error: { code: "UNKNOWN_ADDON" } });
+    }
+    if (addon.isArchived) {
+      return reply.status(409).send({ error: { code: "ADDON_ARCHIVED" } });
+    }
+
+    // Prevent double-grant: if there's an active or pending_removal row
+    // for this (tenant, addon), 409 instead of inserting a duplicate
+    // (the partial unique index would catch it but a clean error is
+    // better).
+    const existing = await db
+      .select({ id: schema.tenantAddons.id, status: schema.tenantAddons.status })
+      .from(schema.tenantAddons)
+      .where(
+        and(
+          eq(schema.tenantAddons.tenantId, paramsParsed.data.id),
+          eq(schema.tenantAddons.addonId, addon.id),
+          inArray(schema.tenantAddons.status, ["active", "pending_removal"]),
+        ),
+      )
+      .limit(1);
+    if (existing.length > 0) {
+      return reply.status(409).send({ error: { code: "ADDON_ALREADY_ACTIVE" } });
+    }
+
+    const periodMs =
+      bodyParsed.data.billingCycle === "yearly"
+        ? 365 * 24 * 60 * 60 * 1000
+        : 30 * 24 * 60 * 60 * 1000;
+    const [created] = await db
+      .insert(schema.tenantAddons)
+      .values({
+        tenantId: paramsParsed.data.id,
+        addonId: addon.id,
+        status: "active",
+        billingCycle: bodyParsed.data.billingCycle,
+        currentPeriodStart: new Date(),
+        currentPeriodEnd: new Date(Date.now() + periodMs),
+        activatedAt: new Date(),
+        activatedByPlatformUserId: session.platformUserId,
+      })
+      .returning();
+    if (!created) {
+      return reply.status(500).send({ error: { code: "GRANT_FAILED" } });
+    }
+
+    await recordPlatformAuditEvent({
+      platformUserId: session.platformUserId,
+      platformUserEmail: session.email,
+      kind: "platform.tenant_addon.granted",
+      summary: `Granted ${addon.name} to tenant`,
+      reason: bodyParsed.data.reason,
+      tenantId: paramsParsed.data.id,
+      ipAddress: req.ip ?? null,
+      userAgent: req.headers["user-agent"] ?? null,
+      metadata: {
+        tenantAddonId: created.id,
+        addonId: addon.id,
+        addonCode: addon.code,
+        billingCycle: bodyParsed.data.billingCycle,
+      },
+    });
+    return reply.status(201).send({
+      tenantAddon: {
+        id: created.id,
+        status: created.status,
+        billingCycle: created.billingCycle,
+        activatedAt: created.activatedAt,
+        currentPeriodStart: created.currentPeriodStart,
+        currentPeriodEnd: created.currentPeriodEnd,
+        addon: addonToWire(addon),
+      },
+    });
+  });
+
+  const CancelAddonSchema = z.object({
+    reason: z.string().trim().min(3).max(500),
+    immediate: z.boolean().default(false),
+  });
+
+  fastify.post(
+    "/tenants/:id/addons/:tenantAddonId/cancel",
+    async (req, reply) => {
+      const session = await requirePlatformSession(req, reply);
+      if (!session) return;
+      if (!(await requirePlatformRole(req, reply, session, ["super_admin"]))) {
+        return;
+      }
+
+      const paramsParsed = z
+        .object({
+          id: z.string().uuid(),
+          tenantAddonId: z.string().uuid(),
+        })
+        .safeParse(req.params);
+      if (!paramsParsed.success) {
+        return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+      }
+      const bodyParsed = CancelAddonSchema.safeParse(req.body);
+      if (!bodyParsed.success) {
+        return reply.status(400).send({
+          error: {
+            code: "INVALID_INPUT",
+            message: bodyParsed.error.issues[0]?.message ?? "Reason is required.",
+          },
+        });
+      }
+
+      const rows = await db
+        .select({ tenantAddon: schema.tenantAddons, addon: schema.addons })
+        .from(schema.tenantAddons)
+        .leftJoin(
+          schema.addons,
+          eq(schema.addons.id, schema.tenantAddons.addonId),
+        )
+        .where(
+          and(
+            eq(schema.tenantAddons.id, paramsParsed.data.tenantAddonId),
+            eq(schema.tenantAddons.tenantId, paramsParsed.data.id),
+          ),
+        )
+        .limit(1);
+      const row = rows[0];
+      if (!row || !row.addon) {
+        return reply.status(404).send({ error: { code: "NOT_FOUND" } });
+      }
+      if (row.tenantAddon.status === "cancelled") {
+        return reply
+          .status(409)
+          .send({ error: { code: "ALREADY_CANCELLED" } });
+      }
+
+      // Two paths:
+      //   immediate=true → status='cancelled' right now (operator
+      //                     intervention; e.g. fraud/disabling)
+      //   immediate=false → status='pending_removal' (spec §7.1: takes
+      //                      effect at next renewal; cron sweep flips
+      //                      to 'cancelled' after currentPeriodEnd).
+      const nextStatus = bodyParsed.data.immediate
+        ? "cancelled"
+        : "pending_removal";
+
+      await db
+        .update(schema.tenantAddons)
+        .set({
+          status: nextStatus,
+          cancelledAt: bodyParsed.data.immediate
+            ? new Date()
+            : row.tenantAddon.cancelledAt,
+          cancelReason: bodyParsed.data.reason,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.tenantAddons.id, paramsParsed.data.tenantAddonId));
+
+      await recordPlatformAuditEvent({
+        platformUserId: session.platformUserId,
+        platformUserEmail: session.email,
+        kind: "platform.tenant_addon.cancelled",
+        summary: `${
+          bodyParsed.data.immediate ? "Cancelled" : "Scheduled removal of"
+        } ${row.addon.name}`,
+        reason: bodyParsed.data.reason,
+        tenantId: paramsParsed.data.id,
+        ipAddress: req.ip ?? null,
+        userAgent: req.headers["user-agent"] ?? null,
+        metadata: {
+          tenantAddonId: row.tenantAddon.id,
+          addonCode: row.addon.code,
+          immediate: bodyParsed.data.immediate,
+          status: nextStatus,
+        },
+      });
+
+      return reply.send({ ok: true, status: nextStatus });
+    },
+  );
+
   fastify.post("/plans", async (req, reply) => {
     const session = await requirePlatformSession(req, reply);
     if (!session) return;
@@ -3218,6 +3723,31 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
         })
         .where(eq(schema.tenantSubscriptions.tenantId, tenantId))
         .returning();
+
+      // Auto-remove addons whose features are now part of the new plan
+      // (spec §7.1). The targetPlan row carries the features as the
+      // denormalised current snapshot, so no extra join needed.
+      const autoRemoved = await autoRemoveRedundantAddons(
+        tenantId,
+        Array.isArray(targetPlan.features)
+          ? (targetPlan.features as string[])
+          : [],
+      );
+      if (autoRemoved.length > 0) {
+        await recordPlatformAuditEvent({
+          platformUserId: session.platformUserId,
+          platformUserEmail: session.email,
+          kind: "platform.tenant_addon.auto_removed",
+          summary: `Auto-removed ${autoRemoved.length} addon(s) included in ${targetPlan.code}`,
+          tenantId,
+          ipAddress: req.ip ?? null,
+          userAgent: req.headers["user-agent"] ?? null,
+          metadata: {
+            triggerPlanCode: targetPlan.code,
+            removed: autoRemoved,
+          },
+        });
+      }
 
       await recordPlatformAuditEvent({
         platformUserId: session.platformUserId,

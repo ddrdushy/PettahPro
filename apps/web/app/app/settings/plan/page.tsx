@@ -2,9 +2,15 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { cookies } from "next/headers";
 import { ArrowLeft } from "lucide-react";
-import type { AvailablePlan, TenantSubscriptionResponse } from "@/lib/api";
+import type {
+  ActiveAddon,
+  AvailableAddon,
+  AvailablePlan,
+  TenantSubscriptionResponse,
+} from "@/lib/api";
 import { PageHeader } from "@/components/app/page-header";
 import { PlanPickerClient } from "./plan-picker-client";
+import { AddonsClient } from "./addons-client";
 
 export const metadata: Metadata = { title: "Change plan" };
 
@@ -30,10 +36,23 @@ async function fetchSubscription(): Promise<TenantSubscriptionResponse | null> {
   return body.subscription;
 }
 
+async function fetchAddons(): Promise<{
+  catalog: AvailableAddon[];
+  active: ActiveAddon[];
+} | null> {
+  const res = await fetch(`${INTERNAL_API}/subscription/addons`, {
+    headers: { cookie: cookies().toString() },
+    cache: "no-store",
+  });
+  if (!res.ok) return null;
+  return (await res.json()) as { catalog: AvailableAddon[]; active: ActiveAddon[] };
+}
+
 export default async function PlanPickerPage() {
-  const [plans, subscription] = await Promise.all([
+  const [plans, subscription, addons] = await Promise.all([
     fetchPlans(),
     fetchSubscription(),
+    fetchAddons(),
   ]);
 
   return (
@@ -56,7 +75,16 @@ export default async function PlanPickerPage() {
           Couldn't load plans. Refresh the page, or contact support if this keeps happening.
         </p>
       ) : (
-        <PlanPickerClient plans={plans} subscription={subscription} />
+        <>
+          <PlanPickerClient plans={plans} subscription={subscription} />
+          {addons && (
+            <AddonsClient
+              initialCatalog={addons.catalog}
+              initialActive={addons.active}
+              currentPlanCode={subscription.plan.code}
+            />
+          )}
+        </>
       )}
     </main>
   );
