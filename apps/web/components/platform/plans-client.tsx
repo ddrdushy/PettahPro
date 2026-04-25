@@ -257,6 +257,30 @@ export function PlansClient({
     }
   }
 
+  async function onMigrateSubscribers(plan: PlatformPlan) {
+    const older = plan.subscribersOnVersion?.older ?? 0;
+    if (older === 0) return;
+    if (
+      !confirm(
+        `Migrate ${older} grandfathered subscriber(s) to v${plan.currentVersionNumber} of ${plan.name}? They'll start seeing the current version's prices and caps immediately. This is irreversible — older versions remain on file but subscribers will be on the latest.`,
+      )
+    ) {
+      return;
+    }
+    setError(null);
+    try {
+      const res = await platformApi.migratePlanSubscribers(plan.id);
+      refresh();
+      alert(`Migrated ${res.migrated} subscriber(s) to v${plan.currentVersionNumber}.`);
+    } catch (err) {
+      setError(
+        err instanceof PlatformApiError
+          ? err.message || "Migration failed."
+          : "Could not reach the API.",
+      );
+    }
+  }
+
   function toggleFeature(code: string) {
     setForm((f) =>
       f.features.includes(code)
@@ -364,6 +388,45 @@ export function PlansClient({
                   )}
                 </div>
               </div>
+              {/* Version + subscriber summary */}
+              {p.currentVersionNumber != null && (
+                <div className="mt-6 border-t border-white/10 pt-4">
+                  <div className="text-caption uppercase tracking-wide text-white/50">
+                    Version
+                  </div>
+                  <div className="mt-2 flex items-center justify-between">
+                    <span className="rounded-md border border-mint/40 bg-mint/10 px-2 py-0.5 text-caption text-mint">
+                      v{p.currentVersionNumber} (current)
+                    </span>
+                    {p.subscribersOnVersion && (
+                      <span className="text-caption text-white/60">
+                        {p.subscribersOnVersion.current} on current
+                        {p.subscribersOnVersion.older > 0 && (
+                          <>
+                            {" · "}
+                            <span className="text-amber-200">
+                              {p.subscribersOnVersion.older} grandfathered
+                            </span>
+                          </>
+                        )}
+                      </span>
+                    )}
+                  </div>
+                  {canEdit &&
+                    p.subscribersOnVersion &&
+                    p.subscribersOnVersion.older > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => onMigrateSubscribers(p)}
+                        className="mt-2 w-full rounded-md border border-amber-400/40 bg-amber-400/10 px-3 py-1 text-caption text-amber-200 hover:bg-amber-400/20"
+                      >
+                        Migrate {p.subscribersOnVersion.older} grandfathered →
+                        v{p.currentVersionNumber}
+                      </button>
+                    )}
+                </div>
+              )}
+
               <div className="mt-6 border-t border-white/10 pt-4 flex items-center justify-between">
                 <div className="text-caption text-white/40">
                   code <span className="font-mono text-white/60">{p.code}</span>
@@ -405,6 +468,11 @@ export function PlansClient({
       {editing && (
         <PlanEditorDrawer
           mode={editing.mode}
+          editingPlan={
+            editing.mode === "edit"
+              ? plans.find((p) => p.id === editing.planId) ?? null
+              : null
+          }
           form={form}
           setForm={setForm}
           saving={saving}
@@ -419,8 +487,32 @@ export function PlansClient({
   );
 }
 
+// Mirror of server-side VERSIONED_FIELDS detection: returns true if any
+// value-bearing field would actually change between the loaded plan and
+// the form. Keep in sync with apps/api/src/modules/platform-admin/routes.ts.
+function hasValueBearingChange(plan: PlatformPlan, form: FormState): boolean {
+  const formMonthly = Math.round(parseFloat(form.monthlyPriceLkr || "0") * 100);
+  const formYearly = Math.round(parseFloat(form.yearlyPriceLkr || "0") * 100);
+  const capValue = (cap: { unlimited: boolean; value: string }) =>
+    cap.unlimited ? null : parseInt(cap.value, 10);
+  if (form.name !== plan.name) return true;
+  if (form.tagline !== plan.tagline) return true;
+  if (formMonthly !== plan.monthlyPriceCents) return true;
+  if (formYearly !== plan.yearlyPriceCents) return true;
+  if (form.currency !== plan.currency) return true;
+  if (capValue(form.maxUsers) !== plan.maxUsers) return true;
+  if (capValue(form.maxInvoicesMonthly) !== plan.maxInvoicesMonthly) return true;
+  if (capValue(form.maxBranches) !== plan.maxBranches) return true;
+  if (capValue(form.maxWarehouses) !== plan.maxWarehouses) return true;
+  const a = [...form.features].sort();
+  const b = [...plan.features].sort();
+  if (a.length !== b.length || a.some((v, i) => v !== b[i])) return true;
+  return false;
+}
+
 function PlanEditorDrawer({
   mode,
+  editingPlan,
   form,
   setForm,
   saving,
@@ -431,6 +523,7 @@ function PlanEditorDrawer({
   onAddCustomFeature,
 }: {
   mode: "create" | "edit";
+  editingPlan: PlatformPlan | null;
   form: FormState;
   setForm: (updater: (f: FormState) => FormState) => void;
   saving: boolean;
@@ -442,6 +535,11 @@ function PlanEditorDrawer({
 }) {
   const [customFeature, setCustomFeature] = useState("");
 
+  // Detect value-bearing changes so the warning banner is accurate.
+  // Mirrors the server's VERSIONED_FIELDS check — keep in sync.
+  const willCreateVersion =
+    mode === "edit" && editingPlan != null && hasValueBearingChange(editingPlan, form);
+
   return (
     <div className="fixed inset-0 z-50 flex">
       <div
@@ -452,7 +550,9 @@ function PlanEditorDrawer({
       <div className="w-full max-w-xl overflow-y-auto bg-charcoal-950 border-l border-white/10 p-6">
         <div className="flex items-center justify-between">
           <h2 className="text-h2 text-white">
-            {mode === "create" ? "New plan" : "Edit plan"}
+            {mode === "create"
+              ? "New plan"
+              : `Edit plan${editingPlan?.currentVersionNumber ? ` (currently v${editingPlan.currentVersionNumber})` : ""}`}
           </h2>
           <button
             type="button"
@@ -463,6 +563,16 @@ function PlanEditorDrawer({
             ✕
           </button>
         </div>
+
+        {willCreateVersion && (
+          <div className="mt-4 rounded-md border border-mint/40 bg-mint/10 p-3 text-small text-mint">
+            Saving will create v{(editingPlan?.currentVersionNumber ?? 1) + 1}.{" "}
+            {editingPlan?.subscribersOnVersion &&
+            editingPlan.subscribersOnVersion.current > 0
+              ? `The ${editingPlan.subscribersOnVersion.current} subscriber(s) currently on v${editingPlan.currentVersionNumber} will stay on v${editingPlan.currentVersionNumber} (grandfathered). New signups get v${(editingPlan.currentVersionNumber ?? 1) + 1}.`
+              : `New signups will get v${(editingPlan?.currentVersionNumber ?? 1) + 1}.`}
+          </div>
+        )}
 
         {error && (
           <div className="mt-4 rounded-md border border-red-500/40 bg-red-500/10 p-3 text-small text-red-200">

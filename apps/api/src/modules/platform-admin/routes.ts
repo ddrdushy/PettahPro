@@ -2279,27 +2279,56 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
     if (!session) return;
 
     const rows = await db
-      .select()
+      .select({
+        plan: schema.plans,
+        currentVersionNumber: schema.planVersions.versionNumber,
+      })
       .from(schema.plans)
+      .leftJoin(
+        schema.planVersions,
+        eq(schema.planVersions.id, schema.plans.currentVersionId),
+      )
       .orderBy(schema.plans.sortOrder, schema.plans.code);
+
+    // Subscriber roll-up per plan: how many on the current version vs
+    // older grandfathered versions. One query, group by (plan_id,
+    // is-current-flag), then merge into the wire shape.
+    const subRows = await db
+      .select({
+        planId: schema.tenantSubscriptions.planId,
+        planVersionId: schema.tenantSubscriptions.planVersionId,
+        count: sql<number>`COUNT(*)::int`,
+      })
+      .from(schema.tenantSubscriptions)
+      .groupBy(
+        schema.tenantSubscriptions.planId,
+        schema.tenantSubscriptions.planVersionId,
+      );
+    const subsByPlan = new Map<string, { current: number; older: number }>();
+    const planCurrentVersionId = new Map<string, string | null>();
+    for (const row of rows) {
+      planCurrentVersionId.set(row.plan.id, row.plan.currentVersionId);
+    }
+    for (const s of subRows) {
+      const cur = subsByPlan.get(s.planId) ?? { current: 0, older: 0 };
+      const isCurrent =
+        s.planVersionId !== null &&
+        planCurrentVersionId.get(s.planId) === s.planVersionId;
+      if (isCurrent) cur.current += s.count;
+      else cur.older += s.count;
+      subsByPlan.set(s.planId, cur);
+    }
+
     return reply.send({
-      plans: rows.map((p) => ({
-        id: p.id,
-        code: p.code,
-        name: p.name,
-        tagline: p.tagline,
-        monthlyPriceCents: p.monthlyPriceCents,
-        yearlyPriceCents: p.yearlyPriceCents,
-        currency: p.currency,
-        maxUsers: p.maxUsers,
-        maxInvoicesMonthly: p.maxInvoicesMonthly,
-        maxBranches: p.maxBranches,
-        maxWarehouses: p.maxWarehouses,
-        features: p.features,
-        isPublic: p.isPublic,
-        isArchived: p.isArchived,
-        sortOrder: p.sortOrder,
-      })),
+      plans: rows.map((row) =>
+        planToWire(row.plan, {
+          currentVersionNumber: row.currentVersionNumber ?? null,
+          subscribersOnVersion: subsByPlan.get(row.plan.id) ?? {
+            current: 0,
+            older: 0,
+          },
+        }),
+      ),
     });
   });
 
@@ -2373,7 +2402,10 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
       message: "At least one field is required.",
     });
 
-  function planToWire(p: typeof schema.plans.$inferSelect) {
+  function planToWire(
+    p: typeof schema.plans.$inferSelect,
+    extras?: { currentVersionNumber?: number | null; subscribersOnVersion?: { current: number; older: number } | null },
+  ) {
     return {
       id: p.id,
       code: p.code,
@@ -2390,6 +2422,12 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
       isPublic: p.isPublic,
       isArchived: p.isArchived,
       sortOrder: p.sortOrder,
+      currentVersionId: p.currentVersionId,
+      // currentVersionNumber and subscribersOnVersion are joined-in
+      // when the route resolves them; UI uses both to render
+      // "v3 — 12 subscribers, 3 grandfathered on older versions".
+      currentVersionNumber: extras?.currentVersionNumber ?? null,
+      subscribersOnVersion: extras?.subscribersOnVersion ?? null,
     };
   }
 
@@ -2440,13 +2478,200 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
     }
     const rows = await db
-      .select()
+      .select({
+        plan: schema.plans,
+        currentVersionNumber: schema.planVersions.versionNumber,
+      })
       .from(schema.plans)
+      .leftJoin(
+        schema.planVersions,
+        eq(schema.planVersions.id, schema.plans.currentVersionId),
+      )
       .where(eq(schema.plans.id, parsed.data.id))
       .limit(1);
     const row = rows[0];
     if (!row) return reply.status(404).send({ error: { code: "NOT_FOUND" } });
-    return reply.send({ plan: planToWire(row) });
+
+    // Subscriber breakdown for THIS plan only.
+    const subRows = await db
+      .select({
+        planVersionId: schema.tenantSubscriptions.planVersionId,
+        count: sql<number>`COUNT(*)::int`,
+      })
+      .from(schema.tenantSubscriptions)
+      .where(eq(schema.tenantSubscriptions.planId, parsed.data.id))
+      .groupBy(schema.tenantSubscriptions.planVersionId);
+    let current = 0;
+    let older = 0;
+    for (const s of subRows) {
+      if (s.planVersionId !== null && s.planVersionId === row.plan.currentVersionId) {
+        current += s.count;
+      } else {
+        older += s.count;
+      }
+    }
+
+    return reply.send({
+      plan: planToWire(row.plan, {
+        currentVersionNumber: row.currentVersionNumber ?? null,
+        subscribersOnVersion: { current, older },
+      }),
+    });
+  });
+
+  // Version history for a plan. Lists every snapshot ever created so an
+  // operator can see "v1 was 4900 cents, v2 raised to 5900" with
+  // timestamps and the editor who made the change. Read-only — there's
+  // no "edit a historical version" path, the model is append-only.
+  fastify.get("/plans/:id/versions", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+
+    const parsed = z.object({ id: z.string().uuid() }).safeParse(req.params);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+    }
+
+    const planRows = await db
+      .select()
+      .from(schema.plans)
+      .where(eq(schema.plans.id, parsed.data.id))
+      .limit(1);
+    const plan = planRows[0];
+    if (!plan) return reply.status(404).send({ error: { code: "NOT_FOUND" } });
+
+    const rows = await db
+      .select()
+      .from(schema.planVersions)
+      .where(eq(schema.planVersions.planId, parsed.data.id))
+      .orderBy(desc(schema.planVersions.versionNumber));
+
+    // Per-version subscriber counts so the UI can render
+    // "v3 (current) — 12 subscribers / v2 — 4 subscribers".
+    const subRows = await db
+      .select({
+        planVersionId: schema.tenantSubscriptions.planVersionId,
+        count: sql<number>`COUNT(*)::int`,
+      })
+      .from(schema.tenantSubscriptions)
+      .where(eq(schema.tenantSubscriptions.planId, parsed.data.id))
+      .groupBy(schema.tenantSubscriptions.planVersionId);
+    const subsByVersion = new Map<string, number>();
+    for (const s of subRows) {
+      if (s.planVersionId) subsByVersion.set(s.planVersionId, s.count);
+    }
+
+    return reply.send({
+      versions: rows.map((v) => ({
+        id: v.id,
+        versionNumber: v.versionNumber,
+        isCurrent: v.id === plan.currentVersionId,
+        name: v.name,
+        tagline: v.tagline,
+        monthlyPriceCents: v.monthlyPriceCents,
+        yearlyPriceCents: v.yearlyPriceCents,
+        currency: v.currency,
+        maxUsers: v.maxUsers,
+        maxInvoicesMonthly: v.maxInvoicesMonthly,
+        maxBranches: v.maxBranches,
+        maxWarehouses: v.maxWarehouses,
+        features: v.features,
+        createdAt: v.createdAt,
+        createdByPlatformUserId: v.createdByPlatformUserId,
+        notes: v.notes,
+        subscriberCount: subsByVersion.get(v.id) ?? 0,
+      })),
+    });
+  });
+
+  // Bulk-migrate every grandfathered subscription to the plan's current
+  // version. Use case: super-admin shipped a price-cut and wants every
+  // existing tenant to benefit immediately rather than waiting for
+  // renewal (per pricing spec §12.2). For price increases the operator
+  // typically does NOT migrate — that's the whole point of versioning.
+  //
+  // Idempotent — subs already on the current version are a no-op.
+  // Returns { migrated: N } so the UI can show "Migrated 14 subscribers
+  // to v3."
+  fastify.post("/plans/:id/migrate-subscribers", async (req, reply) => {
+    const session = await requirePlatformSession(req, reply);
+    if (!session) return;
+    if (!(await requirePlatformRole(req, reply, session, ["super_admin"]))) {
+      return;
+    }
+
+    const parsed = z.object({ id: z.string().uuid() }).safeParse(req.params);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: { code: "INVALID_INPUT" } });
+    }
+
+    const planRows = await db
+      .select()
+      .from(schema.plans)
+      .where(eq(schema.plans.id, parsed.data.id))
+      .limit(1);
+    const plan = planRows[0];
+    if (!plan) return reply.status(404).send({ error: { code: "NOT_FOUND" } });
+    if (!plan.currentVersionId) {
+      return reply
+        .status(409)
+        .send({ error: { code: "PLAN_HAS_NO_CURRENT_VERSION" } });
+    }
+
+    // Find subs to migrate: same plan, plan_version_id != current.
+    // Includes nulls (the back-compat back-fill case) by definition
+    // since NULL != current_version_id.
+    const targets = await db
+      .select({ id: schema.tenantSubscriptions.id })
+      .from(schema.tenantSubscriptions)
+      .where(
+        and(
+          eq(schema.tenantSubscriptions.planId, parsed.data.id),
+          or(
+            isNull(schema.tenantSubscriptions.planVersionId),
+            sql`${schema.tenantSubscriptions.planVersionId} <> ${plan.currentVersionId}::uuid`,
+          ),
+        ),
+      );
+    if (targets.length === 0) {
+      return reply.send({ migrated: 0, currentVersionId: plan.currentVersionId });
+    }
+
+    await db
+      .update(schema.tenantSubscriptions)
+      .set({
+        planVersionId: plan.currentVersionId,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(schema.tenantSubscriptions.planId, parsed.data.id),
+          or(
+            isNull(schema.tenantSubscriptions.planVersionId),
+            sql`${schema.tenantSubscriptions.planVersionId} <> ${plan.currentVersionId}::uuid`,
+          ),
+        ),
+      );
+
+    await recordPlatformAuditEvent({
+      platformUserId: session.platformUserId,
+      platformUserEmail: session.email,
+      kind: "platform.plan.subscribers_migrated",
+      summary: `Migrated ${targets.length} subscriber(s) to current version of ${plan.code}`,
+      ipAddress: req.ip ?? null,
+      userAgent: req.headers["user-agent"] ?? null,
+      metadata: {
+        planId: plan.id,
+        code: plan.code,
+        targetVersionId: plan.currentVersionId,
+        migratedCount: targets.length,
+      },
+    });
+
+    return reply.send({
+      migrated: targets.length,
+      currentVersionId: plan.currentVersionId,
+    });
   });
 
   fastify.post("/plans", async (req, reply) => {
@@ -2479,24 +2704,59 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.status(409).send({ error: { code: "PLAN_CODE_TAKEN" } });
     }
 
-    const [created] = await db
-      .insert(schema.plans)
-      .values({
-        code: parsed.data.code,
-        name: parsed.data.name,
-        tagline: parsed.data.tagline,
-        monthlyPriceCents: parsed.data.monthlyPriceCents,
-        yearlyPriceCents: parsed.data.yearlyPriceCents,
-        currency: parsed.data.currency,
-        maxUsers: parsed.data.maxUsers,
-        maxInvoicesMonthly: parsed.data.maxInvoicesMonthly,
-        maxBranches: parsed.data.maxBranches,
-        maxWarehouses: parsed.data.maxWarehouses,
-        features: parsed.data.features,
-        isPublic: parsed.data.isPublic,
-        sortOrder: parsed.data.sortOrder,
-      })
-      .returning();
+    // Plan + v1 version are created together so plans.current_version_id
+    // is never null in steady state. Wrap in a transaction so a partial
+    // failure can't leave a plan without a version (the gate would then
+    // fall back to plans.* via COALESCE — works, but defeats the point).
+    const created = await db.transaction(async (tx) => {
+      const [planRow] = await tx
+        .insert(schema.plans)
+        .values({
+          code: parsed.data.code,
+          name: parsed.data.name,
+          tagline: parsed.data.tagline,
+          monthlyPriceCents: parsed.data.monthlyPriceCents,
+          yearlyPriceCents: parsed.data.yearlyPriceCents,
+          currency: parsed.data.currency,
+          maxUsers: parsed.data.maxUsers,
+          maxInvoicesMonthly: parsed.data.maxInvoicesMonthly,
+          maxBranches: parsed.data.maxBranches,
+          maxWarehouses: parsed.data.maxWarehouses,
+          features: parsed.data.features,
+          isPublic: parsed.data.isPublic,
+          sortOrder: parsed.data.sortOrder,
+        })
+        .returning();
+      if (!planRow) return null;
+
+      const [version] = await tx
+        .insert(schema.planVersions)
+        .values({
+          planId: planRow.id,
+          versionNumber: 1,
+          name: planRow.name,
+          tagline: planRow.tagline,
+          monthlyPriceCents: planRow.monthlyPriceCents,
+          yearlyPriceCents: planRow.yearlyPriceCents,
+          currency: planRow.currency,
+          maxUsers: planRow.maxUsers,
+          maxInvoicesMonthly: planRow.maxInvoicesMonthly,
+          maxBranches: planRow.maxBranches,
+          maxWarehouses: planRow.maxWarehouses,
+          features: planRow.features,
+          createdByPlatformUserId: session.platformUserId,
+          notes: "Initial version",
+        })
+        .returning();
+      if (!version) return null;
+
+      const [final] = await tx
+        .update(schema.plans)
+        .set({ currentVersionId: version.id })
+        .where(eq(schema.plans.id, planRow.id))
+        .returning();
+      return final ?? null;
+    });
 
     if (!created) {
       return reply.status(500).send({ error: { code: "CREATE_FAILED" } });
@@ -2515,11 +2775,45 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
         monthlyPriceCents: created.monthlyPriceCents,
         yearlyPriceCents: created.yearlyPriceCents,
         features: created.features,
+        versionNumber: 1,
       },
     });
 
     return reply.status(201).send({ plan: planToWire(created) });
   });
+
+  // Fields whose change makes a NEW plan version. Catalog-level fields
+  // (sortOrder, isPublic) don't affect billing or capability gating, so
+  // changing them just mutates plans without spawning a version.
+  const VERSIONED_FIELDS = [
+    "name",
+    "tagline",
+    "monthlyPriceCents",
+    "yearlyPriceCents",
+    "currency",
+    "maxUsers",
+    "maxInvoicesMonthly",
+    "maxBranches",
+    "maxWarehouses",
+    "features",
+  ] as const;
+
+  function valueBearingChanged(
+    before: typeof schema.plans.$inferSelect,
+    patch: z.infer<typeof UpdatePlanSchema>,
+  ): boolean {
+    for (const k of VERSIONED_FIELDS) {
+      if (patch[k] === undefined) continue;
+      if (k === "features") {
+        const a = [...(before.features ?? [])].sort();
+        const b = [...(patch.features ?? [])].sort();
+        if (a.length !== b.length || a.some((v, i) => v !== b[i])) return true;
+      } else if (before[k] !== patch[k]) {
+        return true;
+      }
+    }
+    return false;
+  }
 
   fastify.patch("/plans/:id", async (req, reply) => {
     const session = await requirePlatformSession(req, reply);
@@ -2554,37 +2848,88 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.status(404).send({ error: { code: "NOT_FOUND" } });
     }
 
-    const [updated] = await db
-      .update(schema.plans)
-      .set({
-        ...bodyParsed.data,
-        updatedAt: new Date(),
-      })
-      .where(eq(schema.plans.id, paramsParsed.data.id))
-      .returning();
+    const needsNewVersion = valueBearingChanged(beforeRow, bodyParsed.data);
 
-    if (!updated) {
+    // Single transaction: mutate the catalog row + (if needed) snapshot
+    // a new version + advance current_version_id. Existing
+    // tenant_subscriptions stay on their bound plan_version_id and so
+    // are grandfathered onto the previous version's price/caps.
+    const result = await db.transaction(async (tx) => {
+      const [planRow] = await tx
+        .update(schema.plans)
+        .set({
+          ...bodyParsed.data,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.plans.id, paramsParsed.data.id))
+        .returning();
+      if (!planRow) return null;
+
+      let newVersionNumber: number | null = null;
+      if (needsNewVersion) {
+        const maxRow = await tx
+          .select({
+            maxN: sql<number>`COALESCE(MAX(${schema.planVersions.versionNumber}), 0)::int`,
+          })
+          .from(schema.planVersions)
+          .where(eq(schema.planVersions.planId, planRow.id));
+        newVersionNumber = (maxRow[0]?.maxN ?? 0) + 1;
+
+        const [version] = await tx
+          .insert(schema.planVersions)
+          .values({
+            planId: planRow.id,
+            versionNumber: newVersionNumber,
+            name: planRow.name,
+            tagline: planRow.tagline,
+            monthlyPriceCents: planRow.monthlyPriceCents,
+            yearlyPriceCents: planRow.yearlyPriceCents,
+            currency: planRow.currency,
+            maxUsers: planRow.maxUsers,
+            maxInvoicesMonthly: planRow.maxInvoicesMonthly,
+            maxBranches: planRow.maxBranches,
+            maxWarehouses: planRow.maxWarehouses,
+            features: planRow.features,
+            createdByPlatformUserId: session.platformUserId,
+          })
+          .returning();
+        if (!version) return null;
+
+        const [final] = await tx
+          .update(schema.plans)
+          .set({ currentVersionId: version.id })
+          .where(eq(schema.plans.id, planRow.id))
+          .returning();
+        return { plan: final ?? planRow, newVersionNumber };
+      }
+      return { plan: planRow, newVersionNumber: null };
+    });
+
+    if (!result) {
       return reply.status(500).send({ error: { code: "UPDATE_FAILED" } });
     }
 
-    const diff = diffPlan(beforeRow, updated);
+    const diff = diffPlan(beforeRow, result.plan);
     if (Object.keys(diff).length > 0) {
       await recordPlatformAuditEvent({
         platformUserId: session.platformUserId,
         platformUserEmail: session.email,
         kind: "platform.plan.updated",
-        summary: `Updated plan ${updated.code}`,
+        summary: result.newVersionNumber
+          ? `Updated plan ${result.plan.code} (v${result.newVersionNumber})`
+          : `Updated plan ${result.plan.code}`,
         ipAddress: req.ip ?? null,
         userAgent: req.headers["user-agent"] ?? null,
         metadata: {
-          planId: updated.id,
-          code: updated.code,
+          planId: result.plan.id,
+          code: result.plan.code,
           changes: diff,
+          newVersionNumber: result.newVersionNumber,
         },
       });
     }
 
-    return reply.send({ plan: planToWire(updated) });
+    return reply.send({ plan: planToWire(result.plan) });
   });
 
   // Archive is just a flag flip, but we route it as its own endpoint
@@ -2854,10 +3199,15 @@ export const platformAdminRoutes: FastifyPluginAsync = async (fastify) => {
       const nextCycle =
         bodyParsed.data.billingCycle ?? existing.subscription.billingCycle;
 
+      // Bind to the target plan's CURRENT version. Switching plans is
+      // an explicit choice — the tenant is buying the latest published
+      // tier, not the version some other tenant happens to be
+      // grandfathered onto.
       const [updated] = await db
         .update(schema.tenantSubscriptions)
         .set({
           planId: targetPlan.id,
+          planVersionId: targetPlan.currentVersionId,
           status: nextStatus,
           billingCycle: nextCycle,
           // Clear trialEndsAt when we explicitly end the trial; otherwise

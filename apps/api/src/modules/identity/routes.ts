@@ -207,6 +207,34 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       // LOAN sequence, and the SL loan-type library.
       await tx.execute(sql`SELECT seed_tenant_staff_loans(${t.id}::uuid)`);
 
+      // Spin up a 30-day Growth trial subscription. Bind to the plan's
+      // current version so the trialing tenant sees today's published
+      // prices/caps/features — not whatever historical version was
+      // current when 88-pricing-plans.sql first ran. (This INSERT was
+      // implicitly missing in the existing flow; the 88-script's
+      // backfill only catches tenants up at migration time.)
+      const growthRows = await tx
+        .select({ id: schema.plans.id, currentVersionId: schema.plans.currentVersionId })
+        .from(schema.plans)
+        .where(eq(schema.plans.code, "growth"))
+        .limit(1);
+      const growth = growthRows[0];
+      if (growth) {
+        await tx
+          .insert(schema.tenantSubscriptions)
+          .values({
+            tenantId: t.id,
+            planId: growth.id,
+            planVersionId: growth.currentVersionId,
+            status: "trial",
+            billingCycle: "monthly",
+            trialEndsAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+            currentPeriodStart: new Date(),
+            currentPeriodEnd: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+          })
+          .onConflictDoNothing();
+      }
+
       return { tenant: t, user: u };
     });
 
