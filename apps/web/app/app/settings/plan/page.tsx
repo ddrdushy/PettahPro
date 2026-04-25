@@ -13,6 +13,7 @@ import { PageHeader } from "@/components/app/page-header";
 import { PlanPickerClient } from "./plan-picker-client";
 import { AddonsClient } from "./addons-client";
 import { CouponsClient } from "./coupons-client";
+import { PauseClient } from "./pause-client";
 
 export const metadata: Metadata = { title: "Change plan" };
 
@@ -98,6 +99,7 @@ export default async function PlanPickerPage() {
             />
           )}
           <CouponsClient initialRedemptions={couponRedemptions} />
+          <PauseClient subscription={subscription} />
         </>
       )}
     </main>

@@ -53,6 +53,7 @@ export interface RenewalRunResult {
   couponsConsumed: number;
   couponsTicked: number;
   subscriptionsRolledOver: number;
+  subscriptionsAutoResumed: number;
   errors: number;
 }
 
@@ -65,8 +66,56 @@ export async function runRenewalCron(
     couponsConsumed: 0,
     couponsTicked: 0,
     subscriptionsRolledOver: 0,
+    subscriptionsAutoResumed: 0,
     errors: 0,
   };
+
+  // -----------------------------------------------------------------
+  // Step 0 — Auto-resume paused subscriptions whose resume_at has
+  // elapsed (#125). Slides currentPeriodStart to now and pushes
+  // current_period_end out by the billing cycle so the next cycle
+  // starts cleanly. Runs FIRST so the rollover step below gets a
+  // chance to advance the just-resumed sub if it lands a couple of
+  // ticks behind.
+  // -----------------------------------------------------------------
+  try {
+    const rows = (await db.execute(sql`
+      UPDATE tenant_subscriptions
+         SET status = 'active',
+             resume_at = NULL,
+             current_period_start = now(),
+             current_period_end = now() +
+               (CASE billing_cycle
+                  WHEN 'yearly' THEN interval '365 days'
+                  ELSE interval '30 days'
+                END),
+             updated_at = now()
+       WHERE status = 'paused'
+         AND resume_at IS NOT NULL
+         AND resume_at < now()
+       RETURNING id, tenant_id
+    `)) as unknown as Array<{ id: string; tenant_id: string }>;
+
+    for (const row of rows) {
+      result.subscriptionsAutoResumed++;
+      await writeAudit(db, {
+        tenantId: row.tenant_id,
+        kind: "subscription.auto_resumed",
+        summary: "Subscription auto-resumed after scheduled pause window",
+        metadata: { subscriptionId: row.id },
+      });
+    }
+
+    if (result.subscriptionsAutoResumed > 0) {
+      log.info(
+        { count: result.subscriptionsAutoResumed },
+        "subscriptions auto-resumed",
+      );
+    }
+  } catch (err) {
+    result.errors++;
+    log.error({ err }, "renewal-cron: step 0 (auto-resume) failed");
+  }
 
   // -----------------------------------------------------------------
   // Step 1 — Addon pending_removal → cancelled when period elapsed.

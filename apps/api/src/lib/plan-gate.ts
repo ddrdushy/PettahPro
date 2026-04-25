@@ -236,6 +236,23 @@ export async function requireFeature(
     return null;
   }
 
+  // Paused subscription blocks gated features (#125 / pricing-spec
+  // §11.3). Distinct error code from CANCELLED so the UI can offer
+  // a one-click resume rather than a contact-support flow — pause is
+  // self-serve and reversible.
+  if (planCtx.subscriptionStatus === "paused") {
+    reply.status(403).send({
+      error: {
+        code: "SUBSCRIPTION_PAUSED",
+        feature,
+        currentPlanCode: planCtx.planCode,
+        message:
+          "Your subscription is paused. Resume it to use this feature.",
+      },
+    });
+    return null;
+  }
+
   if (planCtx.features.includes(feature)) return ctx;
 
   // Miss. Build a useful error payload so the UI can show "Upgrade to
@@ -352,6 +369,22 @@ export async function requireQuota(
         currentPlanCode: planCtx.planCode,
         message:
           "Your subscription has been cancelled. Contact support to reactivate.",
+      },
+    });
+    return null;
+  }
+
+  // Paused short-circuit — block document creation while the
+  // subscription is paused (#125). Same denial pattern as cancelled
+  // but with a different error code so the UI offers Resume.
+  if (planCtx.subscriptionStatus === "paused") {
+    reply.status(403).send({
+      error: {
+        code: "SUBSCRIPTION_PAUSED",
+        resource,
+        currentPlanCode: planCtx.planCode,
+        message:
+          "Your subscription is paused. Resume it to create new documents.",
       },
     });
     return null;
@@ -561,6 +594,12 @@ export async function getTenantSubscription(tenantId: string): Promise<{
   // since this tenant signed up — the UI uses the gap to surface
   // a "newer pricing available" prompt.
   currentVersionNumber: number | null;
+  // Pause metadata (#125). All null when not paused.
+  pause: {
+    pausedAt: Date | null;
+    resumeAt: Date | null;
+    reason: string | null;
+  };
   // Active + pending_removal add-ons (#120). Cancelled addons are
   // hidden from this list — they're audit-only.
   addons: {
@@ -653,6 +692,11 @@ export async function getTenantSubscription(tenantId: string): Promise<{
         }
       : null,
     currentVersionNumber,
+    pause: {
+      pausedAt: row.subscription.pausedAt,
+      resumeAt: row.subscription.resumeAt,
+      reason: row.subscription.pauseReason,
+    },
     addons: await listActiveTenantAddons(tenantId),
   };
 }

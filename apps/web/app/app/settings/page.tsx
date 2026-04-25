@@ -50,6 +50,7 @@ const STATUS_COPY: Record<TenantSubscriptionResponse["status"], { label: string;
   trial: { label: "Trial", tone: "bg-amber-100 text-amber-900" },
   active: { label: "Active", tone: "bg-emerald-100 text-emerald-900" },
   past_due: { label: "Past due", tone: "bg-rose-100 text-rose-900" },
+  paused: { label: "Paused", tone: "bg-amber-100 text-amber-900" },
   cancelled: { label: "Cancelled", tone: "bg-neutral-200 text-neutral-700" },
 };
 
