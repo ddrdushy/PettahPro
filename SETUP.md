@@ -108,11 +108,16 @@ SELECT set_config('app.tenant_id', '', true);
 SELECT * FROM users;  -- returns nothing (policy rejects)
 ```
 
-## Next steps
+## What's shipped today
 
-1. Wire auth (JWT + session) — replace the placeholder `x-tenant-id` header with real token validation.
-2. Build the `identity` module — login, RBAC, roles from [data-model-02-identity.md](docs/data-model-02-identity.md).
-3. Build the `accounting` core — COA, journal entries, period close.
-4. Then `sell` + `buy` + `inventory` together (they're coupled; see [00-project-overview.md § phases](docs/00-project-overview.md)).
+The scaffold is well past the bootstrap stage. As of PR #114 (April 2026):
 
-See [docs/00-project-overview.md](docs/00-project-overview.md) for the full picture.
+- **Auth + identity** — signup / login / logout / `/me` with Redis-backed session cookies, TOTP MFA + backup codes, active sessions + revoke, multi-role tenant users, multi-role platform staff (`super_admin` / `support` / `billing`), platform-user MFA, consent-gated time-boxed operator impersonation with dual-actor audit. The `x-tenant-id` placeholder is long gone — `withTenant()` reads `app.tenant_id` from the authenticated session inside every transaction.
+- **Accounting core** — full COA, journal entries with approval workflow + recurring templates, period lock + year-end close, multi-currency + FX revaluation, fixed assets with monthly depreciation cron, bank reconciliation, bad debt + VAT relief, audit log viewer.
+- **Sell / Buy / Inventory** — quotations · sales orders · invoices (+ proforma + recurring) · POS · credit notes · customer portal · commission engine · purchase requisitions · POs · GRNs · bills · 3-way matching · debit notes · recurring bills · stock movements · transfers · valuation · landed cost · kit/bundle items.
+- **HR / Payroll** — employees, payroll runs (post / pay / void), EPF / ETF / PAYE, leave, loans, bonuses, expense claims, final settlement.
+- **Platform layer** — super-admin console (tenant directory, suspend/reactivate, audited reveal, system health), pricing-plan engine with plan gating + per-tenant quota overrides + custom contracts + trial/grace banners + plan-aware sidebar + upgrade CTAs.
+
+The current edges are listed in [`docs/_status.md`](docs/_status.md) (known bugs, typecheck debt, fragile areas) and [`docs/_gaps.md`](docs/_gaps.md) (real gaps not yet on the roadmap — bank feeds, payment-gateway integration, e-filing, PWA / offline, etc.).
+
+See [`docs/_roadmap.md`](docs/_roadmap.md) for the full shipped/backlog tracker and [docs/00-project-overview.md](docs/00-project-overview.md) for spec context.
