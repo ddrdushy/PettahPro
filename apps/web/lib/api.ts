@@ -159,7 +159,12 @@ export const api = {
     ownerName: string;
     email: string;
     password: string;
-  }) => request<{ user: User; tenant: Tenant }>("/auth/signup", { method: "POST", json: body }),
+    couponCode?: string;
+  }) =>
+    request<{ user: User; tenant: Tenant; couponApplied?: boolean }>(
+      "/auth/signup",
+      { method: "POST", json: body },
+    ),
 
   // #51 — login returns EITHER `{ user }` (no MFA, session minted) OR
   // `{ mfaRequired: true, challengeId }` (step 2 needed). Callers MUST

@@ -25,11 +25,13 @@ export function SignupForm() {
     setBusy(true);
     const form = new FormData(e.currentTarget);
     try {
+      const couponCodeRaw = String(form.get("couponCode") ?? "").trim();
       await api.signup({
         businessName: String(form.get("businessName") ?? "").trim(),
         ownerName: String(form.get("ownerName") ?? "").trim(),
         email: String(form.get("email") ?? "").trim(),
         password: String(form.get("password") ?? ""),
+        couponCode: couponCodeRaw.length > 0 ? couponCodeRaw : undefined,
       });
       router.push("/app");
       router.refresh();
@@ -46,7 +48,16 @@ export function SignupForm() {
                 ? "Please check the fields and try again."
                 : err.code === "RATE_LIMITED"
                   ? "Too many signup attempts from this network. Please wait a few minutes."
-                  : err.message || "Something went wrong. Try again."
+                  : err.code === "COUPON_NOT_FOUND" ||
+                      err.code === "COUPON_EXPIRED" ||
+                      err.code === "COUPON_INACTIVE" ||
+                      err.code === "COUPON_ARCHIVED" ||
+                      err.code === "COUPON_NOT_YET_VALID" ||
+                      err.code === "COUPON_FULLY_REDEEMED" ||
+                      err.code === "COUPON_INELIGIBLE_PLAN"
+                    ? err.message ||
+                      "That coupon code can't be applied. Try without it."
+                    : err.message || "Something went wrong. Try again."
             : "Can't reach the server. Check your connection.";
         setError(msg);
       }
@@ -97,6 +108,14 @@ export function SignupForm() {
         onChange={(e) => setPassword(e.target.value)}
       />
       <PasswordStrengthHint password={password} email={email} name={ownerName} />
+
+      <Field
+        label="Coupon code (optional)"
+        name="couponCode"
+        autoComplete="off"
+        placeholder="AVURUDU2026"
+        hint="Got a promo code? Enter it to apply a discount on your first invoice."
+      />
 
       {error && (
         <div

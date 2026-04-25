@@ -73,6 +73,13 @@ const SignupSchema = z.object({
   // Zod only gates the raw length envelope so we can't be smuggled a
   // 10 MB string through before we've hashed it.
   password: z.string().min(1).max(PASSWORD_MAX_LENGTH),
+  // Optional promo code (#128). The signup flow is the only place
+  // `new_signups_only` codes can be redeemed — the post-signup
+  // /subscription/coupons/redeem path refuses them. We do redemption
+  // INSIDE the same transaction as tenant creation so a failed coupon
+  // (expired, etc.) doesn't half-create a tenant. Empty / missing
+  // means no coupon, signup proceeds normally.
+  couponCode: z.string().trim().min(1).max(64).optional(),
 });
 
 const LoginSchema = z.object({
@@ -125,6 +132,18 @@ async function uniqueSlug(base: string): Promise<string> {
   throw new Error("Could not allocate a unique tenant slug");
 }
 
+// Coupon validation failures during signup are user-fixable (typo,
+// expired code, etc.) — not 500s. Throwing this from inside the
+// signup transaction rolls everything back via Drizzle's tx-abort
+// behaviour, then the outer handler catches it and translates to a
+// 400 with the specific code.
+class SignupCouponError extends Error {
+  constructor(public code: string, message: string) {
+    super(message);
+    this.name = "SignupCouponError";
+  }
+}
+
 // Rate-limit budgets tuned for human operators, not scripts:
 //   /signup     — 5 per 10 minutes per IP (tenants don't spin up that fast)
 //   /login      — 10 per minute per IP    (fat-fingered retries + locked-out
@@ -144,7 +163,7 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
     if (!parsed.success) {
       return reply.status(400).send({ error: { code: "INVALID_INPUT", issues: parsed.error.issues } });
     }
-    const { businessName, ownerName, email, password } = parsed.data;
+    const { businessName, ownerName, email, password, couponCode } = parsed.data;
 
     // Policy gate (#49). Local checks first (fast, deterministic), then
     // HIBP breach check (fails OPEN on network issues — see
@@ -179,7 +198,9 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
     const slug = await uniqueSlug(businessName);
     const passwordHash = await hashPassword(password);
 
-    const { tenant, user } = await db.transaction(async (tx) => {
+    let signupResult;
+    try {
+      signupResult = await db.transaction(async (tx) => {
       const [t] = await tx
         .insert(schema.tenants)
         .values({ slug, businessName, country: "LK", timezone: "Asia/Colombo" })
@@ -235,8 +256,96 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
           .onConflictDoNothing();
       }
 
-      return { tenant: t, user: u };
-    });
+      // Coupon redemption (#128). Only path where new_signups_only
+      // codes can land — the post-signup /subscription/coupons/redeem
+      // route is gated against them. We validate inline so a bad code
+      // rolls the whole tenant creation back via the transaction.
+      // Returning an error from the tx aborts everything cleanly; the
+      // user gets a 400 and no tenant gets stranded with a partial
+      // setup.
+      let couponRedemptionId: string | null = null;
+      if (couponCode && growth) {
+        const couponRows = await tx
+          .select()
+          .from(schema.coupons)
+          .where(sql`LOWER(${schema.coupons.code}) = LOWER(${couponCode})`)
+          .limit(1);
+        const coupon = couponRows[0];
+        if (!coupon) {
+          throw new SignupCouponError("COUPON_NOT_FOUND", "Coupon code not found.");
+        }
+        if (coupon.isArchived) {
+          throw new SignupCouponError("COUPON_ARCHIVED", "Coupon is no longer active.");
+        }
+        if (!coupon.isActive) {
+          throw new SignupCouponError("COUPON_INACTIVE", "Coupon is currently disabled.");
+        }
+        const now = Date.now();
+        if (coupon.validFrom && coupon.validFrom.getTime() > now) {
+          throw new SignupCouponError("COUPON_NOT_YET_VALID", "Coupon isn't valid yet.");
+        }
+        if (coupon.validUntil && coupon.validUntil.getTime() < now) {
+          throw new SignupCouponError("COUPON_EXPIRED", "Coupon has expired.");
+        }
+        if (
+          coupon.maxRedemptions != null &&
+          coupon.redemptionCount >= coupon.maxRedemptions
+        ) {
+          throw new SignupCouponError(
+            "COUPON_FULLY_REDEEMED",
+            "This coupon has been fully redeemed.",
+          );
+        }
+        const eligible = Array.isArray(coupon.eligiblePlanCodes)
+          ? (coupon.eligiblePlanCodes as string[])
+          : [];
+        if (eligible.length > 0 && !eligible.includes("growth")) {
+          throw new SignupCouponError(
+            "COUPON_INELIGIBLE_PLAN",
+            "This coupon doesn't apply to the trial plan.",
+          );
+        }
+        // Record redemption + bump the catalog counter atomically.
+        const [redemption] = await tx
+          .insert(schema.couponRedemptions)
+          .values({
+            couponId: coupon.id,
+            tenantId: t.id,
+            discountType: coupon.discountType,
+            discountValue: coupon.discountValue,
+            appliesFor: coupon.appliesFor,
+            appliesForMonths: coupon.appliesForMonths,
+            planId: growth.id,
+            planVersionId: growth.currentVersionId,
+            status: "active",
+            redeemedByUserId: u.id,
+          })
+          .returning();
+        if (!redemption) {
+          throw new SignupCouponError("REDEEM_FAILED", "Couldn't apply coupon.");
+        }
+        couponRedemptionId = redemption.id;
+
+        await tx
+          .update(schema.coupons)
+          .set({
+            redemptionCount: coupon.redemptionCount + 1,
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.coupons.id, coupon.id));
+      }
+
+      return { tenant: t, user: u, couponRedemptionId };
+      });
+    } catch (err) {
+      if (err instanceof SignupCouponError) {
+        return reply.status(400).send({
+          error: { code: err.code, message: err.message },
+        });
+      }
+      throw err;
+    }
+    const { tenant, user, couponRedemptionId } = signupResult;
 
     const session = await createSession({
       userId: user.id,
@@ -252,6 +361,7 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
     return reply.status(201).send({
       user: { id: user.id, email: user.email, fullName: user.fullName, isOwner: true },
       tenant: { id: tenant.id, slug: tenant.slug, businessName: tenant.businessName },
+      couponApplied: couponRedemptionId !== null,
     });
   });
 
