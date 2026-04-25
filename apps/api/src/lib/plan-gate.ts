@@ -1,5 +1,5 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db, schema, withTenant } from "@pettahpro/db";
 import { requireAuth } from "./with-tenant.js";
 
@@ -138,14 +138,40 @@ async function loadPlanContext(tenantId: string): Promise<PlanContext> {
     planVal: number | null,
   ): number | null => versionVal ?? planVal ?? null;
 
+  // Add-on features (#120). Active and pending_removal addons grant
+  // their features through the period end — pending_removal is "I'm
+  // paying through this cycle, then dropping" and the spec is explicit
+  // about not yanking access mid-period. Cancelled rows do not grant.
+  const addonRows = await db
+    .select({
+      grantsFeatures: schema.addons.grantsFeatures,
+    })
+    .from(schema.tenantAddons)
+    .leftJoin(schema.addons, eq(schema.addons.id, schema.tenantAddons.addonId))
+    .where(
+      and(
+        eq(schema.tenantAddons.tenantId, tenantId),
+        inArray(schema.tenantAddons.status, ["active", "pending_removal"]),
+      ),
+    );
+  const addonFeatures = new Set<string>();
+  for (const r of addonRows) {
+    if (Array.isArray(r.grantsFeatures)) {
+      for (const f of r.grantsFeatures as string[]) addonFeatures.add(f);
+    }
+  }
+  const unionedFeatures = Array.from(
+    new Set([...effectiveFeatures, ...addonFeatures]),
+  );
+
   return {
     subscriptionStatus: row.status,
     planCode: row.planCode,
-    features: effectiveFeatures,
+    features: unionedFeatures,
     // Per-tenant override wins; otherwise version cap; otherwise plan cap.
     // `?? null` preserves "unlimited" when all are null — never let "0"
     // (the falsy-but-legitimate "freeze this resource" value) collapse to
-    // a fallback.
+    // a fallback. (Cap-delta addons are deferred — see 92-addons.sql.)
     maxInvoicesMonthly:
       row.customMaxInvoicesMonthly ??
       effectiveCap(row.versionMaxInvoicesMonthly, row.planMaxInvoicesMonthly),
@@ -535,6 +561,21 @@ export async function getTenantSubscription(tenantId: string): Promise<{
   // since this tenant signed up — the UI uses the gap to surface
   // a "newer pricing available" prompt.
   currentVersionNumber: number | null;
+  // Active + pending_removal add-ons (#120). Cancelled addons are
+  // hidden from this list — they're audit-only.
+  addons: {
+    id: string;
+    addonId: string;
+    code: string;
+    name: string;
+    monthlyPriceCents: number;
+    yearlyPriceCents: number;
+    grantsFeatures: string[];
+    status: string;
+    billingCycle: string;
+    currentPeriodEnd: Date;
+    cancelledAt: Date | null;
+  }[];
 } | null> {
   const rows = await db
     .select({
@@ -612,5 +653,129 @@ export async function getTenantSubscription(tenantId: string): Promise<{
         }
       : null,
     currentVersionNumber,
+    addons: await listActiveTenantAddons(tenantId),
   };
+}
+
+/**
+ * Auto-cancel any active addons whose granted features are now
+ * redundantly supplied by the tenant's plan (#120 / pricing-spec §7.1
+ * "auto-removal on tier upgrade"). Called by every change-plan path
+ * (platform admin + tenant self-serve) AFTER the subscription row has
+ * been updated to the new plan.
+ *
+ * Idempotent — re-calling on a tenant whose addons are already
+ * non-redundant is a no-op. Returns the list of addons that were
+ * auto-removed so the caller can audit them or surface a confirmation
+ * message.
+ */
+export async function autoRemoveRedundantAddons(
+  tenantId: string,
+  newPlanFeatures: string[],
+): Promise<{ tenantAddonId: string; addonCode: string }[]> {
+  if (newPlanFeatures.length === 0) return [];
+
+  const rows = await db
+    .select({
+      tenantAddonId: schema.tenantAddons.id,
+      addonId: schema.addons.id,
+      addonCode: schema.addons.code,
+      addonName: schema.addons.name,
+      grantsFeatures: schema.addons.grantsFeatures,
+    })
+    .from(schema.tenantAddons)
+    .leftJoin(schema.addons, eq(schema.addons.id, schema.tenantAddons.addonId))
+    .where(
+      and(
+        eq(schema.tenantAddons.tenantId, tenantId),
+        inArray(schema.tenantAddons.status, ["active", "pending_removal"]),
+      ),
+    );
+
+  const planFeatureSet = new Set(newPlanFeatures);
+  const redundant = rows.filter((r) => {
+    const grants = Array.isArray(r.grantsFeatures)
+      ? (r.grantsFeatures as string[])
+      : [];
+    if (grants.length === 0) return false;
+    // Redundant when EVERY granted feature is already in the plan.
+    // A partial overlap (addon grants A+B; plan only has A) means the
+    // user is still getting value from the addon — leave it active.
+    return grants.every((f) => planFeatureSet.has(f));
+  });
+
+  if (redundant.length === 0) return [];
+
+  await db
+    .update(schema.tenantAddons)
+    .set({
+      status: "cancelled",
+      cancelledAt: new Date(),
+      autoRemovedAt: new Date(),
+      cancelReason: "Auto-removed: included in new plan",
+      updatedAt: new Date(),
+    })
+    .where(
+      inArray(
+        schema.tenantAddons.id,
+        redundant.map((r) => r.tenantAddonId),
+      ),
+    );
+
+  return redundant.map((r) => ({
+    tenantAddonId: r.tenantAddonId,
+    addonCode: r.addonCode ?? "?",
+  }));
+}
+
+/**
+ * Active + pending_removal addons for a tenant. Skips cancelled rows.
+ * Used by getTenantSubscription so the settings page can render the
+ * add-on shelf inline with the plan card.
+ */
+async function listActiveTenantAddons(tenantId: string): Promise<
+  {
+    id: string;
+    addonId: string;
+    code: string;
+    name: string;
+    monthlyPriceCents: number;
+    yearlyPriceCents: number;
+    grantsFeatures: string[];
+    status: string;
+    billingCycle: string;
+    currentPeriodEnd: Date;
+    cancelledAt: Date | null;
+  }[]
+> {
+  const rows = await db
+    .select({
+      tenantAddon: schema.tenantAddons,
+      addon: schema.addons,
+    })
+    .from(schema.tenantAddons)
+    .leftJoin(schema.addons, eq(schema.addons.id, schema.tenantAddons.addonId))
+    .where(
+      and(
+        eq(schema.tenantAddons.tenantId, tenantId),
+        inArray(schema.tenantAddons.status, ["active", "pending_removal"]),
+      ),
+    );
+  return rows
+    .filter((r) => r.addon !== null)
+    .map((r) => ({
+      id: r.tenantAddon.id,
+      addonId: r.tenantAddon.addonId,
+      code: r.addon!.code,
+      name: r.addon!.name,
+      monthlyPriceCents: r.addon!.monthlyPriceCents,
+      yearlyPriceCents: r.addon!.yearlyPriceCents,
+      grantsFeatures: Array.isArray(r.addon!.grantsFeatures)
+        ? (r.addon!.grantsFeatures as string[])
+        : [],
+      status: r.tenantAddon.status,
+      billingCycle: r.tenantAddon.billingCycle,
+      currentPeriodEnd: r.tenantAddon.currentPeriodEnd,
+      cancelledAt: r.tenantAddon.cancelledAt,
+    }));
 }
