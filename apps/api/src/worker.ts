@@ -10,6 +10,7 @@ import { runStaleChequeFlagging } from "./modules/cheques/stale-flag.js";
 import { runMonthlyDepreciationForAllTenants } from "./modules/accounting/fixed-assets.js";
 import { runNotificationDigests } from "./modules/notifications/digest-cron.js";
 import { runTrialExpiryJob } from "./modules/subscription/trial-expiry.js";
+import { runRenewalCron } from "./modules/subscription/renewal-cron.js";
 import {
   initErrorTrackingForWorker,
   captureException,
@@ -141,6 +142,22 @@ async function registerSchedules() {
   );
   log.info("scheduled: expire-trials (daily)");
 
+  // Subscription renewal sweep (#124). Fires daily after expire-trials
+  // and handles the rest of the lifecycle bookkeeping: addon
+  // pending_removal → cancelled at period end, coupon redemption
+  // ticking, subscription period rollover. See renewal-cron.ts for
+  // full sequence + idempotency notes.
+  await scheduledQueue.add(
+    "subscription-renewal-sweep",
+    {},
+    {
+      repeat: { every: 24 * 60 * 60 * 1000 }, // 24h
+      removeOnComplete: 50,
+      removeOnFail: 50,
+    },
+  );
+  log.info("scheduled: subscription-renewal-sweep (daily)");
+
   // Notification digest dispatcher (roadmap #45). Fires hourly because the
   // tenant-local hour gate is checked inside the runner — one cron cadence
   // across every tenant regardless of timezone. The runner dedupes via
@@ -191,6 +208,9 @@ async function runScheduledJob(name: string): Promise<unknown> {
   }
   if (name === "expire-trials") {
     return runTrialExpiryJob(db, log);
+  }
+  if (name === "subscription-renewal-sweep") {
+    return runRenewalCron(db, log);
   }
   return null; // unknown
 }
