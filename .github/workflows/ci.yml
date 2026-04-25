@@ -1,0 +1,122 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "20.11.0"
+  PNPM_VERSION: "9.12.0"
+
+jobs:
+  install:
+    name: Install + cache
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+  # Strict — packages with a clean typecheck baseline. Adding any new error here
+  # breaks the build. As packages move to zero, add them here.
+  typecheck-strict:
+    name: Typecheck (strict)
+    runs-on: ubuntu-latest
+    needs: install
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @pettahpro/web typecheck
+      - run: pnpm --filter @pettahpro/db typecheck
+
+  # Frozen baseline — apps/api currently has 27 known typecheck errors
+  # (see docs/_status.md §2). The build uses `tsc --noCheck` to ship.
+  # This job runs the real `tsc --noEmit` and fails if the count grows.
+  # When the baseline reaches 0, move @pettahpro/api into typecheck-strict
+  # and delete this job.
+  typecheck-api-baseline:
+    name: Typecheck baseline (apps/api)
+    runs-on: ubuntu-latest
+    needs: install
+    env:
+      BASELINE: 27
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Count tsc errors against baseline
+        run: |
+          set +e
+          pnpm --filter @pettahpro/api typecheck > tsc.log 2>&1
+          set -e
+          ACTUAL=$(grep -c "error TS" tsc.log || true)
+          echo "Baseline: $BASELINE  Actual: $ACTUAL"
+          tail -50 tsc.log
+          if [ "$ACTUAL" -gt "$BASELINE" ]; then
+            echo "::error::apps/api typecheck regressed ($ACTUAL > $BASELINE). Fix the new errors before merging."
+            exit 1
+          fi
+          if [ "$ACTUAL" -lt "$BASELINE" ]; then
+            echo "::warning::apps/api typecheck improved ($ACTUAL < $BASELINE). Lower BASELINE in .github/workflows/ci.yml so the new floor sticks."
+          fi
+
+  build:
+    name: Build (api + web)
+    runs-on: ubuntu-latest
+    needs: install
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @pettahpro/api build
+      - run: pnpm --filter @pettahpro/web build
+
+  test:
+    name: Test (api)
+    runs-on: ubuntu-latest
+    needs: install
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # No vitest specs exist yet (apps/api/src/**/*.test.ts is empty). Use
+      # --passWithNoTests so CI doesn't fail on an empty suite. Drop the flag
+      # the moment the first spec lands.
+      - run: pnpm --filter @pettahpro/api exec vitest run --passWithNoTests
