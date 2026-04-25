@@ -1010,6 +1010,21 @@ export const api = {
       { method: "POST" },
     ),
 
+  // Coupons (#121).
+  lookupCoupon: (code: string) =>
+    request<{ coupon: CouponPreview }>(
+      `/subscription/coupons/lookup?code=${encodeURIComponent(code)}`,
+    ),
+  redeemCoupon: (code: string) =>
+    request<{ redemption: TenantCouponRedemption }>(
+      "/subscription/coupons/redeem",
+      { method: "POST", json: { code } },
+    ),
+  listMyCouponRedemptions: () =>
+    request<{ redemptions: TenantCouponRedemption[] }>(
+      "/subscription/coupons/mine",
+    ),
+
   listFxRates: (filter?: { from?: string; to?: string }) => {
     const qs = new URLSearchParams();
     if (filter?.from) qs.set("from", filter.from);
@@ -5472,6 +5487,31 @@ export interface ActiveAddon {
     yearlyPriceCents: number;
     grantsFeatures: string[];
   };
+}
+
+// Coupon shapes (#121).
+export interface CouponPreview {
+  code: string;
+  name: string;
+  discountType: "percent_off" | "amount_off_cents";
+  discountValue: number;
+  appliesFor: "once" | "forever" | "months";
+  appliesForMonths: number | null;
+}
+
+export interface TenantCouponRedemption {
+  id: string;
+  couponCode: string;
+  couponName: string;
+  discountType: "percent_off" | "amount_off_cents";
+  discountValue: number;
+  appliesFor: "once" | "forever" | "months";
+  appliesForMonths: number | null;
+  status: "active" | "consumed" | "cancelled";
+  monthsApplied?: number;
+  redeemedAt: string;
+  consumedAt?: string | null;
+  cancelledAt?: string | null;
 }
 
 export interface FxRate {

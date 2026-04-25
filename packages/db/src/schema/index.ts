@@ -74,3 +74,4 @@ export * from "./platform-saved-views.js";
 export * from "./plans.js";
 export * from "./tenant-subscriptions.js";
 export * from "./addons.js";
+export * from "./coupons.js";

@@ -455,6 +455,34 @@ export const platformApi = {
       { method: "POST", json: body },
     ),
 
+  // Coupons (#121).
+  listCoupons: () =>
+    request<{ coupons: PlatformCoupon[] }>("/platform/coupons"),
+  getCoupon: (id: string) =>
+    request<{ coupon: PlatformCoupon }>(`/platform/coupons/${id}`),
+  createCoupon: (body: PlatformCouponCreateInput) =>
+    request<{ coupon: PlatformCoupon }>("/platform/coupons", {
+      method: "POST",
+      json: body,
+    }),
+  updateCoupon: (id: string, body: PlatformCouponUpdateInput) =>
+    request<{ coupon: PlatformCoupon }>(`/platform/coupons/${id}`, {
+      method: "PATCH",
+      json: body,
+    }),
+  archiveCoupon: (id: string) =>
+    request<{ coupon: PlatformCoupon }>(`/platform/coupons/${id}/archive`, {
+      method: "POST",
+    }),
+  unarchiveCoupon: (id: string) =>
+    request<{ coupon: PlatformCoupon }>(`/platform/coupons/${id}/unarchive`, {
+      method: "POST",
+    }),
+  listCouponRedemptions: (id: string) =>
+    request<{ redemptions: PlatformCouponRedemption[] }>(
+      `/platform/coupons/${id}/redemptions`,
+    ),
+
   getTenantSubscription: (tenantId: string) =>
     request<{ subscription: PlatformTenantSubscription }>(
       `/platform/tenants/${tenantId}/subscription`,
@@ -631,6 +659,65 @@ export interface PlatformTenantAddon {
   currentPeriodStart: string;
   currentPeriodEnd: string;
   addon: PlatformAddon;
+}
+
+// Coupons (#121).
+export interface PlatformCoupon {
+  id: string;
+  code: string;
+  name: string;
+  discountType: "percent_off" | "amount_off_cents";
+  discountValue: number;
+  appliesFor: "once" | "forever" | "months";
+  appliesForMonths: number | null;
+  eligiblePlanCodes: string[];
+  newSignupsOnly: boolean;
+  validFrom: string | null;
+  validUntil: string | null;
+  maxRedemptions: number | null;
+  redemptionCount: number;
+  onePerTenant: boolean;
+  isActive: boolean;
+  isArchived: boolean;
+  notes: string | null;
+  createdAt: string;
+}
+
+export interface PlatformCouponCreateInput {
+  code: string;
+  name: string;
+  discountType: "percent_off" | "amount_off_cents";
+  discountValue: number;
+  appliesFor?: "once" | "forever" | "months";
+  appliesForMonths?: number;
+  eligiblePlanCodes?: string[];
+  newSignupsOnly?: boolean;
+  validFrom?: string;
+  validUntil?: string;
+  maxRedemptions?: number;
+  onePerTenant?: boolean;
+  isActive?: boolean;
+  notes?: string;
+}
+export type PlatformCouponUpdateInput = Partial<
+  Omit<PlatformCouponCreateInput, "code">
+>;
+
+export interface PlatformCouponRedemption {
+  id: string;
+  tenantId: string;
+  tenantName: string | null;
+  tenantSlug: string | null;
+  discountType: "percent_off" | "amount_off_cents";
+  discountValue: number;
+  appliesFor: "once" | "forever" | "months";
+  appliesForMonths: number | null;
+  status: "active" | "consumed" | "cancelled";
+  monthsApplied: number;
+  redeemedAt: string;
+  consumedAt: string | null;
+  cancelledAt: string | null;
+  cancelReason: string | null;
 }
 
 export interface PlatformPlanVersion {
