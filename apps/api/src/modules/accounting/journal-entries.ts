@@ -32,6 +32,10 @@ const LineSchema = z
 const CreateSchema = z.object({
   entryDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   memo: z.string().trim().max(500).optional().or(z.literal("")),
+  // Cost center dimension (#132 / gaps B1 follow-up). Header-level
+  // tag for manual JEs; folded onto every line at post via the
+  // postJournal helper.
+  costCenterId: z.string().uuid().optional().or(z.literal("")),
   lines: z.array(LineSchema).min(2),
 });
 
@@ -357,6 +361,11 @@ export const journalEntriesRoutes: FastifyPluginAsync = async (fastify) => {
           memo: memo && memo.trim() ? memo.trim() : undefined,
           sourceType: "manual",
           postedByUserId: ctx.userId,
+          // Cost center dimension (#132 / gaps B1 follow-up). Entry-
+          // level tag — postJournal stamps the journal_entries row
+          // and defaults the value onto every line that doesn't
+          // override it explicitly.
+          costCenterId: parsed.data.costCenterId || undefined,
           lines: normLines.map((l) => ({
             ...l,
             description: l.description ?? undefined,

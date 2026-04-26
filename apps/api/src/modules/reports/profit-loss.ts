@@ -80,16 +80,31 @@ export const profitLossRoutes: FastifyPluginAsync = async (fastify) => {
           ? [priorYear(from), priorYear(to)]
           : [null, null];
 
-    // Cost-center dimension filter (#129 / gaps B1). The clause
-    // collapses cleanly to "no filter" when costCenterId is missing,
-    // restricts to one center when a UUID is given, and matches
-    // NULL-only when the literal "unassigned" is given.
+    // Cost-center dimension filter (#129 / gaps B1; hierarchy
+    // rollup added in #132). The clause collapses cleanly to:
+    //   * no filter when costCenterId is missing
+    //   * NULL-only when "unassigned"
+    //   * a recursive descendant-set match when a UUID is given —
+    //     filtering by "Pettah" includes journal lines tagged with
+    //     "Pettah / Floor 1" and "Pettah / Floor 2" via the
+    //     parent_cost_center_id chain.
     const costCenterClause =
       parsed.data.costCenterId === undefined
         ? sql`true`
         : parsed.data.costCenterId === "unassigned"
           ? sql`jl.cost_center_id IS NULL`
-          : sql`jl.cost_center_id = ${parsed.data.costCenterId}::uuid`;
+          : sql`jl.cost_center_id IN (
+              WITH RECURSIVE descendants AS (
+                SELECT id FROM cost_centers
+                 WHERE id = ${parsed.data.costCenterId}::uuid
+                   AND tenant_id = current_tenant_id()
+                UNION ALL
+                SELECT cc.id FROM cost_centers cc
+                  JOIN descendants d ON cc.parent_cost_center_id = d.id
+                 WHERE cc.tenant_id = current_tenant_id()
+              )
+              SELECT id FROM descendants
+            )`;
 
     const data = await withTenant(ctx.tenantId, async (tx) => {
       const rows = (await tx.execute(sql`

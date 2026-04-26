@@ -26,6 +26,9 @@ export const bills = pgTable("bills", {
   supplierBillNumber: varchar("supplier_bill_number", { length: 64 }),
   supplierId: uuid("supplier_id").notNull().references(() => suppliers.id, { onDelete: "restrict" }),
   branchId: uuid("branch_id").references(() => branches.id, { onDelete: "set null" }),
+  // Cost center dimension (#132 / gaps B1 follow-up). Propagates
+  // onto every JE line at bill post, same pattern as invoices.
+  costCenterId: uuid("cost_center_id"),
   // Lifecycle: draft → [pending_approval] → posted → partially_paid → void.
   // `pending_approval` is entered only when a `document_type='bill'`
   // approval policy matches at post-time (roadmap #43b); tenants with

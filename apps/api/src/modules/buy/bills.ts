@@ -74,6 +74,10 @@ const CreateSchema = z.object({
   currency: z.string().length(3).optional(),
   fxRate: z.number().positive().optional(),
   notes: z.string().optional().or(z.literal("")),
+  // Cost center dimension (#132 / gaps B1 follow-up). Optional;
+  // null/missing leaves journal_lines.cost_center_id NULL → "Unassigned"
+  // in the P&L cost-center filter.
+  costCenterId: z.string().uuid().optional().or(z.literal("")),
   lines: z.array(LineSchema).min(1),
   charges: z.array(ChargeSchema).optional().default([]),
   chargeAllocationMethod: z.enum(ALLOCATION_METHODS).optional().default("value"),
@@ -556,6 +560,16 @@ export async function postBillCore(
     supplierId: bill.supplierId,
   });
 
+  // Cost center propagation (#132 / gaps B1 follow-up). Stamp the
+  // bill's cost_center_id onto every JE line — same pattern as the
+  // invoice path. Single line keeps the change localised; no need
+  // to touch every `journalLines.push({...})` above.
+  if (bill.costCenterId) {
+    for (const line of journalLines) {
+      line.costCenterId = bill.costCenterId;
+    }
+  }
+
   const { entryId, entryNumber } = await postJournal(tx, {
     tenantId,
     entryDate: bill.billDate,
@@ -827,6 +841,7 @@ export const billsRoutes: FastifyPluginAsync = async (fastify) => {
           foreignTotalCents,
           balanceDueCents: totalCents,
           notes: input.notes || null,
+          costCenterId: input.costCenterId || null,
           createdByUserId: ctx.userId,
         })
         .returning();

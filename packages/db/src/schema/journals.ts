@@ -27,6 +27,12 @@ export const journalEntries = pgTable("journal_entries", {
   postedByUserId: uuid("posted_by_user_id"),
   isReversed: boolean("is_reversed").notNull().default(false),
   reversedByEntryId: uuid("reversed_by_entry_id"),
+  // Cost center dimension (#132 / gaps B1 follow-up). Header-level
+  // tag for manual JEs; auto-posts (invoice/bill/etc.) use the
+  // source doc's cost_center_id directly on lines and leave this
+  // null. The post helper folds this into every line on entries
+  // where it's set.
+  costCenterId: uuid("cost_center_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

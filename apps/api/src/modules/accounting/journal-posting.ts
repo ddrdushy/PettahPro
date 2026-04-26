@@ -23,6 +23,12 @@ export interface PostJournalInput {
   sourceType?: string;
   sourceId?: string;
   postedByUserId?: string;
+  // Header-level cost center (#132 / gaps B1 follow-up). When set:
+  // (1) stamped onto journal_entries.cost_center_id, (2) defaulted
+  // onto every line that doesn't carry an explicit costCenterId.
+  // Source-doc posters (invoice, bill) typically set per-line and
+  // leave this null; manual JEs use the header tag.
+  costCenterId?: string | null;
   lines: PostingLine[];
 }
 
@@ -67,6 +73,7 @@ export async function postJournal(
       sourceType: input.sourceType ?? null,
       sourceId: input.sourceId ?? null,
       postedByUserId: input.postedByUserId ?? null,
+      costCenterId: input.costCenterId ?? null,
     })
     .returning({ id: schema.journalEntries.id });
   if (!entry) throw new Error("Journal entry insert failed");
@@ -83,7 +90,9 @@ export async function postJournal(
       customerId: l.customerId ?? null,
       supplierId: l.supplierId ?? null,
       itemId: l.itemId ?? null,
-      costCenterId: l.costCenterId ?? null,
+      // Per-line tag wins; otherwise inherit the entry-level header
+      // tag if set. Both null = "Unassigned" in the P&L filter.
+      costCenterId: l.costCenterId ?? input.costCenterId ?? null,
     })),
   );
 

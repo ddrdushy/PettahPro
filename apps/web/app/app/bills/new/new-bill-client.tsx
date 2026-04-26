@@ -10,6 +10,7 @@ import {
   type Account,
   type BillChargeAllocationMethod,
   type BillChargeKind,
+  type CostCenter,
   type Item,
   type Supplier,
   type TaxCode,
@@ -102,11 +103,13 @@ export function NewBillClient({
   items,
   taxCodes,
   expenseAccounts,
+  costCenters,
 }: {
   suppliers: Supplier[];
   items: Item[];
   taxCodes: TaxCode[];
   expenseAccounts: Account[];
+  costCenters: CostCenter[];
 }) {
   const router = useRouter();
   const [supplierId, setSupplierId] = useState("");
@@ -114,6 +117,7 @@ export function NewBillClient({
   const [billDate, setBillDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [dueDate, setDueDate] = useState("");
   const [notes, setNotes] = useState("");
+  const [costCenterId, setCostCenterId] = useState("");
   const [currency, setCurrency] = useState("LKR");
   const [fxRate, setFxRate] = useState("1");
   const [lines, setLines] = useState<LineDraft[]>([emptyLine()]);
@@ -270,6 +274,7 @@ export function NewBillClient({
         currency: currency.toUpperCase(),
         fxRate: Number(fxRate) || 1,
         notes: notes.trim() || undefined,
+        costCenterId: costCenterId || undefined,
         lines: validLines.map((l) => {
           const item = items.find((i) => i.id === l.itemId);
           const wantsBatch = !!item && (item.trackBatches || item.trackExpiry);
@@ -397,6 +402,28 @@ export function NewBillClient({
                   />
                 </div>
               </div>
+              {costCenters.length > 0 && (
+                <div>
+                  <label className="block text-small font-medium text-charcoal">
+                    Cost center{" "}
+                    <span className="text-caption text-text-tertiary">
+                      (P&amp;L roll-up dimension)
+                    </span>
+                  </label>
+                  <select
+                    value={costCenterId}
+                    onChange={(e) => setCostCenterId(e.target.value)}
+                    className="mt-1.5 w-full rounded-md border-hairline border-border-emphasis bg-surface-elevated px-3 py-2.5 text-body text-charcoal focus:border-charcoal focus:outline-none focus:ring-1 focus:ring-charcoal"
+                  >
+                    <option value="">— Unassigned —</option>
+                    {costCenters.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.code} — {c.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-small font-medium text-charcoal">Currency</label>
