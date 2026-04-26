@@ -3,9 +3,9 @@ import type { SidebarsConfig } from "@docusaurus/plugin-content-docs";
 // Sidebar layout for the wiki. One sidebar (`main`) drives every
 // page — the navbar Docs link points to it. Module groups mirror the
 // product's nav: Sell / Buy / Inventory / Accounting / HR / Reports
-// / Platform admin / Settings. Pages that don't exist yet are
-// commented out so the build doesn't fail on broken refs — uncomment
-// each as the page lands.
+// / Platform admin / Settings. Only categories with at least one
+// landed page are listed — uncomment new categories as their first
+// page lands. (Docusaurus refuses to build an empty category.)
 
 const sidebars: SidebarsConfig = {
   main: [
@@ -36,53 +36,6 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: "category",
-      label: "Buy",
-      collapsed: true,
-      items: [
-        // "buy/bills",
-        // "buy/purchase-orders",
-        // "buy/grns",
-        // "buy/supplier-payments",
-        // "buy/debit-notes",
-        // "buy/recurring-bills",
-        // "buy/purchase-requisitions",
-        // "buy/landed-cost",
-      ],
-    },
-    {
-      type: "category",
-      label: "Inventory",
-      collapsed: true,
-      items: [
-        // "inventory/items",
-        // "inventory/stock-counts",
-        // "inventory/stock-transfers",
-        // "inventory/categories",
-        // "inventory/bundles",
-        // "inventory/batches-and-serials",
-      ],
-    },
-    {
-      type: "category",
-      label: "Accounting",
-      collapsed: true,
-      items: [
-        // "accounting/chart-of-accounts",
-        // "accounting/journal-entries",
-        // "accounting/period-lock",
-        // "accounting/cost-centers",
-        // "accounting/budgets",
-        // "accounting/wht",
-        // "accounting/fx-revaluation",
-        // "accounting/petty-cash",
-        // "accounting/bank-reconciliation",
-        // "accounting/cheques",
-        // "accounting/fixed-assets",
-        // "accounting/opening-balance",
-      ],
-    },
-    {
-      type: "category",
       label: "HR & Payroll",
       collapsed: true,
       items: [
@@ -95,24 +48,6 @@ const sidebars: SidebarsConfig = {
         // "hr/expense-claims",
         // "hr/attendance",
         // "hr/final-settlements",
-      ],
-    },
-    {
-      type: "category",
-      label: "Reports",
-      collapsed: true,
-      items: [
-        // "reports/trial-balance",
-        // "reports/profit-loss",
-        // "reports/balance-sheet",
-        // "reports/general-ledger",
-        // "reports/vat-return",
-        // "reports/cash-flow",
-        // "reports/aging",
-        // "reports/exec-kpis",
-        // "reports/trends",
-        // "reports/budget-vs-actual",
-        // "reports/three-way-match",
       ],
     },
     {
@@ -131,21 +66,23 @@ const sidebars: SidebarsConfig = {
         // "settings/demo-data",
       ],
     },
-    {
-      type: "category",
-      label: "Platform admin",
-      collapsed: true,
-      items: [
-        // "platform/overview",
-        // "platform/tenants",
-        // "platform/impersonation",
-        // "platform/plans",
-        // "platform/addons",
-        // "platform/coupons",
-        // "platform/revenue",
-        // "platform/tenant-health",
-      ],
-    },
+    // Categories below are TODO — each will be uncommented when its
+    // first page lands. Docusaurus refuses to build empty categories,
+    // so leaving them out keeps the build green during bootstrap.
+    //
+    // - Buy: bills, purchase-orders, grns, supplier-payments,
+    //   debit-notes, recurring-bills, purchase-requisitions,
+    //   landed-cost
+    // - Inventory: items, stock-counts, stock-transfers, categories,
+    //   bundles, batches-and-serials
+    // - Accounting: chart-of-accounts, journal-entries, period-lock,
+    //   cost-centers, budgets, wht, fx-revaluation, petty-cash,
+    //   bank-reconciliation, cheques, fixed-assets, opening-balance
+    // - Reports: trial-balance, profit-loss, balance-sheet,
+    //   general-ledger, vat-return, cash-flow, aging, exec-kpis,
+    //   trends, budget-vs-actual, three-way-match
+    // - Platform admin: overview, tenants, impersonation, plans,
+    //   addons, coupons, revenue, tenant-health
   ],
 };
 
