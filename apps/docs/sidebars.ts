@@ -15,7 +15,7 @@ const sidebars: SidebarsConfig = {
       type: "category",
       label: "Concepts",
       collapsed: false,
-      items: ["concepts/glossary", "concepts/multi-tenant-and-rls"],
+      items: ["concepts/glossary"],
     },
     {
       type: "category",
