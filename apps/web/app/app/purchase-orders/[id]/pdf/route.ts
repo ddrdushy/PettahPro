@@ -3,7 +3,17 @@ import { renderToBuffer } from "@react-pdf/renderer";
 import { PurchaseOrderPDF } from "@/lib/purchase-order-pdf";
 import { pdfResponse } from "@/lib/pdf-response";
 import { fetchTenantLogoDataUrl } from "@/lib/tenant-logo";
-import type { PurchaseOrderDetail, PurchaseOrderLine, Supplier, Tenant } from "@/lib/api";
+import {
+  buildPurchaseOrderContext,
+  renderPurchaseOrderTemplate,
+} from "@/lib/template-renderer";
+import type {
+  DocumentTemplate,
+  PurchaseOrderDetail,
+  PurchaseOrderLine,
+  Supplier,
+  Tenant,
+} from "@/lib/api";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -16,12 +26,16 @@ export async function GET(
   const cookieHeader = cookies().toString();
   if (!cookieHeader) return new Response("Unauthorized", { status: 401 });
 
-  const [meRes, poRes, logoDataUrl] = await Promise.all([
+  const [meRes, poRes, tplRes, logoDataUrl] = await Promise.all([
     fetch(`${base}/auth/me`, { headers: { cookie: cookieHeader }, cache: "no-store" }),
     fetch(`${base}/purchase-orders/${params.id}`, {
       headers: { cookie: cookieHeader },
       cache: "no-store",
     }),
+    fetch(`${base}/document-templates/active?docType=purchase_order&language=en`, {
+      headers: { cookie: cookieHeader },
+      cache: "no-store",
+    }).catch(() => null),
     fetchTenantLogoDataUrl(cookieHeader),
   ]);
   if (meRes.status === 401) return new Response("Unauthorized", { status: 401 });
@@ -35,14 +49,37 @@ export async function GET(
     supplier: Supplier | null;
   };
 
+  let activeTemplate: DocumentTemplate | null = null;
+  if (tplRes && tplRes.ok) {
+    try {
+      const body = (await tplRes.json()) as {
+        template: DocumentTemplate | null;
+      };
+      activeTemplate = body.template;
+    } catch {
+      activeTemplate = null;
+    }
+  }
+
   const pdf = await renderToBuffer(
-    PurchaseOrderPDF({
-      tenant: { businessName: me.tenant.businessName },
-      purchaseOrder: data.purchaseOrder,
-      lines: data.lines,
-      supplier: data.supplier,
-      logoDataUrl,
-    }),
+    activeTemplate
+      ? renderPurchaseOrderTemplate(
+          activeTemplate.layoutJson,
+          buildPurchaseOrderContext({
+            tenant: { businessName: me.tenant.businessName },
+            purchaseOrder: data.purchaseOrder,
+            lines: data.lines,
+            supplier: data.supplier,
+            logoDataUrl,
+          }),
+        )
+      : PurchaseOrderPDF({
+          tenant: { businessName: me.tenant.businessName },
+          purchaseOrder: data.purchaseOrder,
+          lines: data.lines,
+          supplier: data.supplier,
+          logoDataUrl,
+        }),
   );
 
   const filename = `${data.purchaseOrder.poNumber ?? "po-" + data.purchaseOrder.id.slice(0, 8)}.pdf`;
