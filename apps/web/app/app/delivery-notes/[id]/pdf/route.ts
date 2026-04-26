@@ -3,7 +3,17 @@ import { renderToBuffer } from "@react-pdf/renderer";
 import { DeliveryNotePDF } from "@/lib/delivery-note-pdf";
 import { pdfResponse } from "@/lib/pdf-response";
 import { fetchTenantLogoDataUrl } from "@/lib/tenant-logo";
-import type { Customer, DeliveryNoteDetail, DeliveryNoteLine, Tenant } from "@/lib/api";
+import {
+  buildDeliveryNoteContext,
+  renderDeliveryNoteTemplate,
+} from "@/lib/template-renderer";
+import type {
+  Customer,
+  DeliveryNoteDetail,
+  DeliveryNoteLine,
+  DocumentTemplate,
+  Tenant,
+} from "@/lib/api";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -16,12 +26,16 @@ export async function GET(
   const cookieHeader = cookies().toString();
   if (!cookieHeader) return new Response("Unauthorized", { status: 401 });
 
-  const [meRes, dnRes, logoDataUrl] = await Promise.all([
+  const [meRes, dnRes, tplRes, logoDataUrl] = await Promise.all([
     fetch(`${base}/auth/me`, { headers: { cookie: cookieHeader }, cache: "no-store" }),
     fetch(`${base}/delivery-notes/${params.id}`, {
       headers: { cookie: cookieHeader },
       cache: "no-store",
     }),
+    fetch(`${base}/document-templates/active?docType=delivery_note&language=en`, {
+      headers: { cookie: cookieHeader },
+      cache: "no-store",
+    }).catch(() => null),
     fetchTenantLogoDataUrl(cookieHeader),
   ]);
   if (meRes.status === 401) return new Response("Unauthorized", { status: 401 });
@@ -35,14 +49,37 @@ export async function GET(
     customer: Customer | null;
   };
 
+  let activeTemplate: DocumentTemplate | null = null;
+  if (tplRes && tplRes.ok) {
+    try {
+      const body = (await tplRes.json()) as {
+        template: DocumentTemplate | null;
+      };
+      activeTemplate = body.template;
+    } catch {
+      activeTemplate = null;
+    }
+  }
+
   const pdf = await renderToBuffer(
-    DeliveryNotePDF({
-      tenant: { businessName: me.tenant.businessName },
-      deliveryNote: data.deliveryNote,
-      lines: data.lines,
-      customer: data.customer,
-      logoDataUrl,
-    }),
+    activeTemplate
+      ? renderDeliveryNoteTemplate(
+          activeTemplate.layoutJson,
+          buildDeliveryNoteContext({
+            tenant: { businessName: me.tenant.businessName },
+            deliveryNote: data.deliveryNote,
+            lines: data.lines,
+            customer: data.customer,
+            logoDataUrl,
+          }),
+        )
+      : DeliveryNotePDF({
+          tenant: { businessName: me.tenant.businessName },
+          deliveryNote: data.deliveryNote,
+          lines: data.lines,
+          customer: data.customer,
+          logoDataUrl,
+        }),
   );
 
   const filename = `${data.deliveryNote.dnNumber ?? "delivery-note-" + data.deliveryNote.id.slice(0, 8)}.pdf`;
