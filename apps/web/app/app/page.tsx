@@ -7,6 +7,7 @@ import {
   CircleDollarSign,
   Clock,
   FileText,
+  Sparkles,
   TrendingUp,
   TrendingDown,
   Wallet,
@@ -43,6 +44,16 @@ export default async function AppHomePage() {
     d.revenueLastMonthCents > 0
       ? ((d.revenueThisMonthCents - d.revenueLastMonthCents) / d.revenueLastMonthCents) * 100
       : null;
+  // #136 / gaps I1 — empty-tenant nudge. We treat "no invoices and no
+  // payments and no AR/AP" as the new-tenant state. The link sends
+  // them to the demo-data page rather than auto-loading so they're
+  // making the choice consciously.
+  const isEmptyTenant =
+    d.openInvoiceCount === 0 &&
+    d.openBillCount === 0 &&
+    d.recentInvoices.length === 0 &&
+    d.recentPayments.length === 0 &&
+    d.cashPositionCents === 0;
 
   return (
     <main className="container-p py-10">
@@ -65,6 +76,30 @@ export default async function AppHomePage() {
           </Link>
         </div>
       </header>
+
+      {isEmptyTenant && (
+        <Link
+          href="/app/settings/demo-data"
+          className="mb-8 flex flex-col gap-3 rounded-card border-hairline border-mint/30 bg-mint-surface/40 p-5 transition hover:border-mint/60 sm:flex-row sm:items-center sm:justify-between"
+        >
+          <div className="flex items-start gap-3">
+            <Sparkles className="mt-0.5 h-5 w-5 text-mint-dark" aria-hidden />
+            <div>
+              <p className="text-small font-medium text-charcoal">
+                Want to see how PettahPro looks with data in it?
+              </p>
+              <p className="mt-1 text-caption text-text-secondary">
+                Load a small sample of customers, items, invoices and bills so
+                the dashboards have something to show. One-click clear when
+                you're ready to go live.
+              </p>
+            </div>
+          </div>
+          <span className="inline-flex items-center gap-1 text-small font-medium text-mint-dark">
+            Load demo data <ArrowRight className="h-4 w-4" aria-hidden />
+          </span>
+        </Link>
+      )}
 
       {/* KPI row */}
       <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">

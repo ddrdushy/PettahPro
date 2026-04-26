@@ -77,4 +77,5 @@ export * from "./addons.js";
 export * from "./coupons.js";
 export * from "./cost-centers.js";
 export * from "./budgets.js";
+export * from "./demo-data-seeds.js";
 export * from "./tenant-health-scores.js";

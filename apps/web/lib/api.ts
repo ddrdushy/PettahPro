@@ -1090,6 +1090,13 @@ export const api = {
     }),
   deleteBudget: (id: string) =>
     request<{ ok: true }>(`/budgets/${id}`, { method: "DELETE" }),
+
+  // Demo data (#136 / gaps I1).
+  getDemoData: () => request<{ seededRecordCount: number }>("/demo-data"),
+  loadDemoData: () =>
+    request<{ inserted: number }>("/demo-data/load", { method: "POST" }),
+  clearDemoData: () =>
+    request<{ deleted: number }>("/demo-data/clear", { method: "POST" }),
   replaceBudgetLines: (
     id: string,
     lines: Array<{
