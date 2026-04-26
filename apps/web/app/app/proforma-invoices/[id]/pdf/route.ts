@@ -3,8 +3,13 @@ import { renderToBuffer } from "@react-pdf/renderer";
 import { ProformaInvoicePDF } from "@/lib/proforma-pdf";
 import { pdfResponse } from "@/lib/pdf-response";
 import { fetchTenantLogoDataUrl } from "@/lib/tenant-logo";
+import {
+  buildProformaInvoiceContext,
+  renderProformaInvoiceTemplate,
+} from "@/lib/template-renderer";
 import type {
   Customer,
+  DocumentTemplate,
   ProformaInvoiceDetail,
   ProformaInvoiceLine,
   Tenant,
@@ -23,12 +28,16 @@ export async function GET(
     return new Response("Unauthorized", { status: 401 });
   }
 
-  const [meRes, pRes, logoDataUrl] = await Promise.all([
+  const [meRes, pRes, tplRes, logoDataUrl] = await Promise.all([
     fetch(`${base}/auth/me`, { headers: { cookie: cookieHeader }, cache: "no-store" }),
     fetch(`${base}/proforma-invoices/${params.id}`, {
       headers: { cookie: cookieHeader },
       cache: "no-store",
     }),
+    fetch(`${base}/document-templates/active?docType=proforma_invoice&language=en`, {
+      headers: { cookie: cookieHeader },
+      cache: "no-store",
+    }).catch(() => null),
     fetchTenantLogoDataUrl(cookieHeader),
   ]);
   if (meRes.status === 401) return new Response("Unauthorized", { status: 401 });
@@ -44,14 +53,37 @@ export async function GET(
     customer: Customer | null;
   };
 
+  let activeTemplate: DocumentTemplate | null = null;
+  if (tplRes && tplRes.ok) {
+    try {
+      const body = (await tplRes.json()) as {
+        template: DocumentTemplate | null;
+      };
+      activeTemplate = body.template;
+    } catch {
+      activeTemplate = null;
+    }
+  }
+
   const pdf = await renderToBuffer(
-    ProformaInvoicePDF({
-      tenant: { businessName: me.tenant.businessName },
-      proformaInvoice: data.proformaInvoice,
-      lines: data.lines,
-      customer: data.customer,
-      logoDataUrl,
-    }),
+    activeTemplate
+      ? renderProformaInvoiceTemplate(
+          activeTemplate.layoutJson,
+          buildProformaInvoiceContext({
+            tenant: { businessName: me.tenant.businessName },
+            proformaInvoice: data.proformaInvoice,
+            lines: data.lines,
+            customer: data.customer,
+            logoDataUrl,
+          }),
+        )
+      : ProformaInvoicePDF({
+          tenant: { businessName: me.tenant.businessName },
+          proformaInvoice: data.proformaInvoice,
+          lines: data.lines,
+          customer: data.customer,
+          logoDataUrl,
+        }),
   );
 
   const filename = `${data.proformaInvoice.proformaNumber ?? "proforma-" + data.proformaInvoice.id.slice(0, 8)}.pdf`;

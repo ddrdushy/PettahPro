@@ -14,6 +14,8 @@ import type {
   CreditNoteLinkedInvoice,
   CreditNoteReason,
   Customer,
+  DeliveryNoteDetail,
+  DeliveryNoteLine,
   DebitNoteDetail,
   DebitNoteLine,
   DebitNoteLinkedBill,
@@ -22,6 +24,8 @@ import type {
   InvoiceLine,
   PurchaseOrderDetail,
   PurchaseOrderLine,
+  ProformaInvoiceDetail,
+  ProformaInvoiceLine,
   QuotationDetail,
   QuotationLine,
   Supplier,
@@ -108,6 +112,18 @@ type Section =
   // similar boilerplate. Both label and text are template-overridable.
   // Generic enough to reuse on stock_transfer / settlement_letter.
   | { type: "instructions"; label?: string; text?: string }
+  // Italic disclaimer / legal notice block — used by proforma
+  // invoices for the "this is not a tax invoice" copy and by
+  // settlement letters for the "final and binding" clause.
+  | { type: "disclaimer"; text?: string }
+  // Two-column "Deliver to" + "Shipping address" block used by
+  // delivery notes. Customer-facing left column, free-form ship-to
+  // right column when the DN carries an explicit shipping address.
+  | { type: "partiesRow" }
+  // Signature block for paper sign-off — used on delivery notes and
+  // stock transfers. Renders side-by-side dotted lines with role
+  // labels under each.
+  | { type: "signBlock"; leftLabel?: string; rightLabel?: string }
   | { type: "totals"; showTaxBreakdown?: boolean }
   | { type: "notes" }
   | { type: "footer"; text?: string }
@@ -1745,6 +1761,107 @@ export function renderCreditNoteTemplate(
 }
 
 // -----------------------------------------------------------------
+// Delivery note context + renderer (M2 #5/10)
+//
+// DN is a logistics doc: no money, just a record of what physically
+// left the warehouse and went to the customer. New section types
+// `partiesRow` (two-column Deliver-to + Shipping-address) and
+// `signBlock` (Delivered by / Received by) capture the doc's two
+// distinguishing pieces. Line items table is qty-only — no prices
+// because the DN is not a fiscal document.
+// -----------------------------------------------------------------
+export type DeliveryNoteContext = {
+  docType: "delivery_note";
+  tenant: Pick<Tenant, "businessName">;
+  deliveryNote: DeliveryNoteDetail;
+  lines: DeliveryNoteLine[];
+  customer: Customer | null;
+  logoDataUrl?: string | null;
+};
+
+export function buildDeliveryNoteContext(args: {
+  tenant: Pick<Tenant, "businessName">;
+  deliveryNote: DeliveryNoteDetail;
+  lines: DeliveryNoteLine[];
+  customer: Customer | null;
+  logoDataUrl?: string | null;
+}): DeliveryNoteContext {
+  return { docType: "delivery_note", ...args };
+}
+
+function buildDeliveryNoteStyles(theme: Theme) {
+  const base = buildInvoiceStyles(theme);
+  return StyleSheet.create({
+    ...base,
+    partiesRow: {
+      flexDirection: "row",
+      gap: 24,
+      marginBottom: 24,
+    },
+    partyCol: { flex: 1 },
+    partyLabel: {
+      fontSize: 8,
+      textTransform: "uppercase",
+      letterSpacing: 0.8,
+      color: theme.textTertiary,
+      marginBottom: 6,
+    },
+    partyName: {
+      fontSize: 12,
+      fontFamily: `${theme.fontFamily}-Bold`,
+      marginBottom: 2,
+    },
+    partyLine: { color: theme.textSecondary, marginTop: 2 },
+    // DN line items are qty-only — override the standard column
+    // widths so Description gets all the room.
+    dnColNum: { width: 24, textAlign: "center" },
+    dnColDesc: { flex: 1, paddingRight: 8 },
+    dnColQty: { width: 100, textAlign: "right" },
+    signBlock: {
+      flexDirection: "row",
+      gap: 24,
+      marginTop: 32,
+    },
+    signCol: { flex: 1 },
+    signLine: {
+      borderTop: `0.5pt solid ${theme.textPrimary}`,
+      paddingTop: 8,
+      minHeight: 56,
+    },
+    signLabel: {
+      fontSize: 8,
+      textTransform: "uppercase",
+      letterSpacing: 0.8,
+      color: theme.textTertiary,
+    },
+    signName: {
+      marginTop: 4,
+      fontSize: 10,
+      color: theme.textPrimary,
+    },
+  });
+}
+
+function formatDnQty(n: string | number): string {
+  return Number(n).toLocaleString("en-LK", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 4,
+  });
+}
+
+function renderDeliveryNoteSection(
+  section: Section,
+  ctx: DeliveryNoteContext,
+  styles: ReturnType<typeof buildDeliveryNoteStyles>,
+  key: number,
+) {
+  const { deliveryNote, lines, customer, tenant } = ctx;
+  const shipAddress = [
+    deliveryNote.shippingAddressLine1,
+    deliveryNote.shippingAddressLine2,
+    deliveryNote.shippingCity,
+    deliveryNote.shippingPostalCode,
+  ].filter(Boolean) as string[];
 // Debit note context + renderer (M2 #4/10)
 //
 // AP-side counterpart to credit notes. Differs in three places:
@@ -1810,6 +1927,12 @@ function renderDebitNoteSection(
             <Text style={styles.tenantMeta}>Sri Lanka</Text>
           </View>
           <View style={styles.invoiceHeader}>
+            <Text style={styles.invoiceLabel}>Delivery note</Text>
+            <Text style={styles.invoiceNumber}>
+              {deliveryNote.dnNumber ?? "Draft"}
+            </Text>
+            {section.showStatusPill !== false && (
+              <Text style={styles.statusPill}>{deliveryNote.status}</Text>
             <Text style={styles.invoiceLabel}>Debit Note</Text>
             <Text style={styles.invoiceNumber}>{docNumber}</Text>
             {section.showStatusPill !== false && (
@@ -1819,6 +1942,38 @@ function renderDebitNoteSection(
         </View>
       );
 
+    case "metaRow": {
+      const fields = section.fields ?? [
+        "deliveryDate",
+        "carrier",
+        "trackingNumber",
+        "deliveredAt",
+      ];
+      const cells: Array<{ label: string; value: string | null }> = fields.map(
+        (f) => {
+          if (f === "deliveryDate")
+            return {
+              label: "Delivery date",
+              value: formatDate(deliveryNote.deliveryDate),
+            };
+          if (f === "carrier")
+            return { label: "Carrier", value: deliveryNote.carrier ?? null };
+          if (f === "trackingNumber")
+            return {
+              label: "Tracking #",
+              value: deliveryNote.trackingNumber ?? null,
+            };
+          if (f === "deliveredAt")
+            return {
+              label: "Delivered",
+              value: deliveryNote.deliveredAt
+                ? formatDate(deliveryNote.deliveredAt.slice(0, 10))
+                : null,
+            };
+          if (f === "dnNumber")
+            return {
+              label: "DN #",
+              value: deliveryNote.dnNumber ?? null,
     case "draftBanner":
       if (debitNote.status !== "draft") return null;
       return (
@@ -1884,6 +2039,55 @@ function renderDebitNoteSection(
       );
     }
 
+    case "partiesRow":
+      if (!customer && shipAddress.length === 0) return null;
+      return (
+        <View key={key} style={styles.partiesRow}>
+          {customer && (
+            <View style={styles.partyCol}>
+              <Text style={styles.partyLabel}>Deliver to</Text>
+              <Text style={styles.partyName}>{customer.name}</Text>
+              {customer.addressLine1 && (
+                <Text style={styles.partyLine}>{customer.addressLine1}</Text>
+              )}
+              {customer.addressLine2 && (
+                <Text style={styles.partyLine}>{customer.addressLine2}</Text>
+              )}
+              {customer.city && (
+                <Text style={styles.partyLine}>{customer.city}</Text>
+              )}
+              {customer.phone && (
+                <Text style={styles.partyLine}>{customer.phone}</Text>
+              )}
+            </View>
+          )}
+          {shipAddress.length > 0 && (
+            <View style={styles.partyCol}>
+              <Text style={styles.partyLabel}>Shipping address</Text>
+              {shipAddress.map((line, i) => (
+                <Text key={i} style={styles.partyLine}>
+                  {line}
+                </Text>
+              ))}
+            </View>
+          )}
+        </View>
+      );
+
+    // billTo on a DN context falls back to a single-column Deliver-to
+    // so a generic library template that contains {type:"billTo"}
+    // still renders the customer block usefully.
+    case "billTo":
+      if (!customer) return null;
+      return (
+        <View key={key} style={styles.billTo}>
+          <Text style={styles.billToLabel}>Deliver to</Text>
+          <Text style={styles.billToName}>{customer.name}</Text>
+          {customer.addressLine1 && (
+            <Text style={styles.billToLine}>{customer.addressLine1}</Text>
+          )}
+          {customer.city && (
+            <Text style={styles.billToLine}>{customer.city}</Text>
     case "linkedDocument":
       if (!bill) return null;
       return (
@@ -1943,6 +2147,16 @@ function renderDebitNoteSection(
       return (
         <View key={key} style={styles.table}>
           <View style={[styles.row, styles.rowHeader]}>
+            <Text style={[styles.dnColNum, styles.th]}>#</Text>
+            <Text style={[styles.dnColDesc, styles.th]}>Description</Text>
+            <Text style={[styles.dnColQty, styles.th]}>Qty delivered</Text>
+          </View>
+          {lines.map((l) => (
+            <View key={l.id} style={styles.row} wrap={false}>
+              <Text style={[styles.dnColNum, styles.td]}>{l.lineNo}</Text>
+              <Text style={[styles.dnColDesc, styles.td]}>{l.description}</Text>
+              <Text style={[styles.dnColQty, styles.td]}>
+                {formatDnQty(l.quantity)}
             <Text style={[styles.colNum, styles.th]}>#</Text>
             <Text style={[styles.colDesc, styles.th]}>Description</Text>
             <Text style={[styles.colQty, styles.th]}>Qty</Text>
@@ -1986,6 +2200,37 @@ function renderDebitNoteSection(
         </View>
       );
 
+    case "notes":
+      if (!deliveryNote.notes) return null;
+      return (
+        <View key={key} style={styles.notes} wrap={false}>
+          <Text style={styles.notesLabel}>Notes</Text>
+          <Text style={styles.notesText}>{deliveryNote.notes}</Text>
+        </View>
+      );
+
+    case "signBlock":
+      return (
+        <View key={key} style={styles.signBlock} wrap={false}>
+          <View style={styles.signCol}>
+            <View style={styles.signLine}>
+              <Text style={styles.signLabel}>
+                {section.leftLabel ?? "Delivered by (name & signature)"}
+              </Text>
+            </View>
+          </View>
+          <View style={styles.signCol}>
+            <View style={styles.signLine}>
+              <Text style={styles.signLabel}>
+                {section.rightLabel ?? "Received by (name & signature)"}
+              </Text>
+              {deliveryNote.receivedByName && (
+                <Text style={styles.signName}>
+                  {deliveryNote.receivedByName}
+                </Text>
+              )}
+            </View>
+          </View>
     case "totals":
       return (
         <View key={key} style={styles.totalsBlock}>
@@ -2059,6 +2304,9 @@ function renderDebitNoteSection(
     case "footer":
       return (
         <View key={key} style={styles.footer} fixed>
+          <Text>
+            {section.text ?? "Generated with PettahPro — pettahpro.lk"}
+          </Text>
           <Text>{section.text ?? "Generated with PettahPro — pettahpro.lk"}</Text>
           <Text>{tenant.businessName}</Text>
         </View>
@@ -2086,6 +2334,16 @@ function renderDebitNoteSection(
   }
 }
 
+export function renderDeliveryNoteTemplate(
+  layoutRaw: unknown,
+  ctx: DeliveryNoteContext,
+) {
+  const layout = parseLayout(layoutRaw);
+  const styles = buildDeliveryNoteStyles(layout.theme);
+
+  return (
+    <Document
+      title={ctx.deliveryNote.dnNumber ?? "Delivery note"}
 export function renderDebitNoteTemplate(
   layoutRaw: unknown,
   ctx: DebitNoteContext,
@@ -2102,6 +2360,7 @@ export function renderDebitNoteTemplate(
     >
       <Page size={pageSizeProp(layout.pageSize)} style={styles.page}>
         {layout.sections.map((section, i) =>
+          renderDeliveryNoteSection(section, ctx, styles, i),
           renderDebitNoteSection(section, ctx, styles, i),
         )}
       </Page>
@@ -2169,6 +2428,67 @@ function renderPurchaseOrderSection(
   key: number,
 ) {
   const { purchaseOrder: po, lines, supplier, tenant } = ctx;
+// Proforma invoice context + renderer (M2 #6/10)
+//
+// Proformas are pre-sale documents for advance payment / customs /
+// LC purposes. Same shape as a quotation (validity callout, money,
+// "Prepared for" customer block) plus a fixed legal disclaimer at
+// the bottom: "This is not a tax invoice." The disclaimer is its
+// own section type so settlement_letter (M2 #10) can reuse it.
+// -----------------------------------------------------------------
+const PROFORMA_DEFAULT_DISCLAIMER =
+  "This is a proforma invoice issued for advance payment, customs, or letter-of-credit purposes. It is not a tax invoice. A final VAT invoice will be issued on supply.";
+
+export type ProformaInvoiceContext = {
+  docType: "proforma_invoice";
+  tenant: Pick<Tenant, "businessName">;
+  proformaInvoice: ProformaInvoiceDetail;
+  lines: ProformaInvoiceLine[];
+  customer: Customer | null;
+  logoDataUrl?: string | null;
+};
+
+export function buildProformaInvoiceContext(args: {
+  tenant: Pick<Tenant, "businessName">;
+  proformaInvoice: ProformaInvoiceDetail;
+  lines: ProformaInvoiceLine[];
+  customer: Customer | null;
+  logoDataUrl?: string | null;
+}): ProformaInvoiceContext {
+  return { docType: "proforma_invoice", ...args };
+}
+
+function buildProformaStyles(theme: Theme) {
+  // Reuse quotation styles — same validity callout shape.
+  const base = buildQuotationStyles(theme);
+  return StyleSheet.create({
+    ...base,
+    disclaimer: {
+      marginTop: 18,
+      padding: 12,
+      borderLeft: `2pt solid ${theme.borderColor}`,
+    },
+    disclaimerText: {
+      fontSize: 9,
+      fontStyle: "italic",
+      color: theme.textSecondary,
+      lineHeight: 1.5,
+    },
+  });
+}
+
+function renderProformaSection(
+  section: Section,
+  ctx: ProformaInvoiceContext,
+  styles: ReturnType<typeof buildProformaStyles>,
+  key: number,
+) {
+  const { proformaInvoice: pf, lines, customer, tenant } = ctx;
+  const today = new Date().toISOString().slice(0, 10);
+  const isExpired =
+    pf.status !== "converted" &&
+    pf.status !== "cancelled" &&
+    pf.validUntil < today;
 
   switch (section.type) {
     case "header":
@@ -2186,6 +2506,12 @@ function renderPurchaseOrderSection(
             <Text style={styles.invoiceNumber}>{po.poNumber ?? "Draft"}</Text>
             {section.showStatusPill !== false && (
               <Text style={styles.statusPill}>{po.status}</Text>
+            <Text style={styles.invoiceLabel}>Proforma invoice</Text>
+            <Text style={styles.invoiceNumber}>
+              {pf.proformaNumber ?? "Draft"}
+            </Text>
+            {section.showStatusPill !== false && (
+              <Text style={styles.statusPill}>{pf.status}</Text>
             )}
           </View>
         </View>
@@ -2195,6 +2521,8 @@ function renderPurchaseOrderSection(
       const fields = section.fields ?? [
         "orderDate",
         "expectedDeliveryDate",
+        "issueDate",
+        "validUntil",
         "reference",
         "currency",
       ];
@@ -2215,6 +2543,16 @@ function renderPurchaseOrderSection(
             return { label: "Currency", value: po.currency };
           if (f === "poNumber")
             return { label: "PO #", value: po.poNumber ?? null };
+          if (f === "issueDate")
+            return { label: "Issue date", value: formatDate(pf.issueDate) };
+          if (f === "validUntil")
+            return { label: "Valid until", value: formatDate(pf.validUntil) };
+          if (f === "reference")
+            return { label: "Reference", value: pf.reference ?? null };
+          if (f === "currency")
+            return { label: "Currency", value: pf.currency };
+          if (f === "proformaNumber")
+            return { label: "Proforma #", value: pf.proformaNumber ?? null };
           return { label: f, value: null };
         },
       );
@@ -2259,6 +2597,24 @@ function renderPurchaseOrderSection(
           {supplier.vatNo && (
             <Text style={[styles.billFromLine, { marginTop: 4, fontSize: 8 }]}>
               VAT: {supplier.vatNo}
+    case "billTo":
+      if (!customer) return null;
+      return (
+        <View key={key} style={styles.billTo}>
+          <Text style={styles.billToLabel}>Prepared for</Text>
+          <Text style={styles.billToName}>{customer.name}</Text>
+          {customer.addressLine1 && (
+            <Text style={styles.billToLine}>{customer.addressLine1}</Text>
+          )}
+          {customer.city && (
+            <Text style={styles.billToLine}>{customer.city}</Text>
+          )}
+          {customer.email && (
+            <Text style={styles.billToLine}>{customer.email}</Text>
+          )}
+          {customer.vatNo && (
+            <Text style={[styles.billToLine, { marginTop: 4, fontSize: 8 }]}>
+              VAT: {customer.vatNo}
             </Text>
           )}
         </View>
@@ -2292,6 +2648,7 @@ function renderPurchaseOrderSection(
                   <Text style={styles.tdMuted}>
                     Discount {(l.discountPctBps / 100).toFixed(2)}% ·{" "}
                     {formatLKR(l.discountCents, po.currency)}
+                    {formatLKR(l.discountCents, pf.currency)}
                   </Text>
                 )}
               </View>
@@ -2304,6 +2661,11 @@ function renderPurchaseOrderSection(
               <View style={styles.colTax}>
                 <Text style={styles.td}>
                   {l.taxCents > 0 ? formatLKR(l.taxCents, po.currency) : "—"}
+                {formatLKR(l.unitPriceCents, pf.currency)}
+              </Text>
+              <View style={styles.colTax}>
+                <Text style={styles.td}>
+                  {l.taxCents > 0 ? formatLKR(l.taxCents, pf.currency) : "—"}
                 </Text>
                 {l.taxCents > 0 && (
                   <Text style={styles.tdMuted}>
@@ -2313,6 +2675,7 @@ function renderPurchaseOrderSection(
               </View>
               <Text style={[styles.colTotal, styles.td]}>
                 {formatLKR(l.lineTotalCents, po.currency)}
+                {formatLKR(l.lineTotalCents, pf.currency)}
               </Text>
             </View>
           ))}
@@ -2333,6 +2696,14 @@ function renderPurchaseOrderSection(
               <Text style={styles.totalLabel}>Discount</Text>
               <Text style={styles.totalValue}>
                 -{formatLKR(po.discountCents, po.currency)}
+              {formatLKR(pf.subtotalCents, pf.currency)}
+            </Text>
+          </View>
+          {pf.discountCents > 0 && (
+            <View style={styles.totalRow}>
+              <Text style={styles.totalLabel}>Discount</Text>
+              <Text style={styles.totalValue}>
+                -{formatLKR(pf.discountCents, pf.currency)}
               </Text>
             </View>
           )}
@@ -2340,6 +2711,7 @@ function renderPurchaseOrderSection(
             <Text style={styles.totalLabel}>Tax</Text>
             <Text style={styles.totalValue}>
               {formatLKR(po.taxCents, po.currency)}
+              {formatLKR(pf.taxCents, pf.currency)}
             </Text>
           </View>
           <View style={styles.totalDivider} />
@@ -2347,6 +2719,9 @@ function renderPurchaseOrderSection(
             <Text style={styles.grandLabel}>Order total</Text>
             <Text style={styles.grandValue}>
               {formatLKR(po.totalCents, po.currency)}
+            <Text style={styles.grandLabel}>Total</Text>
+            <Text style={styles.grandValue}>
+              {formatLKR(pf.totalCents, pf.currency)}
             </Text>
           </View>
         </View>
@@ -2381,6 +2756,47 @@ function renderPurchaseOrderSection(
             <View style={{ marginTop: po.notes ? 14 : 0 }}>
               <Text style={styles.notesLabel}>Terms</Text>
               <Text style={styles.notesText}>{po.terms}</Text>
+    case "validity":
+      return (
+        <View key={key} style={styles.validity} wrap={false}>
+          <Text style={styles.validityLabel}>Validity</Text>
+          <Text
+            style={
+              isExpired
+                ? [styles.validityText, styles.validityExpired]
+                : styles.validityText
+            }
+          >
+            {isExpired
+              ? `This proforma expired on ${formatDate(pf.validUntil)}. Please request a fresh proforma.`
+              : `This proforma is valid until ${formatDate(pf.validUntil)}. Prices and availability may change after that date.`}
+          </Text>
+        </View>
+      );
+
+    case "disclaimer":
+      return (
+        <View key={key} style={styles.disclaimer} wrap={false}>
+          <Text style={styles.disclaimerText}>
+            {section.text ?? PROFORMA_DEFAULT_DISCLAIMER}
+          </Text>
+        </View>
+      );
+
+    case "notes":
+      if (!pf.notes && !pf.terms) return null;
+      return (
+        <View key={key} style={styles.notes} wrap={false}>
+          {pf.notes && (
+            <>
+              <Text style={styles.notesLabel}>Notes</Text>
+              <Text style={styles.notesText}>{pf.notes}</Text>
+            </>
+          )}
+          {pf.terms && (
+            <View style={{ marginTop: pf.notes ? 14 : 0 }}>
+              <Text style={styles.notesLabel}>Terms</Text>
+              <Text style={styles.notesText}>{pf.terms}</Text>
             </View>
           )}
         </View>
@@ -2428,6 +2844,16 @@ export function renderPurchaseOrderTemplate(
   return (
     <Document
       title={ctx.purchaseOrder.poNumber ?? "Purchase order"}
+export function renderProformaInvoiceTemplate(
+  layoutRaw: unknown,
+  ctx: ProformaInvoiceContext,
+) {
+  const layout = parseLayout(layoutRaw);
+  const styles = buildProformaStyles(layout.theme);
+
+  return (
+    <Document
+      title={ctx.proformaInvoice.proformaNumber ?? "Proforma invoice"}
       author={ctx.tenant.businessName}
       creator="PettahPro"
       producer="PettahPro"
@@ -2435,6 +2861,7 @@ export function renderPurchaseOrderTemplate(
       <Page size={pageSizeProp(layout.pageSize)} style={styles.page}>
         {layout.sections.map((section, i) =>
           renderPurchaseOrderSection(section, ctx, styles, i),
+          renderProformaSection(section, ctx, styles, i),
         )}
       </Page>
     </Document>
