@@ -50,6 +50,12 @@ export const journalLines = pgTable("journal_lines", {
   customerId: uuid("customer_id"),
   supplierId: uuid("supplier_id"),
   itemId: uuid("item_id"),
+  // Dimension tag for cost-center reporting (#129 / gaps B1).
+  // Nullable — pre-#129 lines stay null and roll up under
+  // "Unassigned" in the P&L cost-center filter. Stamped by post
+  // helpers when the source document has a cost_center_id (v1:
+  // invoices only; bills/payroll/payments are follow-ups).
+  costCenterId: uuid("cost_center_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -63,6 +69,10 @@ export interface JournalDraftLine {
   description?: string | null;
   customerId?: string | null;
   supplierId?: string | null;
+  // Cost center dimension (#129 / gaps B1). Optional — when omitted,
+  // the line lands with cost_center_id NULL and rolls up under
+  // "Unassigned" in the P&L cost-center filter.
+  costCenterId?: string | null;
 }
 
 export const journalEntryDrafts = pgTable("journal_entry_drafts", {

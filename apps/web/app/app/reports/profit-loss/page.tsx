@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { cookies } from "next/headers";
 import Link from "next/link";
 import { TrendingUp, TrendingDown } from "lucide-react";
-import type { ProfitLoss } from "@/lib/api";
+import type { CostCenter, ProfitLoss } from "@/lib/api";
 import { PageHeader } from "@/components/app/page-header";
 import { formatLKR, formatDate } from "@/lib/format";
 
@@ -18,15 +18,18 @@ async function fetchPL({
   from,
   to,
   compare,
+  costCenterId,
 }: {
   from?: string;
   to?: string;
   compare?: string;
+  costCenterId?: string;
 }): Promise<ProfitLoss | null> {
   const params = new URLSearchParams();
   if (from) params.set("from", from);
   if (to) params.set("to", to);
   if (compare) params.set("compare", compare);
+  if (costCenterId) params.set("costCenterId", costCenterId);
   const qs = params.toString();
   const res = await fetch(
     `${process.env.INTERNAL_API_URL ?? "http://api:4000"}/reports/profit-loss${qs ? `?${qs}` : ""}`,
@@ -39,12 +42,24 @@ async function fetchPL({
   return (await res.json()) as ProfitLoss;
 }
 
+async function fetchCostCenters(): Promise<CostCenter[]> {
+  const res = await fetch(
+    `${process.env.INTERNAL_API_URL ?? "http://api:4000"}/cost-centers`,
+    { headers: { cookie: cookies().toString() }, cache: "no-store" },
+  );
+  if (!res.ok) return [];
+  return ((await res.json()) as { costCenters: CostCenter[] }).costCenters;
+}
+
 export default async function ProfitLossPage({
   searchParams,
 }: {
-  searchParams: { from?: string; to?: string; compare?: string };
+  searchParams: { from?: string; to?: string; compare?: string; costCenterId?: string };
 }) {
-  const data = await fetchPL(searchParams);
+  const [data, costCenters] = await Promise.all([
+    fetchPL(searchParams),
+    fetchCostCenters(),
+  ]);
 
   if (!data) {
     return (
@@ -112,6 +127,30 @@ export default async function ProfitLossPage({
             <option value="prior_year">Prior year</option>
           </select>
         </div>
+        {costCenters.length > 0 && (
+          <div>
+            <label
+              htmlFor="costCenterId"
+              className="block text-caption uppercase tracking-wide text-text-tertiary"
+            >
+              Cost center
+            </label>
+            <select
+              id="costCenterId"
+              name="costCenterId"
+              defaultValue={searchParams.costCenterId ?? ""}
+              className="mt-1.5 rounded-md border-hairline border-border-emphasis bg-surface-elevated px-3 py-2 text-small text-charcoal focus:border-charcoal focus:outline-none"
+            >
+              <option value="">All centers</option>
+              <option value="unassigned">Unassigned</option>
+              {costCenters.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.code} — {c.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
         <button type="submit" className="btn-secondary text-small">Apply</button>
       </form>
 

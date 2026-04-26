@@ -1025,6 +1025,42 @@ export const api = {
       "/subscription/coupons/mine",
     ),
 
+  // Cost centers (#129 / gaps B1).
+  listCostCenters: (opts?: { includeArchived?: boolean }) => {
+    const qs = new URLSearchParams();
+    if (opts?.includeArchived) qs.set("includeArchived", "true");
+    const q = qs.toString();
+    return request<{ costCenters: CostCenter[] }>(
+      `/cost-centers${q ? `?${q}` : ""}`,
+    );
+  },
+  createCostCenter: (body: {
+    code: string;
+    name: string;
+    parentCostCenterId?: string | null;
+    notes?: string | null;
+    isActive?: boolean;
+  }) =>
+    request<{ costCenter: CostCenter }>("/cost-centers", {
+      method: "POST",
+      json: body,
+    }),
+  updateCostCenter: (
+    id: string,
+    body: {
+      name?: string;
+      parentCostCenterId?: string | null;
+      notes?: string | null;
+      isActive?: boolean;
+    },
+  ) =>
+    request<{ costCenter: CostCenter }>(`/cost-centers/${id}`, {
+      method: "PATCH",
+      json: body,
+    }),
+  deleteCostCenter: (id: string) =>
+    request<{ ok: true }>(`/cost-centers/${id}`, { method: "DELETE" }),
+
   // Pause / resume (#125).
   pauseMySubscription: (body: { reason: string; resumeAt?: string }) =>
     request<{ ok: true; status: "paused"; resumeAt: string | null }>(
@@ -5531,6 +5567,19 @@ export interface TenantCouponRedemption {
   redeemedAt: string;
   consumedAt?: string | null;
   cancelledAt?: string | null;
+}
+
+// Cost centers (#129 / gaps B1).
+export interface CostCenter {
+  id: string;
+  code: string;
+  name: string;
+  parentCostCenterId: string | null;
+  isActive: boolean;
+  notes: string | null;
+  deletedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface FxRate {

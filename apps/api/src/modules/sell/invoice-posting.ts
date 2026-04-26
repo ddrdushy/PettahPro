@@ -413,6 +413,17 @@ export async function postDraftInvoice(
     );
   }
 
+  // Cost center dimension propagation (#129 / gaps B1). Stamp the
+  // invoice's cost_center_id onto every journal line so the P&L
+  // cost-center filter sees the dimension end-to-end. Single line
+  // here keeps the change localised — no need to touch every
+  // `journalLines.push({...})` spot above.
+  if (invoice.costCenterId) {
+    for (const line of journalLines) {
+      line.costCenterId = invoice.costCenterId;
+    }
+  }
+
   const { entryId, entryNumber } = await postJournal(tx, {
     tenantId,
     entryDate: invoice.issueDate,

@@ -25,6 +25,12 @@ export const invoices = pgTable("invoices", {
   invoiceNumber: varchar("invoice_number", { length: 48 }),
   customerId: uuid("customer_id").notNull().references(() => customers.id, { onDelete: "restrict" }),
   branchId: uuid("branch_id").references(() => branches.id, { onDelete: "set null" }),
+  // Cost center for dimension-tagged reporting (#129 / gaps B1).
+  // Nullable — pre-#129 invoices stay null and roll up under
+  // "Unassigned" in the P&L cost-center filter. The post-time
+  // propagation copies this value onto every journal line the
+  // invoice produces.
+  costCenterId: uuid("cost_center_id"),
   status: varchar("status", { length: 16 }).notNull().default("draft"),
   issueDate: date("issue_date").notNull(),
   dueDate: date("due_date").notNull(),
