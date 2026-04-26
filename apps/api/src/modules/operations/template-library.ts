@@ -209,6 +209,29 @@ const LIBRARY: readonly LibraryTemplate[] = [
     languages: ["en"],
     layout: CLASSIC_DEBIT_NOTE_LAYOUT,
   },
+  {
+    libraryKey: "settlement_letter_classic",
+    docType: "settlement_letter",
+    name: "Classic settlement letter",
+    description:
+      "Final settlement letter for a departing employee. Carries hire/exit dates and years of service, single-column earnings + deductions cards, a highlighted Net-payable band, and a Declaration paragraph asserting full-and-final settlement.",
+    languages: ["en"],
+    layout: {
+      pageSize: "a4",
+      theme: CLASSIC_THEME,
+      sections: [
+        { type: "header", showLogo: true, showStatusPill: true },
+        { type: "settlementEmployee" },
+        { type: "settlementEarnings" },
+        { type: "settlementDeductions" },
+        { type: "settlementNetPay" },
+        { type: "settlementDeclaration" },
+        { type: "notes" },
+        { type: "settlementSignatures" },
+        { type: "footer" },
+      ],
+    },
+  },
 ] as const;
 
 export function listLibraryTemplates(filters: {

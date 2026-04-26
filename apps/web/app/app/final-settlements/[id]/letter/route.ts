@@ -3,7 +3,15 @@ import { renderToBuffer } from "@react-pdf/renderer";
 import { SettlementLetterPDF } from "@/lib/settlement-letter-pdf";
 import { pdfResponse } from "@/lib/pdf-response";
 import { fetchTenantLogoDataUrl } from "@/lib/tenant-logo";
-import type { FinalSettlementRow, Tenant } from "@/lib/api";
+import {
+  buildSettlementContext,
+  renderSettlementLetterTemplate,
+} from "@/lib/template-renderer";
+import type {
+  DocumentTemplate,
+  FinalSettlementRow,
+  Tenant,
+} from "@/lib/api";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -18,7 +26,7 @@ export async function GET(
     return new Response("Unauthorized", { status: 401 });
   }
 
-  const [meRes, settlementRes, logoDataUrl] = await Promise.all([
+  const [meRes, settlementRes, tplRes, logoDataUrl] = await Promise.all([
     fetch(`${base}/auth/me`, {
       headers: { cookie: cookieHeader },
       cache: "no-store",
@@ -27,6 +35,10 @@ export async function GET(
       headers: { cookie: cookieHeader },
       cache: "no-store",
     }),
+    fetch(`${base}/document-templates/active?docType=settlement_letter&language=en`, {
+      headers: { cookie: cookieHeader },
+      cache: "no-store",
+    }).catch(() => null),
     fetchTenantLogoDataUrl(cookieHeader),
   ]);
   if (meRes.status === 401) return new Response("Unauthorized", { status: 401 });
@@ -41,12 +53,33 @@ export async function GET(
     settlement: FinalSettlementRow;
   };
 
+  let activeTemplate: DocumentTemplate | null = null;
+  if (tplRes && tplRes.ok) {
+    try {
+      const body = (await tplRes.json()) as {
+        template: DocumentTemplate | null;
+      };
+      activeTemplate = body.template;
+    } catch {
+      activeTemplate = null;
+    }
+  }
+
   const pdf = await renderToBuffer(
-    SettlementLetterPDF({
-      tenant: { businessName: me.tenant.businessName },
-      settlement,
-      logoDataUrl,
-    }),
+    activeTemplate
+      ? renderSettlementLetterTemplate(
+          activeTemplate.layoutJson,
+          buildSettlementContext({
+            tenant: { businessName: me.tenant.businessName },
+            settlement,
+            logoDataUrl,
+          }),
+        )
+      : SettlementLetterPDF({
+          tenant: { businessName: me.tenant.businessName },
+          settlement,
+          logoDataUrl,
+        }),
   );
 
   const number = settlement.settlementNumber ?? `draft-${settlement.id.slice(0, 8)}`;
