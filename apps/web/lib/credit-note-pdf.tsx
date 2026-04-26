@@ -1,4 +1,5 @@
 import { Document, Page, Text, View, StyleSheet } from "@react-pdf/renderer";
+import { PdfLogoBlock } from "@/lib/pdf-logo-block";
 import type {
   CreditNoteDetail,
   CreditNoteLine,
@@ -239,12 +240,14 @@ export function CreditNotePDF({
   lines,
   customer,
   invoice,
+  logoDataUrl,
 }: {
   tenant: Pick<Tenant, "businessName">;
   creditNote: CreditNoteDetail;
   lines: CreditNoteLine[];
   customer: Customer | null;
   invoice: CreditNoteLinkedInvoice | null;
+  logoDataUrl?: string | null;
 }) {
   const statusStyle = {
     draft: styles.statusDraft,
@@ -265,6 +268,7 @@ export function CreditNotePDF({
       <Page size="A4" style={styles.page}>
         <View style={styles.header} fixed>
           <View style={styles.tenantBlock}>
+            <PdfLogoBlock logoDataUrl={logoDataUrl} />
             <Text style={styles.tenantName}>{tenant.businessName}</Text>
             <Text style={styles.tenantMeta}>Sri Lanka</Text>
           </View>

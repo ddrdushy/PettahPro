@@ -1,4 +1,5 @@
 import { Document, Page, Text, View, StyleSheet } from "@react-pdf/renderer";
+import { PdfLogoBlock } from "@/lib/pdf-logo-block";
 import type {
   Customer,
   ProformaInvoiceDetail,
@@ -211,11 +212,13 @@ export function ProformaInvoicePDF({
   proformaInvoice,
   lines,
   customer,
+  logoDataUrl,
 }: {
   tenant: Pick<Tenant, "businessName">;
   proformaInvoice: ProformaInvoiceDetail;
   lines: ProformaInvoiceLine[];
   customer: Customer | null;
+  logoDataUrl?: string | null;
 }) {
   const statusStyle = {
     draft: styles.statusDraft,
@@ -240,6 +243,7 @@ export function ProformaInvoicePDF({
       <Page size="A4" style={styles.page}>
         <View style={styles.header} fixed>
           <View style={styles.tenantBlock}>
+            <PdfLogoBlock logoDataUrl={logoDataUrl} />
             <Text style={styles.tenantName}>{tenant.businessName}</Text>
             <Text style={styles.tenantMeta}>Sri Lanka</Text>
           </View>

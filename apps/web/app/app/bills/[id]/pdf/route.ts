@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import { renderToBuffer } from "@react-pdf/renderer";
 import { BillPDF } from "@/lib/bill-pdf";
 import { pdfResponse } from "@/lib/pdf-response";
+import { fetchTenantLogoDataUrl } from "@/lib/tenant-logo";
 import type { BillCharge, BillDetail, BillLine, Supplier, Tenant } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
@@ -15,12 +16,13 @@ export async function GET(
   const cookieHeader = cookies().toString();
   if (!cookieHeader) return new Response("Unauthorized", { status: 401 });
 
-  const [meRes, billRes] = await Promise.all([
+  const [meRes, billRes, logoDataUrl] = await Promise.all([
     fetch(`${base}/auth/me`, { headers: { cookie: cookieHeader }, cache: "no-store" }),
     fetch(`${base}/bills/${params.id}`, {
       headers: { cookie: cookieHeader },
       cache: "no-store",
     }),
+    fetchTenantLogoDataUrl(cookieHeader),
   ]);
   if (meRes.status === 401) return new Response("Unauthorized", { status: 401 });
   if (billRes.status === 404) return new Response("Bill not found", { status: 404 });
@@ -41,6 +43,7 @@ export async function GET(
       lines: data.lines,
       charges: data.charges,
       supplier: data.supplier,
+      logoDataUrl,
     }),
   );
 

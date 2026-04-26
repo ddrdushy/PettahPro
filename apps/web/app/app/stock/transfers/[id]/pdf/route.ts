@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import { renderToBuffer } from "@react-pdf/renderer";
 import { StockTransferPDF } from "@/lib/stock-transfer-pdf";
 import { pdfResponse } from "@/lib/pdf-response";
+import { fetchTenantLogoDataUrl } from "@/lib/tenant-logo";
 import type {
   StockTransferDetail,
   StockTransferLineRow,
@@ -20,12 +21,13 @@ export async function GET(
   const cookieHeader = cookies().toString();
   if (!cookieHeader) return new Response("Unauthorized", { status: 401 });
 
-  const [meRes, tRes] = await Promise.all([
+  const [meRes, tRes, logoDataUrl] = await Promise.all([
     fetch(`${base}/auth/me`, { headers: { cookie: cookieHeader }, cache: "no-store" }),
     fetch(`${base}/stock-transfers/${params.id}`, {
       headers: { cookie: cookieHeader },
       cache: "no-store",
     }),
+    fetchTenantLogoDataUrl(cookieHeader),
   ]);
   if (meRes.status === 401) return new Response("Unauthorized", { status: 401 });
   if (tRes.status === 404) return new Response("Stock transfer not found", { status: 404 });
@@ -48,6 +50,7 @@ export async function GET(
       lines: data.lines,
       source: data.source,
       destination: data.destination,
+      logoDataUrl,
     }),
   );
 

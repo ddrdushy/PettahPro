@@ -1,5 +1,6 @@
 import { Document, Page, Text, View, StyleSheet } from "@react-pdf/renderer";
 import type { BillCharge, BillDetail, BillLine, Supplier, Tenant } from "@/lib/api";
+import { PdfLogoBlock } from "@/lib/pdf-logo-block";
 
 // Brand tokens (shared with invoice-pdf / delivery-note-pdf / etc).
 const CHARCOAL = "#1A1A1A";
@@ -210,12 +211,14 @@ export function BillPDF({
   lines,
   charges,
   supplier,
+  logoDataUrl,
 }: {
   tenant: Pick<Tenant, "businessName">;
   bill: BillDetail;
   lines: BillLine[];
   charges: BillCharge[];
   supplier: Supplier | null;
+  logoDataUrl?: string | null;
 }) {
   const statusStyle = {
     draft: styles.statusDraft,
@@ -239,6 +242,7 @@ export function BillPDF({
       <Page size="A4" style={styles.page}>
         <View style={styles.header} fixed>
           <View style={styles.tenantBlock}>
+            <PdfLogoBlock logoDataUrl={logoDataUrl} />
             <Text style={styles.tenantName}>{tenant.businessName}</Text>
             <Text style={styles.tenantMeta}>Sri Lanka</Text>
           </View>

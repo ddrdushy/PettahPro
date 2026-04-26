@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import { renderToBuffer } from "@react-pdf/renderer";
 import { ProformaInvoicePDF } from "@/lib/proforma-pdf";
 import { pdfResponse } from "@/lib/pdf-response";
+import { fetchTenantLogoDataUrl } from "@/lib/tenant-logo";
 import type {
   Customer,
   ProformaInvoiceDetail,
@@ -22,12 +23,13 @@ export async function GET(
     return new Response("Unauthorized", { status: 401 });
   }
 
-  const [meRes, pRes] = await Promise.all([
+  const [meRes, pRes, logoDataUrl] = await Promise.all([
     fetch(`${base}/auth/me`, { headers: { cookie: cookieHeader }, cache: "no-store" }),
     fetch(`${base}/proforma-invoices/${params.id}`, {
       headers: { cookie: cookieHeader },
       cache: "no-store",
     }),
+    fetchTenantLogoDataUrl(cookieHeader),
   ]);
   if (meRes.status === 401) return new Response("Unauthorized", { status: 401 });
   if (pRes.status === 404) return new Response("Proforma not found", { status: 404 });
@@ -48,6 +50,7 @@ export async function GET(
       proformaInvoice: data.proformaInvoice,
       lines: data.lines,
       customer: data.customer,
+      logoDataUrl,
     }),
   );
 

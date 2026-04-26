@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import { renderToBuffer } from "@react-pdf/renderer";
 import { DebitNotePDF } from "@/lib/debit-note-pdf";
 import { pdfResponse } from "@/lib/pdf-response";
+import { fetchTenantLogoDataUrl } from "@/lib/tenant-logo";
 import type {
   DebitNoteDetail,
   DebitNoteLine,
@@ -21,12 +22,13 @@ export async function GET(
   const cookieHeader = cookies().toString();
   if (!cookieHeader) return new Response("Unauthorized", { status: 401 });
 
-  const [meRes, dnRes] = await Promise.all([
+  const [meRes, dnRes, logoDataUrl] = await Promise.all([
     fetch(`${base}/auth/me`, { headers: { cookie: cookieHeader }, cache: "no-store" }),
     fetch(`${base}/debit-notes/${params.id}`, {
       headers: { cookie: cookieHeader },
       cache: "no-store",
     }),
+    fetchTenantLogoDataUrl(cookieHeader),
   ]);
   if (meRes.status === 401) return new Response("Unauthorized", { status: 401 });
   if (dnRes.status === 404) return new Response("Debit note not found", { status: 404 });
@@ -47,6 +49,7 @@ export async function GET(
       lines: data.lines,
       supplier: data.supplier,
       bill: data.bill,
+      logoDataUrl,
     }),
   );
 

@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import { renderToBuffer } from "@react-pdf/renderer";
 import { DeliveryNotePDF } from "@/lib/delivery-note-pdf";
 import { pdfResponse } from "@/lib/pdf-response";
+import { fetchTenantLogoDataUrl } from "@/lib/tenant-logo";
 import type { Customer, DeliveryNoteDetail, DeliveryNoteLine, Tenant } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
@@ -15,12 +16,13 @@ export async function GET(
   const cookieHeader = cookies().toString();
   if (!cookieHeader) return new Response("Unauthorized", { status: 401 });
 
-  const [meRes, dnRes] = await Promise.all([
+  const [meRes, dnRes, logoDataUrl] = await Promise.all([
     fetch(`${base}/auth/me`, { headers: { cookie: cookieHeader }, cache: "no-store" }),
     fetch(`${base}/delivery-notes/${params.id}`, {
       headers: { cookie: cookieHeader },
       cache: "no-store",
     }),
+    fetchTenantLogoDataUrl(cookieHeader),
   ]);
   if (meRes.status === 401) return new Response("Unauthorized", { status: 401 });
   if (dnRes.status === 404) return new Response("Delivery note not found", { status: 404 });
@@ -39,6 +41,7 @@ export async function GET(
       deliveryNote: data.deliveryNote,
       lines: data.lines,
       customer: data.customer,
+      logoDataUrl,
     }),
   );
 

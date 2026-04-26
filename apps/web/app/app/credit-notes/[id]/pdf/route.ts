@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import { renderToBuffer } from "@react-pdf/renderer";
 import { CreditNotePDF } from "@/lib/credit-note-pdf";
 import { pdfResponse } from "@/lib/pdf-response";
+import { fetchTenantLogoDataUrl } from "@/lib/tenant-logo";
 import type {
   CreditNoteDetail,
   CreditNoteLine,
@@ -21,12 +22,13 @@ export async function GET(
   const cookieHeader = cookies().toString();
   if (!cookieHeader) return new Response("Unauthorized", { status: 401 });
 
-  const [meRes, cnRes] = await Promise.all([
+  const [meRes, cnRes, logoDataUrl] = await Promise.all([
     fetch(`${base}/auth/me`, { headers: { cookie: cookieHeader }, cache: "no-store" }),
     fetch(`${base}/credit-notes/${params.id}`, {
       headers: { cookie: cookieHeader },
       cache: "no-store",
     }),
+    fetchTenantLogoDataUrl(cookieHeader),
   ]);
   if (meRes.status === 401) return new Response("Unauthorized", { status: 401 });
   if (cnRes.status === 404) return new Response("Credit note not found", { status: 404 });
@@ -47,6 +49,7 @@ export async function GET(
       lines: data.lines,
       customer: data.customer,
       invoice: data.invoice,
+      logoDataUrl,
     }),
   );
 

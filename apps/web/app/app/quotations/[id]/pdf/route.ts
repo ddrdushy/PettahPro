@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import { renderToBuffer } from "@react-pdf/renderer";
 import { QuotationPDF } from "@/lib/quotation-pdf";
 import { pdfResponse } from "@/lib/pdf-response";
+import { fetchTenantLogoDataUrl } from "@/lib/tenant-logo";
 import type { Customer, QuotationDetail, QuotationLine, Tenant } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
@@ -17,12 +18,13 @@ export async function GET(
     return new Response("Unauthorized", { status: 401 });
   }
 
-  const [meRes, qRes] = await Promise.all([
+  const [meRes, qRes, logoDataUrl] = await Promise.all([
     fetch(`${base}/auth/me`, { headers: { cookie: cookieHeader }, cache: "no-store" }),
     fetch(`${base}/quotations/${params.id}`, {
       headers: { cookie: cookieHeader },
       cache: "no-store",
     }),
+    fetchTenantLogoDataUrl(cookieHeader),
   ]);
   if (meRes.status === 401) return new Response("Unauthorized", { status: 401 });
   if (qRes.status === 404) return new Response("Quotation not found", { status: 404 });
@@ -43,6 +45,7 @@ export async function GET(
       quotation: data.quotation,
       lines: data.lines,
       customer: data.customer,
+      logoDataUrl,
     }),
   );
 

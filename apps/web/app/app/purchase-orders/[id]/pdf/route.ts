@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import { renderToBuffer } from "@react-pdf/renderer";
 import { PurchaseOrderPDF } from "@/lib/purchase-order-pdf";
 import { pdfResponse } from "@/lib/pdf-response";
+import { fetchTenantLogoDataUrl } from "@/lib/tenant-logo";
 import type { PurchaseOrderDetail, PurchaseOrderLine, Supplier, Tenant } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
@@ -15,12 +16,13 @@ export async function GET(
   const cookieHeader = cookies().toString();
   if (!cookieHeader) return new Response("Unauthorized", { status: 401 });
 
-  const [meRes, poRes] = await Promise.all([
+  const [meRes, poRes, logoDataUrl] = await Promise.all([
     fetch(`${base}/auth/me`, { headers: { cookie: cookieHeader }, cache: "no-store" }),
     fetch(`${base}/purchase-orders/${params.id}`, {
       headers: { cookie: cookieHeader },
       cache: "no-store",
     }),
+    fetchTenantLogoDataUrl(cookieHeader),
   ]);
   if (meRes.status === 401) return new Response("Unauthorized", { status: 401 });
   if (poRes.status === 404) return new Response("Purchase order not found", { status: 404 });
@@ -39,6 +41,7 @@ export async function GET(
       purchaseOrder: data.purchaseOrder,
       lines: data.lines,
       supplier: data.supplier,
+      logoDataUrl,
     }),
   );
 

@@ -1,4 +1,5 @@
 import { Document, Page, Text, View, StyleSheet } from "@react-pdf/renderer";
+import { PdfLogoBlock } from "@/lib/pdf-logo-block";
 import type {
   PurchaseOrderDetail,
   PurchaseOrderLine,
@@ -202,11 +203,13 @@ export function PurchaseOrderPDF({
   purchaseOrder,
   lines,
   supplier,
+  logoDataUrl,
 }: {
   tenant: Pick<Tenant, "businessName">;
   purchaseOrder: PurchaseOrderDetail;
   lines: PurchaseOrderLine[];
   supplier: Supplier | null;
+  logoDataUrl?: string | null;
 }) {
   const statusStyle = {
     draft: styles.statusDraft,
@@ -227,6 +230,7 @@ export function PurchaseOrderPDF({
       <Page size="A4" style={styles.page}>
         <View style={styles.header} fixed>
           <View style={styles.tenantBlock}>
+            <PdfLogoBlock logoDataUrl={logoDataUrl} />
             <Text style={styles.tenantName}>{tenant.businessName}</Text>
             <Text style={styles.tenantMeta}>Sri Lanka</Text>
           </View>

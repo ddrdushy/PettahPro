@@ -5,6 +5,7 @@ import type {
   InvoiceLine,
   Tenant,
 } from "@/lib/api";
+import { PdfLogoBlock } from "@/lib/pdf-logo-block";
 
 // Brand tokens from brand-kit.md §5
 const CHARCOAL = "#1A1A1A";
@@ -198,11 +199,13 @@ export function InvoicePDF({
   invoice,
   lines,
   customer,
+  logoDataUrl,
 }: {
   tenant: Pick<Tenant, "businessName">;
   invoice: InvoiceDetail;
   lines: InvoiceLine[];
   customer: Customer | null;
+  logoDataUrl?: string | null;
 }) {
   const statusStyle = {
     draft: styles.statusDraft,
@@ -223,6 +226,7 @@ export function InvoicePDF({
       <Page size="A4" style={styles.page}>
         <View style={styles.header} fixed>
           <View style={styles.tenantBlock}>
+            <PdfLogoBlock logoDataUrl={logoDataUrl} />
             <Text style={styles.tenantName}>{tenant.businessName}</Text>
             <Text style={styles.tenantMeta}>Sri Lanka</Text>
           </View>

@@ -1,4 +1,5 @@
 import { Document, Page, Text, View, StyleSheet } from "@react-pdf/renderer";
+import { PdfLogoBlock } from "@/lib/pdf-logo-block";
 import type { Customer, DeliveryNoteDetail, DeliveryNoteLine, Tenant } from "@/lib/api";
 
 // Brand tokens from brand-kit.md §5 (shared with invoice-pdf / quotation-pdf).
@@ -170,11 +171,13 @@ export function DeliveryNotePDF({
   deliveryNote,
   lines,
   customer,
+  logoDataUrl,
 }: {
   tenant: Pick<Tenant, "businessName">;
   deliveryNote: DeliveryNoteDetail;
   lines: DeliveryNoteLine[];
   customer: Customer | null;
+  logoDataUrl?: string | null;
 }) {
   const statusStyle = {
     draft: styles.statusDraft,
@@ -199,6 +202,7 @@ export function DeliveryNotePDF({
       <Page size="A4" style={styles.page}>
         <View style={styles.header} fixed>
           <View style={styles.tenantBlock}>
+            <PdfLogoBlock logoDataUrl={logoDataUrl} />
             <Text style={styles.tenantName}>{tenant.businessName}</Text>
             <Text style={styles.tenantMeta}>Sri Lanka</Text>
           </View>

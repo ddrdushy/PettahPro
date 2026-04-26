@@ -11,6 +11,7 @@ import type {
   InvoiceLine,
   Tenant,
 } from "@/lib/api";
+import { PdfLogoBlock } from "@/lib/pdf-logo-block";
 
 // Template renderer (roadmap #33) — walks a `layout_json` blob (as
 // stored in document_templates.layout_json) and emits react-pdf
@@ -146,6 +147,10 @@ export type InvoiceContext = {
   invoice: InvoiceDetail;
   lines: InvoiceLine[];
   customer: Customer | null;
+  // Tenant logo as a data URL (gaps M9 follow-up). When the layout's
+  // header section sets showLogo (default true), the renderer drops
+  // an <Image> above the business name. Null = text-only header.
+  logoDataUrl?: string | null;
 };
 
 export function buildInvoiceContext(args: {
@@ -153,6 +158,7 @@ export function buildInvoiceContext(args: {
   invoice: InvoiceDetail;
   lines: InvoiceLine[];
   customer: Customer | null;
+  logoDataUrl?: string | null;
 }): InvoiceContext {
   return { docType: "invoice", ...args };
 }
@@ -342,6 +348,9 @@ function renderInvoiceSection(
       return (
         <View key={key} style={styles.header} fixed>
           <View style={styles.tenantBlock}>
+            {section.showLogo !== false && (
+              <PdfLogoBlock logoDataUrl={ctx.logoDataUrl} />
+            )}
             <Text style={styles.tenantName}>{tenant.businessName}</Text>
             <Text style={styles.tenantMeta}>Sri Lanka</Text>
           </View>
