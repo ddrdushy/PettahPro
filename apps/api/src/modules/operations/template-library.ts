@@ -237,6 +237,11 @@ const LIBRARY: readonly LibraryTemplate[] = [
     layout: CLASSIC_DEBIT_NOTE_LAYOUT,
   },
   {
+    libraryKey: "settlement_letter_classic",
+    docType: "settlement_letter",
+    name: "Classic settlement letter",
+    description:
+      "Final settlement letter for a departing employee. Carries hire/exit dates and years of service, single-column earnings + deductions cards, a highlighted Net-payable band, and a Declaration paragraph asserting full-and-final settlement.",
     libraryKey: "payslip_classic",
     docType: "payslip",
     name: "Classic payslip",
@@ -263,6 +268,14 @@ const LIBRARY: readonly LibraryTemplate[] = [
       theme: CLASSIC_THEME,
       sections: [
         { type: "header", showLogo: true, showStatusPill: true },
+        { type: "settlementEmployee" },
+        { type: "settlementEarnings" },
+        { type: "settlementDeductions" },
+        { type: "settlementNetPay" },
+        { type: "settlementDeclaration" },
+        { type: "notes" },
+        { type: "settlementSignatures" },
+        { type: "footer" },
         { type: "employeeBlock" },
         { type: "payslipColumns" },
         { type: "netPayBand" },

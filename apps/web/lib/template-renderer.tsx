@@ -20,6 +20,7 @@ import type {
   DebitNoteLine,
   DebitNoteLinkedBill,
   DebitNoteReason,
+  FinalSettlementRow,
   InvoiceDetail,
   InvoiceLine,
   PayrollRun,
@@ -113,6 +114,19 @@ type Section =
   // invoice) and debit notes (against a bill) so the recipient can
   // see what the credit/debit applies to.
   | { type: "linkedDocument" }
+  // Settlement-letter sections (M2 #10). Settlement-specific names
+  // because the body is bespoke — employee header (with hire/exit
+  // dates rather than NIC/EPF), single-column earnings + deductions
+  // cards, highlighted net-payable band, declaration paragraph, and
+  // a 2-column signature block. Distinct from payslip's similar
+  // section names so the two renderers can ship independently
+  // without collision.
+  | { type: "settlementEmployee" }
+  | { type: "settlementEarnings" }
+  | { type: "settlementDeductions" }
+  | { type: "settlementNetPay"; label?: string }
+  | { type: "settlementDeclaration"; text?: string }
+  | { type: "settlementSignatures" }
   // Payslip-specific sections (M2 #9). The body of a payslip is too
   // bespoke to compose from invoice-style primitives, so each block
   // is its own section type, all driven by PayrollRunLine fields.
@@ -2389,6 +2403,40 @@ export function renderDebitNoteTemplate(
 }
 
 // -----------------------------------------------------------------
+// Settlement letter context + renderer (M2 #10/10 — final)
+//
+// HR doc issued to a departing employee. Bespoke shape: employee
+// block carries hire/exit dates and years-of-service rather than
+// the payslip's NIC/EPF; earnings and deductions are single-column
+// cards (deductions combines statutory + others); a fixed
+// "Declaration" paragraph asserts full-and-final settlement; a
+// 2-column signature block at the bottom is for employee +
+// authorised signatory sign-off. Section types use the `settlement`
+// prefix to ship independently of payslip's similar set.
+// -----------------------------------------------------------------
+const SETTLEMENT_DEFAULT_DECLARATION =
+  "This letter sets out the final settlement payable to the employee on cessation of employment. The amount shown is inclusive of all statutory entitlements including gratuity (where applicable), EPF/ETF, and is in full and final settlement of all dues between employer and employee. On receipt of this payment the employee has no further monetary claims against the employer arising out of the employment.";
+
+export type SettlementContext = {
+  docType: "settlement_letter";
+  tenant: Pick<Tenant, "businessName">;
+  settlement: FinalSettlementRow;
+  logoDataUrl?: string | null;
+};
+
+export function buildSettlementContext(args: {
+  tenant: Pick<Tenant, "businessName">;
+  settlement: FinalSettlementRow;
+  logoDataUrl?: string | null;
+}): SettlementContext {
+  return { docType: "settlement_letter", ...args };
+}
+
+function buildSettlementStyles(theme: Theme) {
+  const base = buildInvoiceStyles(theme);
+  return StyleSheet.create({
+    ...base,
+    confidentialMeta: { color: theme.textSecondary, lineHeight: 1.5 },
 // Payslip context + renderer (M2 #9/10)
 //
 // Payslips are heavily bespoke — two-column earnings/deductions
@@ -2462,6 +2510,13 @@ function buildPayslipStyles(theme: Theme) {
       fontFamily: `${theme.fontFamily}-Bold`,
     },
     employeeMeta: { color: theme.textSecondary, marginTop: 2 },
+    card: {
+      backgroundColor: theme.surfaceRecessed,
+      padding: 14,
+      borderRadius: 4,
+      marginBottom: 12,
+    },
+    sectionTitle: {
     twoCol: { flexDirection: "row", gap: 16, marginBottom: 16 },
     colCard: {
       flex: 1,
@@ -2521,6 +2576,13 @@ function buildPayslipStyles(theme: Theme) {
       fontFamily: `${theme.fontFamily}-Bold`,
       fontSize: 18,
     },
+    note: {
+      marginTop: 14,
+      padding: 12,
+      borderLeft: `2pt solid ${theme.borderColor}`,
+    },
+    noteBody: { color: theme.textSecondary, lineHeight: 1.5 },
+    signatureBlock: {
     employerNote: {
       marginTop: 12,
       padding: 10,
@@ -2675,6 +2737,41 @@ function buildPurchaseOrderStyles(theme: Theme) {
       gap: 24,
       marginTop: 32,
     },
+    signatureCol: { flex: 1 },
+    signatureLine: {
+      borderTop: `0.5pt solid ${theme.textPrimary}`,
+      paddingTop: 8,
+      minHeight: 60,
+    },
+  });
+}
+
+function renderSettlementSection(
+  section: Section,
+  ctx: SettlementContext,
+  styles: ReturnType<typeof buildSettlementStyles>,
+  key: number,
+) {
+  const { settlement, tenant } = ctx;
+  const lines = settlement.linesSnapshot ?? [];
+  const earningRows = lines.filter((l) => l.kind === "earning");
+  const deductionRows = lines.filter((l) => l.kind === "deduction");
+  const statutoryRows = lines.filter((l) => l.kind === "statutory");
+  const earningsTotal = earningRows.reduce((s, r) => s + r.amountCents, 0);
+  const deductionsTotal =
+    deductionRows.reduce((s, r) => s + r.amountCents, 0) +
+    statutoryRows.reduce((s, r) => s + r.amountCents, 0);
+  const number = settlement.settlementNumber ?? "Draft";
+  const statusLabel =
+    settlement.status === "posted"
+      ? "Posted"
+      : settlement.status === "paid"
+        ? "Paid"
+        : settlement.status === "approved"
+          ? "Approved"
+          : settlement.status === "cancelled"
+            ? "Cancelled"
+            : "Draft";
     signCol: { flex: 1 },
     signLine: {
       borderTop: `0.5pt solid ${theme.textPrimary}`,
@@ -2792,6 +2889,15 @@ function renderProformaSection(
               <PdfLogoBlock logoDataUrl={ctx.logoDataUrl} />
             )}
             <Text style={styles.tenantName}>{tenant.businessName}</Text>
+            <Text style={styles.confidentialMeta}>
+              Final settlement · confidential
+            </Text>
+          </View>
+          <View style={styles.invoiceHeader}>
+            <Text style={styles.invoiceLabel}>Settlement</Text>
+            <Text style={styles.invoiceNumber}>{number}</Text>
+            {section.showStatusPill !== false && (
+              <Text style={styles.statusPill}>{statusLabel}</Text>
             <Text style={styles.payslipMeta}>Payslip · confidential</Text>
           </View>
           <View style={styles.invoiceHeader}>
@@ -2825,6 +2931,22 @@ function renderProformaSection(
         </View>
       );
 
+    case "settlementEmployee":
+      return (
+        <View key={key} style={styles.employeeBlock}>
+          <View style={styles.employeeCol}>
+            <Text style={styles.employeeName}>
+              {settlement.employeeFullName}
+            </Text>
+            {settlement.designation && (
+              <Text style={styles.employeeMeta}>{settlement.designation}</Text>
+            )}
+            {settlement.department && (
+              <Text style={styles.employeeMeta}>{settlement.department}</Text>
+            )}
+            {settlement.employeeCode && (
+              <Text style={styles.employeeMeta}>
+                Employee code: {settlement.employeeCode}
     case "employeeBlock":
       return (
         <View key={key} style={styles.employeeBlock}>
@@ -2843,6 +2965,23 @@ function renderProformaSection(
             )}
           </View>
           <View>
+            <Text style={styles.metaLabel}>Hire date</Text>
+            <Text style={styles.metaValue}>
+              {formatDate(settlement.hireDate)}
+            </Text>
+            <Text style={styles.metaLabel}>Exit date</Text>
+            <Text style={styles.metaValue}>
+              {formatDate(settlement.exitDate)}
+            </Text>
+            <Text style={styles.metaLabel}>Last working day</Text>
+            <Text style={styles.metaValue}>
+              {formatDate(settlement.lastWorkingDay)}
+            </Text>
+            <Text style={styles.metaLabel}>Years of service</Text>
+            <Text style={styles.metaValue}>
+              {Number(settlement.yearsOfService).toFixed(2)} (
+              {settlement.gratuityYearsCompleted} completed)
+            </Text>
             {line.nic && (
               <>
                 <Text style={styles.metaLabel}>NIC</Text>
@@ -2977,6 +3116,53 @@ function renderProformaSection(
         </View>
       );
 
+    case "settlementEarnings":
+      if (earningRows.length === 0) return null;
+      return (
+        <View key={key} style={styles.card} wrap={false}>
+          <Text style={styles.sectionTitle}>Earnings</Text>
+          {earningRows.map((line) => (
+            <View key={line.code} style={styles.lineRow}>
+              <Text style={styles.lineLabel}>{line.name}</Text>
+              <Text style={styles.lineValue}>
+                {formatLKR(line.amountCents)}
+              </Text>
+            </View>
+          ))}
+          <View style={styles.cardDivider} />
+          <View style={styles.subtotal}>
+            <Text style={styles.subtotalLabel}>Gross earnings</Text>
+            <Text style={styles.subtotalValue}>{formatLKR(earningsTotal)}</Text>
+          </View>
+        </View>
+      );
+
+    case "settlementDeductions":
+      if (deductionRows.length === 0 && statutoryRows.length === 0) return null;
+      return (
+        <View key={key} style={styles.card} wrap={false}>
+          <Text style={styles.sectionTitle}>Deductions</Text>
+          {statutoryRows.map((line) => (
+            <View key={line.code} style={styles.lineRow}>
+              <Text style={styles.lineLabel}>{line.name}</Text>
+              <Text style={styles.lineValue}>
+                -{formatLKR(line.amountCents)}
+              </Text>
+            </View>
+          ))}
+          {deductionRows.map((line) => (
+            <View key={line.code} style={styles.lineRow}>
+              <Text style={styles.lineLabel}>{line.name}</Text>
+              <Text style={styles.lineValue}>
+                -{formatLKR(line.amountCents)}
+              </Text>
+            </View>
+          ))}
+          <View style={styles.cardDivider} />
+          <View style={styles.subtotal}>
+            <Text style={styles.subtotalLabel}>Total deductions</Text>
+            <Text style={styles.subtotalValue}>
+              -{formatLKR(deductionsTotal)}
     case "payslipColumns":
       return (
         <View key={key} style={styles.twoCol} wrap={false}>
@@ -3276,6 +3462,57 @@ function renderProformaSection(
         </View>
       );
 
+    case "settlementNetPay":
+      return (
+        <View key={key} style={styles.netBand} wrap={false}>
+          <Text style={styles.netLabel}>{section.label ?? "Net payable"}</Text>
+          <Text style={styles.netValue}>
+            {formatLKR(settlement.netPayableCents)}
+          </Text>
+        </View>
+      );
+
+    case "settlementDeclaration": {
+      // Default text expands a couple of variables for the renderer
+      // since the standard text is mostly fixed but mentions both the
+      // employee name and the exit date.
+      const text =
+        section.text ??
+        `This letter sets out the final settlement payable to ${settlement.employeeFullName} on the cessation of employment with ${tenant.businessName} effective ${formatDate(settlement.exitDate)}. ${SETTLEMENT_DEFAULT_DECLARATION}`;
+      return (
+        <View key={key} style={styles.note} wrap={false}>
+          <Text style={styles.sectionTitle}>Declaration</Text>
+          <Text style={styles.noteBody}>{text}</Text>
+        </View>
+      );
+    }
+
+    case "notes":
+      if (!settlement.notes) return null;
+      return (
+        <View key={key} style={styles.note} wrap={false}>
+          <Text style={styles.sectionTitle}>Notes</Text>
+          <Text style={styles.noteBody}>{settlement.notes}</Text>
+        </View>
+      );
+
+    case "settlementSignatures":
+      return (
+        <View key={key} style={styles.signatureBlock} wrap={false}>
+          <View style={styles.signatureCol}>
+            <View style={styles.signatureLine}>
+              <Text style={styles.lineLabel}>Employee signature</Text>
+              <Text style={styles.lineLabel}>
+                {settlement.employeeFullName}
+              </Text>
+            </View>
+          </View>
+          <View style={styles.signatureCol}>
+            <View style={styles.signatureLine}>
+              <Text style={styles.lineLabel}>Authorised signatory</Text>
+              <Text style={styles.lineLabel}>{tenant.businessName}</Text>
+            </View>
+          </View>
     case "netPayBand":
       return (
         <View key={key} style={styles.netBand} wrap={false}>
@@ -3448,6 +3685,8 @@ function renderProformaSection(
             {section.text ?? "Generated with PettahPro — pettahpro.lk"}
           </Text>
           <Text>
+            Settlement {number} · {settlement.employeeFullName}
+          </Text>
             Payslip for {line.employeeFullName} · {periodLabel}
           </Text>
           <Text>{tenant.businessName}</Text>
@@ -3476,6 +3715,16 @@ function renderProformaSection(
   }
 }
 
+export function renderSettlementLetterTemplate(
+  layoutRaw: unknown,
+  ctx: SettlementContext,
+) {
+  const layout = parseLayout(layoutRaw);
+  const styles = buildSettlementStyles(layout.theme);
+
+  return (
+    <Document
+      title={`Settlement letter ${ctx.settlement.employeeFullName}`}
 export function renderPayslipTemplate(
   layoutRaw: unknown,
   ctx: PayslipContext,
@@ -3523,6 +3772,7 @@ export function renderProformaInvoiceTemplate(
     >
       <Page size={pageSizeProp(layout.pageSize)} style={styles.page}>
         {layout.sections.map((section, i) =>
+          renderSettlementSection(section, ctx, styles, i),
           renderPayslipSection(section, ctx, styles, i),
           renderStockTransferSection(section, ctx, styles, i),
           renderPurchaseOrderSection(section, ctx, styles, i),
