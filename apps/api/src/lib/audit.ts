@@ -96,6 +96,8 @@ export type AuditEventKind =
   | "coa.account_created"
   | "coa.account_updated"
   | "coa.account_deleted"
+  | "tenant.logo_uploaded"
+  | "tenant.logo_deleted"
   // Customer portal
   | "portal.login"
   | "portal.logout"
