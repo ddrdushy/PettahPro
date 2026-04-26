@@ -92,6 +92,10 @@ export type AuditEventKind =
   // Settings
   | "settings.update"
   | "number_series.update"
+  // Chart of accounts (gaps I3)
+  | "coa.account_created"
+  | "coa.account_updated"
+  | "coa.account_deleted"
   // Customer portal
   | "portal.login"
   | "portal.logout"

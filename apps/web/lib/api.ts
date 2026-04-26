@@ -454,6 +454,29 @@ export const api = {
     request<{ ok: true }>(`/item-categories/${id}`, { method: "DELETE" }),
 
   listCoa: () => request<{ accounts: Account[] }>("/coa"),
+  // CoA customisation (gaps I3). settings.manage gated on the server.
+  createAccount: (body: {
+    code: string;
+    name: string;
+    accountType: Account["accountType"];
+    accountSubtype?: string | null;
+    normalSide: Account["normalSide"];
+    description?: string | null;
+    currency?: string;
+  }) => request<{ account: Account }>("/coa", { method: "POST", json: body }),
+  updateAccount: (
+    id: string,
+    body: {
+      code?: string;
+      name?: string;
+      accountSubtype?: string | null;
+      description?: string | null;
+      isActive?: boolean;
+    },
+  ) =>
+    request<{ account: Account }>(`/coa/${id}`, { method: "PATCH", json: body }),
+  deleteAccount: (id: string) =>
+    request<{ ok: true; account: Account }>(`/coa/${id}`, { method: "DELETE" }),
   listTaxCodes: () => request<{ taxCodes: TaxCode[] }>("/tax-codes"),
 
   listBranches: () => request<{ branches: Branch[] }>("/branches"),
