@@ -68,6 +68,9 @@ export default async function PlatformLayout({ children }: { children: ReactNode
             <Link href="/platform/health" className="hover:text-white">
               Health
             </Link>
+            <Link href="/platform/tenant-health" className="hover:text-white">
+              At risk
+            </Link>
             <Link href="/platform/plans" className="hover:text-white">
               Plans
             </Link>
