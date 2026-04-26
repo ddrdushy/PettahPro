@@ -376,6 +376,40 @@ export const platformApi = {
   // for the platform; access gated to platform-staff roles server-side.
   getRevenue: () => request<RevenuePayload>("/platform/revenue"),
 
+  // Tenant health scores (#134). At-risk dashboard for proactive
+  // Customer Success outreach.
+  listTenantHealth: (params?: {
+    risk?: "low" | "medium" | "high" | "critical";
+    limit?: number;
+  }) => {
+    const qs = new URLSearchParams();
+    if (params?.risk) qs.set("risk", params.risk);
+    if (params?.limit != null) qs.set("limit", String(params.limit));
+    const q = qs.toString();
+    return request<{
+      tenants: TenantHealthRow[];
+      byRisk: {
+        low: number;
+        medium: number;
+        high: number;
+        critical: number;
+        not_scored: number;
+      };
+    }>(`/platform/health-scores${q ? `?${q}` : ""}`);
+  },
+  getTenantHealthHistory: (id: string) =>
+    request<{ history: TenantHealthSnapshot[] }>(
+      `/platform/tenants/${id}/health`,
+    ),
+  runTenantHealth: () =>
+    request<{
+      result: {
+        tenantsScored: number;
+        byRisk: { low: number; medium: number; high: number; critical: number };
+        errors: number;
+      };
+    }>("/platform/health-scores/run", { method: "POST" }),
+
   // #61 — pricing plans + tenant subscriptions.
   listPlans: () => request<{ plans: PlatformPlan[] }>("/platform/plans"),
   // Plan editor (super_admin only on the server). Calls hit a 403 if a
@@ -596,6 +630,34 @@ export type BillingCycle = (typeof BILLING_CYCLES)[number];
 
 // Revenue analytics payload (#131). Mirrors RevenuePayload in
 // apps/api/src/modules/platform-admin/revenue-routes.ts.
+// Tenant health (#134). Mirrors HealthRow / snapshot in
+// apps/api/src/modules/platform-admin/health-routes.ts.
+export interface TenantHealthRow {
+  tenantId: string;
+  tenantName: string;
+  tenantSlug: string;
+  tenantStatus: string;
+  score: number | null;
+  riskLevel: "low" | "medium" | "high" | "critical" | null;
+  loginScore: number | null;
+  transactionScore: number | null;
+  subscriptionScore: number | null;
+  setupScore: number | null;
+  reasons: string[];
+  calculatedAt: string | null;
+}
+
+export interface TenantHealthSnapshot {
+  score: number;
+  riskLevel: "low" | "medium" | "high" | "critical";
+  loginScore: number;
+  transactionScore: number;
+  subscriptionScore: number;
+  setupScore: number;
+  reasons: string[];
+  calculatedAt: string;
+}
+
 export interface RevenuePayload {
   mrrCents: number;
   arrCents: number;

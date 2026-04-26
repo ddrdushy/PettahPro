@@ -11,6 +11,7 @@ import { runMonthlyDepreciationForAllTenants } from "./modules/accounting/fixed-
 import { runNotificationDigests } from "./modules/notifications/digest-cron.js";
 import { runTrialExpiryJob } from "./modules/subscription/trial-expiry.js";
 import { runRenewalCron } from "./modules/subscription/renewal-cron.js";
+import { runTenantHealthCron } from "./modules/platform-admin/health-cron.js";
 import {
   initErrorTrackingForWorker,
   captureException,
@@ -158,6 +159,20 @@ async function registerSchedules() {
   );
   log.info("scheduled: subscription-renewal-sweep (daily)");
 
+  // Tenant-health-score sweep (#134). Computes per-tenant churn-risk
+  // signal daily and persists to tenant_health_scores. Platform UI
+  // reads the latest row per tenant for the at-risk dashboard.
+  await scheduledQueue.add(
+    "tenant-health-score-sweep",
+    {},
+    {
+      repeat: { every: 24 * 60 * 60 * 1000 }, // 24h
+      removeOnComplete: 50,
+      removeOnFail: 50,
+    },
+  );
+  log.info("scheduled: tenant-health-score-sweep (daily)");
+
   // Notification digest dispatcher (roadmap #45). Fires hourly because the
   // tenant-local hour gate is checked inside the runner — one cron cadence
   // across every tenant regardless of timezone. The runner dedupes via
@@ -211,6 +226,9 @@ async function runScheduledJob(name: string): Promise<unknown> {
   }
   if (name === "subscription-renewal-sweep") {
     return runRenewalCron(db, log);
+  }
+  if (name === "tenant-health-score-sweep") {
+    return runTenantHealthCron(db, log);
   }
   return null; // unknown
 }
