@@ -173,6 +173,30 @@ services:
       - web_next:/app/apps/web/.next
     command: sh -c "pnpm install && pnpm --filter @pettahpro/web dev"
 
+  docs:
+    build:
+      context: .
+      dockerfile: apps/docs/Dockerfile
+      target: dev
+    container_name: pettahpro-docs
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+    ports:
+      - "${DOCS_PORT:-3100}:3100"
+    volumes:
+      - ./apps/docs:/app/apps/docs
+      - docs_node_modules:/app/node_modules
+      - /app/apps/docs/node_modules
+      # Docusaurus build cache lives outside the source tree so it
+      # survives container restarts without bloating the host bind
+      # mount with the .docusaurus generated files.
+      - docs_cache:/app/apps/docs/.docusaurus
+    # Bypass `pnpm --filter ... dev` here so we can pass --host through
+    # to docusaurus directly. pnpm's `--` passthrough would otherwise
+    # forward the literal `--` to the script and confuse docusaurus.
+    command: sh -c "pnpm install && cd apps/docs && ./node_modules/.bin/docusaurus start --port 3100 --host 0.0.0.0"
+
 volumes:
   postgres_data:
   redis_data:
@@ -181,3 +205,5 @@ volumes:
   worker_node_modules:
   web_node_modules:
   web_next:
+  docs_node_modules:
+  docs_cache:
