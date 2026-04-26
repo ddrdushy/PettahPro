@@ -9,6 +9,10 @@ import type {
   BillCharge,
   BillDetail,
   BillLine,
+  CreditNoteDetail,
+  CreditNoteLine,
+  CreditNoteLinkedInvoice,
+  CreditNoteReason,
   Customer,
   InvoiceDetail,
   InvoiceLine,
@@ -90,6 +94,10 @@ type Section =
   // Validity callout for quotations / proformas — shows the
   // valid-until date and an expired warning when the date is past.
   | { type: "validity" }
+  // Linked-document badge — shown by credit notes (against an
+  // invoice) and debit notes (against a bill) so the recipient can
+  // see what the credit/debit applies to.
+  | { type: "linkedDocument" }
   | { type: "totals"; showTaxBreakdown?: boolean }
   | { type: "notes" }
   | { type: "footer"; text?: string }
@@ -1349,6 +1357,377 @@ export function renderQuotationTemplate(
       <Page size={pageSizeProp(layout.pageSize)} style={styles.page}>
         {layout.sections.map((section, i) =>
           renderQuotationSection(section, ctx, styles, i),
+        )}
+      </Page>
+    </Document>
+  );
+}
+
+// -----------------------------------------------------------------
+// Credit note context + renderer (M2 #3/10)
+//
+// CN-specific behaviour: status set (draft/posted/void), reason
+// dropdown (return / price_adjustment / discount / goodwill /
+// write_off / other) shown in the meta row, "Issued to" label on
+// the customer block, an optional linked-invoice badge below the
+// meta row, and totals that show "Applied to invoice" / "Standing
+// credit" lines once the CN has been applied.
+// -----------------------------------------------------------------
+const CREDIT_NOTE_REASON_LABELS: Record<CreditNoteReason, string> = {
+  return: "Return",
+  price_adjustment: "Price adjustment",
+  discount: "Discount",
+  goodwill: "Goodwill",
+  write_off: "Write-off",
+  other: "Other",
+};
+
+export type CreditNoteContext = {
+  docType: "credit_note";
+  tenant: Pick<Tenant, "businessName">;
+  creditNote: CreditNoteDetail;
+  lines: CreditNoteLine[];
+  customer: Customer | null;
+  invoice: CreditNoteLinkedInvoice | null;
+  logoDataUrl?: string | null;
+};
+
+export function buildCreditNoteContext(args: {
+  tenant: Pick<Tenant, "businessName">;
+  creditNote: CreditNoteDetail;
+  lines: CreditNoteLine[];
+  customer: Customer | null;
+  invoice: CreditNoteLinkedInvoice | null;
+  logoDataUrl?: string | null;
+}): CreditNoteContext {
+  return { docType: "credit_note", ...args };
+}
+
+function buildCreditNoteStyles(theme: Theme) {
+  const base = buildBillStyles(theme); // includes draftBanner
+  return StyleSheet.create({
+    ...base,
+    linkedDocument: {
+      flexDirection: "row",
+      alignItems: "baseline",
+      gap: 6,
+      marginBottom: 16,
+      paddingHorizontal: 10,
+      paddingVertical: 6,
+      backgroundColor: theme.surfaceRecessed,
+      borderRadius: 4,
+    },
+    linkedDocumentLabel: {
+      fontSize: 8,
+      textTransform: "uppercase",
+      letterSpacing: 0.8,
+      color: theme.textTertiary,
+    },
+    linkedDocumentValue: {
+      fontSize: 10,
+      fontFamily: `${theme.fontFamily}-Bold`,
+      color: theme.textPrimary,
+    },
+  });
+}
+
+function renderCreditNoteSection(
+  section: Section,
+  ctx: CreditNoteContext,
+  styles: ReturnType<typeof buildCreditNoteStyles>,
+  key: number,
+) {
+  const { creditNote, lines, customer, invoice, tenant } = ctx;
+  const docNumber = creditNote.creditNoteNumber ?? "Draft";
+  const unapplied = creditNote.totalCents - creditNote.appliedCents;
+
+  switch (section.type) {
+    case "header":
+      return (
+        <View key={key} style={styles.header} fixed>
+          <View style={styles.tenantBlock}>
+            {section.showLogo !== false && (
+              <PdfLogoBlock logoDataUrl={ctx.logoDataUrl} />
+            )}
+            <Text style={styles.tenantName}>{tenant.businessName}</Text>
+            <Text style={styles.tenantMeta}>Sri Lanka</Text>
+          </View>
+          <View style={styles.invoiceHeader}>
+            <Text style={styles.invoiceLabel}>Credit Note</Text>
+            <Text style={styles.invoiceNumber}>{docNumber}</Text>
+            {section.showStatusPill !== false && (
+              <Text style={styles.statusPill}>{creditNote.status}</Text>
+            )}
+          </View>
+        </View>
+      );
+
+    case "draftBanner":
+      if (creditNote.status !== "draft") return null;
+      return (
+        <Text key={key} style={styles.draftBanner}>
+          {section.text ?? "Draft — not posted to the ledger"}
+        </Text>
+      );
+
+    case "metaRow": {
+      const fields = section.fields ?? [
+        "issueDate",
+        "reason",
+        "currency",
+        "postedAt",
+      ];
+      const cells: Array<{ label: string; value: string | null }> = fields.map(
+        (f) => {
+          if (f === "issueDate")
+            return {
+              label: "Issue date",
+              value: formatDate(creditNote.issueDate),
+            };
+          if (f === "reason")
+            return {
+              label: "Reason",
+              value: CREDIT_NOTE_REASON_LABELS[creditNote.reason] ?? creditNote.reason,
+            };
+          if (f === "currency")
+            return { label: "Currency", value: creditNote.currency };
+          if (f === "postedAt")
+            return {
+              label: "Posted",
+              value: creditNote.postedAt
+                ? formatDate(creditNote.postedAt.slice(0, 10))
+                : null,
+            };
+          if (f === "creditNoteNumber")
+            return {
+              label: "Credit note #",
+              value: creditNote.creditNoteNumber ?? null,
+            };
+          return { label: f, value: null };
+        },
+      );
+      return (
+        <View key={key} style={styles.metaRow}>
+          {cells
+            .filter((c) => c.value !== null)
+            .map((c, i) => (
+              <View key={i} style={styles.metaCell}>
+                <Text style={styles.metaLabel}>{c.label}</Text>
+                <Text style={styles.metaValue}>{c.value}</Text>
+              </View>
+            ))}
+        </View>
+      );
+    }
+
+    case "linkedDocument":
+      if (!invoice) return null;
+      return (
+        <View key={key} style={styles.linkedDocument} wrap={false}>
+          <Text style={styles.linkedDocumentLabel}>Credit against invoice</Text>
+          <Text style={styles.linkedDocumentValue}>
+            {invoice.invoiceNumber ?? invoice.id.slice(0, 8)}
+          </Text>
+        </View>
+      );
+
+    case "billTo":
+      // Credit notes use "Issued to" rather than "Bill to". Same data.
+      if (!customer) return null;
+      return (
+        <View key={key} style={styles.billTo}>
+          <Text style={styles.billToLabel}>Issued to</Text>
+          <Text style={styles.billToName}>{customer.name}</Text>
+          {customer.legalName && customer.legalName !== customer.name && (
+            <Text style={styles.billToLine}>{customer.legalName}</Text>
+          )}
+          {customer.addressLine1 && (
+            <Text style={styles.billToLine}>{customer.addressLine1}</Text>
+          )}
+          {customer.addressLine2 && (
+            <Text style={styles.billToLine}>{customer.addressLine2}</Text>
+          )}
+          {customer.city && (
+            <Text style={styles.billToLine}>{customer.city}</Text>
+          )}
+          {customer.email && (
+            <Text style={styles.billToLine}>{customer.email}</Text>
+          )}
+          {customer.phone && (
+            <Text style={styles.billToLine}>{customer.phone}</Text>
+          )}
+          {customer.vatNo && (
+            <Text style={[styles.billToLine, { marginTop: 4, fontSize: 8 }]}>
+              VAT: {customer.vatNo}
+            </Text>
+          )}
+        </View>
+      );
+
+    case "lineItemsTable":
+      return (
+        <View key={key} style={styles.table}>
+          <View style={[styles.row, styles.rowHeader]}>
+            <Text style={[styles.colNum, styles.th]}>#</Text>
+            <Text style={[styles.colDesc, styles.th]}>Description</Text>
+            <Text style={[styles.colQty, styles.th]}>Qty</Text>
+            <Text style={[styles.colUnit, styles.th]}>Unit</Text>
+            <Text style={[styles.colTax, styles.th]}>Tax</Text>
+            <Text style={[styles.colTotal, styles.th]}>Total</Text>
+          </View>
+          {lines.map((l) => (
+            <View key={l.id} style={styles.row} wrap={false}>
+              <Text style={[styles.colNum, styles.td]}>{l.lineNo}</Text>
+              <View style={styles.colDesc}>
+                <Text style={styles.td}>{l.description}</Text>
+                {l.discountCents > 0 && (
+                  <Text style={styles.tdMuted}>
+                    Discount {(l.discountPctBps / 100).toFixed(2)}% ·{" "}
+                    {formatLKR(l.discountCents)}
+                  </Text>
+                )}
+              </View>
+              <Text style={[styles.colQty, styles.td]}>
+                {Number(l.quantity).toLocaleString("en-LK")}
+              </Text>
+              <Text style={[styles.colUnit, styles.td]}>
+                {formatLKR(l.unitPriceCents)}
+              </Text>
+              <View style={styles.colTax}>
+                <Text style={styles.td}>
+                  {l.taxCents > 0 ? formatLKR(l.taxCents) : "—"}
+                </Text>
+                {l.taxCents > 0 && (
+                  <Text style={styles.tdMuted}>
+                    {(l.taxRateBps / 100).toFixed(2)}%
+                  </Text>
+                )}
+              </View>
+              <Text style={[styles.colTotal, styles.td]}>
+                {formatLKR(l.lineTotalCents)}
+              </Text>
+            </View>
+          ))}
+        </View>
+      );
+
+    case "totals":
+      return (
+        <View key={key} style={styles.totalsBlock}>
+          <View style={styles.totalRow}>
+            <Text style={styles.totalLabel}>Subtotal</Text>
+            <Text style={styles.totalValue}>
+              {formatLKR(creditNote.subtotalCents)}
+            </Text>
+          </View>
+          {creditNote.discountCents > 0 && (
+            <View style={styles.totalRow}>
+              <Text style={styles.totalLabel}>Discount</Text>
+              <Text style={styles.totalValue}>
+                -{formatLKR(creditNote.discountCents)}
+              </Text>
+            </View>
+          )}
+          <View style={styles.totalRow}>
+            <Text style={styles.totalLabel}>Tax</Text>
+            <Text style={styles.totalValue}>
+              {formatLKR(creditNote.taxCents)}
+            </Text>
+          </View>
+          <View style={styles.totalDivider} />
+          <View style={styles.grandTotal}>
+            <Text style={styles.grandLabel}>Credit total</Text>
+            <Text style={styles.grandValue}>
+              {formatLKR(creditNote.totalCents)}
+            </Text>
+          </View>
+          {creditNote.status === "posted" && creditNote.appliedCents > 0 && (
+            <>
+              <View style={styles.totalRow}>
+                <Text style={styles.totalLabel}>Applied to invoice</Text>
+                <Text style={styles.totalValue}>
+                  {formatLKR(creditNote.appliedCents)}
+                </Text>
+              </View>
+              <View style={styles.totalRow}>
+                <Text
+                  style={[
+                    styles.totalLabel,
+                    { fontFamily: `${styles.grandLabel.fontFamily}` },
+                  ]}
+                >
+                  {unapplied > 0 ? "Standing credit" : "Fully applied"}
+                </Text>
+                <Text
+                  style={[
+                    styles.totalValue,
+                    { fontFamily: `${styles.grandLabel.fontFamily}` },
+                  ]}
+                >
+                  {formatLKR(unapplied)}
+                </Text>
+              </View>
+            </>
+          )}
+        </View>
+      );
+
+    case "notes":
+      if (!creditNote.notes) return null;
+      return (
+        <View key={key} style={styles.notes} wrap={false}>
+          <Text style={styles.notesLabel}>Notes</Text>
+          <Text style={styles.notesText}>{creditNote.notes}</Text>
+        </View>
+      );
+
+    case "footer":
+      return (
+        <View key={key} style={styles.footer} fixed>
+          <Text>{section.text ?? "Generated with PettahPro — pettahpro.lk"}</Text>
+          <Text>{tenant.businessName}</Text>
+        </View>
+      );
+
+    case "spacer":
+      return <View key={key} style={{ height: section.height ?? 12 }} />;
+
+    case "text": {
+      const s =
+        section.emphasis === "muted"
+          ? styles.textMuted
+          : section.emphasis === "label"
+            ? styles.textLabel
+            : styles.text;
+      return (
+        <Text key={key} style={s}>
+          {section.text}
+        </Text>
+      );
+    }
+
+    default:
+      return null;
+  }
+}
+
+export function renderCreditNoteTemplate(
+  layoutRaw: unknown,
+  ctx: CreditNoteContext,
+) {
+  const layout = parseLayout(layoutRaw);
+  const styles = buildCreditNoteStyles(layout.theme);
+
+  return (
+    <Document
+      title={ctx.creditNote.creditNoteNumber ?? "Credit note"}
+      author={ctx.tenant.businessName}
+      creator="PettahPro"
+      producer="PettahPro"
+    >
+      <Page size={pageSizeProp(layout.pageSize)} style={styles.page}>
+        {layout.sections.map((section, i) =>
+          renderCreditNoteSection(section, ctx, styles, i),
         )}
       </Page>
     </Document>
