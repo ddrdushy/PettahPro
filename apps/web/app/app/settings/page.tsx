@@ -311,6 +311,21 @@ export default async function SettingsPage() {
             </div>
             <ArrowRight className="h-4 w-4 text-text-tertiary" aria-hidden />
           </Link>
+          <Link
+            href="/app/settings/cost-centers"
+            className="flex items-center justify-between rounded-md border-hairline border-border px-4 py-3 hover:bg-surface-recessed/40"
+          >
+            <div className="flex items-start gap-3">
+              <Coins className="mt-0.5 h-4 w-4 text-text-tertiary" aria-hidden />
+              <div>
+                <p className="text-small font-medium text-charcoal">Cost centers</p>
+                <p className="text-caption text-text-secondary">
+                  Tag invoices with a cost center (branch, project, department). The P&L cost-center filter splits totals by the dimension end-to-end.
+                </p>
+              </div>
+            </div>
+            <ArrowRight className="h-4 w-4 text-text-tertiary" aria-hidden />
+          </Link>
         </div>
       </section>
     </main>

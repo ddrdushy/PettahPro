@@ -87,6 +87,10 @@ const CreateSchema = z.object({
   // Salesperson attribution (#29) — picks up commission when the invoice posts.
   // Optional; unattributed sales simply don't accrue commissions.
   salespersonUserId: z.string().uuid().optional().or(z.literal("")),
+  // Cost-center dimension (#129 / gaps B1). Optional; null/missing
+  // produces an "Unassigned" line in the cost-center P&L roll-up.
+  // Stamped onto every journal_lines row at post time.
+  costCenterId: z.string().uuid().optional().or(z.literal("")),
   lines: z.array(LineSchema).min(1),
 });
 
@@ -386,6 +390,7 @@ export const invoicesRoutes: FastifyPluginAsync = async (fastify) => {
           notes: input.notes || null,
           terms: input.terms || null,
           salespersonUserId: input.salespersonUserId || null,
+          costCenterId: input.costCenterId || null,
           createdByUserId: ctx.userId,
         })
         .returning();

@@ -10,6 +10,10 @@ export interface PostingLine {
   customerId?: string | null;
   supplierId?: string | null;
   itemId?: string | null;
+  // Cost center dimension (#129 / gaps B1). Stamped onto journal_lines
+  // for cost-center-filtered reporting. Optional — null lines roll up
+  // under "Unassigned" in the P&L cost-center filter.
+  costCenterId?: string | null;
 }
 
 export interface PostJournalInput {
@@ -79,6 +83,7 @@ export async function postJournal(
       customerId: l.customerId ?? null,
       supplierId: l.supplierId ?? null,
       itemId: l.itemId ?? null,
+      costCenterId: l.costCenterId ?? null,
     })),
   );
 

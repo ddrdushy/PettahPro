@@ -82,6 +82,7 @@ import {
   leaveRequestsRoutes,
 } from "./modules/hr/leave.js";
 import { dashboardRoutes } from "./modules/reports/dashboard.js";
+import { costCentersRoutes } from "./modules/operations/cost-centers.js";
 import { execKpiRoutes } from "./modules/reports/exec-kpis.js";
 import { trialBalanceRoutes } from "./modules/reports/trial-balance.js";
 import { profitLossRoutes } from "./modules/reports/profit-loss.js";
@@ -242,6 +243,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await server.register(expenseClaimsRoutes, { prefix: "/expense-claims" });
   await server.register(attendanceRoutes, { prefix: "/attendance" });
   await server.register(dashboardRoutes, { prefix: "/dashboard" });
+  await server.register(costCentersRoutes, { prefix: "/cost-centers" });
   await server.register(execKpiRoutes, { prefix: "/reports/exec-kpis" });
   await server.register(trialBalanceRoutes, { prefix: "/reports/trial-balance" });
   await server.register(profitLossRoutes, { prefix: "/reports/profit-loss" });

@@ -8,6 +8,15 @@ const QuerySchema = z.object({
   from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   compare: z.enum(["none", "prior_month", "prior_year"]).default("none"),
+  // Cost-center dimension filter (#129 / gaps B1). UUID = filter to
+  // that center; the literal "unassigned" filters to journal_lines
+  // with cost_center_id IS NULL; empty/missing = no filter (all
+  // centers + unassigned summed together as before).
+  costCenterId: z
+    .string()
+    .uuid()
+    .optional()
+    .or(z.literal("unassigned")),
 });
 
 interface Line {
@@ -71,6 +80,17 @@ export const profitLossRoutes: FastifyPluginAsync = async (fastify) => {
           ? [priorYear(from), priorYear(to)]
           : [null, null];
 
+    // Cost-center dimension filter (#129 / gaps B1). The clause
+    // collapses cleanly to "no filter" when costCenterId is missing,
+    // restricts to one center when a UUID is given, and matches
+    // NULL-only when the literal "unassigned" is given.
+    const costCenterClause =
+      parsed.data.costCenterId === undefined
+        ? sql`true`
+        : parsed.data.costCenterId === "unassigned"
+          ? sql`jl.cost_center_id IS NULL`
+          : sql`jl.cost_center_id = ${parsed.data.costCenterId}::uuid`;
+
     const data = await withTenant(ctx.tenantId, async (tx) => {
       const rows = (await tx.execute(sql`
         WITH balances AS (
@@ -82,16 +102,16 @@ export const profitLossRoutes: FastifyPluginAsync = async (fastify) => {
             coa.account_subtype,
             coa.normal_side,
             COALESCE(SUM(jl.dr_cents) FILTER (
-              WHERE je.entry_date >= ${from}::date AND je.entry_date <= ${to}::date
+              WHERE je.entry_date >= ${from}::date AND je.entry_date <= ${to}::date AND ${costCenterClause}
             ), 0)::bigint AS dr_current,
             COALESCE(SUM(jl.cr_cents) FILTER (
-              WHERE je.entry_date >= ${from}::date AND je.entry_date <= ${to}::date
+              WHERE je.entry_date >= ${from}::date AND je.entry_date <= ${to}::date AND ${costCenterClause}
             ), 0)::bigint AS cr_current,
             COALESCE(SUM(jl.dr_cents) FILTER (
-              WHERE ${cmpFrom ? sql`je.entry_date >= ${cmpFrom}::date AND je.entry_date <= ${cmpTo}::date` : sql`false`}
+              WHERE ${cmpFrom ? sql`je.entry_date >= ${cmpFrom}::date AND je.entry_date <= ${cmpTo}::date AND ${costCenterClause}` : sql`false`}
             ), 0)::bigint AS dr_compare,
             COALESCE(SUM(jl.cr_cents) FILTER (
-              WHERE ${cmpFrom ? sql`je.entry_date >= ${cmpFrom}::date AND je.entry_date <= ${cmpTo}::date` : sql`false`}
+              WHERE ${cmpFrom ? sql`je.entry_date >= ${cmpFrom}::date AND je.entry_date <= ${cmpTo}::date AND ${costCenterClause}` : sql`false`}
             ), 0)::bigint AS cr_compare
           FROM chart_of_accounts coa
           LEFT JOIN journal_lines jl
