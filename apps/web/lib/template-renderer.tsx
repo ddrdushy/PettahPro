@@ -22,6 +22,8 @@ import type {
   DebitNoteReason,
   InvoiceDetail,
   InvoiceLine,
+  PayrollRun,
+  PayrollRunLine,
   PurchaseOrderDetail,
   PurchaseOrderLine,
   ProformaInvoiceDetail,
@@ -111,6 +113,15 @@ type Section =
   // invoice) and debit notes (against a bill) so the recipient can
   // see what the credit/debit applies to.
   | { type: "linkedDocument" }
+  // Payslip-specific sections (M2 #9). The body of a payslip is too
+  // bespoke to compose from invoice-style primitives, so each block
+  // is its own section type, all driven by PayrollRunLine fields.
+  | { type: "employeeBlock" }
+  | { type: "payslipColumns" }
+  | { type: "netPayBand"; label?: string }
+  | { type: "leaveSummary" }
+  | { type: "employerContributions" }
+  | { type: "bankDisbursement" }
   // Source → destination warehouse row used by stock transfers.
   // Renders the source warehouse name + code on the left, an arrow,
   // and the destination on the right.
@@ -2378,6 +2389,188 @@ export function renderDebitNoteTemplate(
 }
 
 // -----------------------------------------------------------------
+// Payslip context + renderer (M2 #9/10)
+//
+// Payslips are heavily bespoke — two-column earnings/deductions
+// cards, a highlighted net-pay band, optional leave-taken,
+// employer-contributions, and bank-disbursement blocks. Each gets
+// its own section type so a tenant can rearrange them or drop the
+// optional ones without touching code.
+// -----------------------------------------------------------------
+const PAYSLIP_MONTHS = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
+
+export type PayslipContext = {
+  docType: "payslip";
+  tenant: Pick<Tenant, "businessName">;
+  run: PayrollRun;
+  line: PayrollRunLine;
+  logoDataUrl?: string | null;
+};
+
+export function buildPayslipContext(args: {
+  tenant: Pick<Tenant, "businessName">;
+  run: PayrollRun;
+  line: PayrollRunLine;
+  logoDataUrl?: string | null;
+}): PayslipContext {
+  return { docType: "payslip", ...args };
+}
+
+function buildPayslipStyles(theme: Theme) {
+  const base = buildInvoiceStyles(theme);
+  return StyleSheet.create({
+    ...base,
+    payslipMeta: { color: theme.textSecondary, lineHeight: 1.5 },
+    periodPill: {
+      marginTop: 10,
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+      borderRadius: 999,
+      fontSize: 8,
+      fontFamily: `${theme.fontFamily}-Bold`,
+      textTransform: "uppercase",
+      letterSpacing: 0.8,
+      backgroundColor: theme.mutedColor,
+      color: theme.accentColor,
+    },
+    employeeBlock: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      gap: 24,
+      marginBottom: 24,
+      paddingTop: 16,
+      paddingBottom: 16,
+      borderTop: `0.5pt solid ${theme.borderColor}`,
+      borderBottom: `0.5pt solid ${theme.borderColor}`,
+    },
+    employeeCol: { flex: 1 },
+    employeeName: {
+      fontSize: 14,
+      fontFamily: `${theme.fontFamily}-Bold`,
+    },
+    employeeMeta: { color: theme.textSecondary, marginTop: 2 },
+    twoCol: { flexDirection: "row", gap: 16, marginBottom: 16 },
+    colCard: {
+      flex: 1,
+      backgroundColor: theme.surfaceRecessed,
+      padding: 14,
+      borderRadius: 4,
+    },
+    colHeader: {
+      fontSize: 9,
+      textTransform: "uppercase",
+      letterSpacing: 1,
+      color: theme.textTertiary,
+      marginBottom: 10,
+    },
+    lineRow: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      paddingVertical: 3,
+    },
+    lineLabel: { color: theme.textSecondary, flex: 1, paddingRight: 8 },
+    lineValue: { color: theme.textPrimary, fontSize: 10 },
+    cardDivider: {
+      borderTop: `0.5pt solid ${theme.borderColor}`,
+      marginVertical: 6,
+    },
+    subtotal: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      paddingTop: 4,
+    },
+    subtotalLabel: {
+      fontFamily: `${theme.fontFamily}-Bold`,
+      color: theme.textPrimary,
+    },
+    subtotalValue: {
+      fontFamily: `${theme.fontFamily}-Bold`,
+      color: theme.textPrimary,
+    },
+    netBand: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "center",
+      backgroundColor: theme.accentColor,
+      color: "#FFFFFF",
+      paddingVertical: 12,
+      paddingHorizontal: 16,
+      borderRadius: 4,
+      marginVertical: 12,
+    },
+    netLabel: {
+      color: "#FFFFFF",
+      fontFamily: `${theme.fontFamily}-Bold`,
+      fontSize: 12,
+    },
+    netValue: {
+      color: "#FFFFFF",
+      fontFamily: `${theme.fontFamily}-Bold`,
+      fontSize: 18,
+    },
+    employerNote: {
+      marginTop: 12,
+      padding: 10,
+      borderLeft: `2pt solid ${theme.borderColor}`,
+    },
+    employerTitle: {
+      fontSize: 9,
+      fontFamily: `${theme.fontFamily}-Bold`,
+      marginBottom: 6,
+      color: theme.textPrimary,
+    },
+    employerRow: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      paddingVertical: 2,
+    },
+  });
+}
+
+function formatPayslipDays(n: string | number | null | undefined): string {
+  if (n === null || n === undefined) return "0";
+  const num = Number(n);
+  return num.toLocaleString("en-LK", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  });
+}
+
+function renderPayslipSection(
+  section: Section,
+  ctx: PayslipContext,
+  styles: ReturnType<typeof buildPayslipStyles>,
+  key: number,
+) {
+  const { run, line, tenant } = ctx;
+  const periodLabel = `${PAYSLIP_MONTHS[run.periodMonth - 1]} ${run.periodYear}`;
+  const comps = (line.components ?? []).slice().sort((a, b) => a.sortOrder - b.sortOrder);
+  const earningRows = comps.filter((c) => c.kind === "earning");
+  const preTaxDeductionRows = comps.filter(
+    (c) =>
+      c.kind === "deduction" &&
+      (c.countsForEpf || c.countsForEtf || c.countsForPaye),
+  );
+  const postTaxDeductionRows = comps.filter(
+    (c) =>
+      c.kind === "deduction" &&
+      !c.countsForEpf &&
+      !c.countsForEtf &&
+      !c.countsForPaye,
+  );
 // Stock transfer context + renderer (M2 #8/10)
 //
 // Stock transfer is an internal logistics doc — no money, but a
@@ -2599,6 +2792,15 @@ function renderProformaSection(
               <PdfLogoBlock logoDataUrl={ctx.logoDataUrl} />
             )}
             <Text style={styles.tenantName}>{tenant.businessName}</Text>
+            <Text style={styles.payslipMeta}>Payslip · confidential</Text>
+          </View>
+          <View style={styles.invoiceHeader}>
+            <Text style={styles.invoiceLabel}>Payslip</Text>
+            <Text style={styles.invoiceNumber}>
+              {run.runNumber ?? "Draft"}
+            </Text>
+            {section.showStatusPill !== false && (
+              <Text style={styles.periodPill}>{periodLabel}</Text>
             <Text style={styles.tenantMeta}>Sri Lanka</Text>
           </View>
           <View style={styles.invoiceHeader}>
@@ -2623,6 +2825,38 @@ function renderProformaSection(
         </View>
       );
 
+    case "employeeBlock":
+      return (
+        <View key={key} style={styles.employeeBlock}>
+          <View style={styles.employeeCol}>
+            <Text style={styles.employeeName}>{line.employeeFullName}</Text>
+            {line.designation && (
+              <Text style={styles.employeeMeta}>{line.designation}</Text>
+            )}
+            {line.department && (
+              <Text style={styles.employeeMeta}>{line.department}</Text>
+            )}
+            {line.employeeCode && (
+              <Text style={styles.employeeMeta}>
+                Employee code: {line.employeeCode}
+              </Text>
+            )}
+          </View>
+          <View>
+            {line.nic && (
+              <>
+                <Text style={styles.metaLabel}>NIC</Text>
+                <Text style={styles.metaValue}>{line.nic}</Text>
+              </>
+            )}
+            {line.epfNumber && (
+              <>
+                <Text style={styles.metaLabel}>EPF number</Text>
+                <Text style={styles.metaValue}>{line.epfNumber}</Text>
+              </>
+            )}
+            <Text style={styles.metaLabel}>Pay date</Text>
+            <Text style={styles.metaValue}>{formatDate(run.payDate)}</Text>
     case "metaRow": {
       const fields = section.fields ?? [
         "requestedDate",
@@ -2743,6 +2977,89 @@ function renderProformaSection(
         </View>
       );
 
+    case "payslipColumns":
+      return (
+        <View key={key} style={styles.twoCol} wrap={false}>
+          <View style={styles.colCard}>
+            <Text style={styles.colHeader}>Earnings</Text>
+            {earningRows.length === 0 ? (
+              <View style={styles.lineRow}>
+                <Text style={styles.lineLabel}>Basic salary</Text>
+                <Text style={styles.lineValue}>
+                  {formatLKR(line.basicSalaryCents)}
+                </Text>
+              </View>
+            ) : (
+              earningRows.map((c) => (
+                <View key={c.id} style={styles.lineRow}>
+                  <Text style={styles.lineLabel}>{c.name}</Text>
+                  <Text style={styles.lineValue}>
+                    {formatLKR(c.amountCents)}
+                  </Text>
+                </View>
+              ))
+            )}
+            <View style={styles.cardDivider} />
+            <View style={styles.subtotal}>
+              <Text style={styles.subtotalLabel}>Gross earnings</Text>
+              <Text style={styles.subtotalValue}>
+                {formatLKR(line.earningsCents || line.grossCents)}
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.colCard}>
+            <Text style={styles.colHeader}>Deductions</Text>
+            {preTaxDeductionRows.map((c) => (
+              <View key={c.id} style={styles.lineRow}>
+                <Text style={styles.lineLabel}>{c.name}</Text>
+                <Text style={styles.lineValue}>
+                  -{formatLKR(c.amountCents)}
+                </Text>
+              </View>
+            ))}
+            {line.epfEmployeeCents > 0 && (
+              <View style={styles.lineRow}>
+                <Text style={styles.lineLabel}>EPF (employee, 8%)</Text>
+                <Text style={styles.lineValue}>
+                  -{formatLKR(line.epfEmployeeCents)}
+                </Text>
+              </View>
+            )}
+            {line.payeCents > 0 && (
+              <View style={styles.lineRow}>
+                <Text style={styles.lineLabel}>PAYE</Text>
+                <Text style={styles.lineValue}>
+                  -{formatLKR(line.payeCents)}
+                </Text>
+              </View>
+            )}
+            {postTaxDeductionRows.map((c) => (
+              <View key={c.id} style={styles.lineRow}>
+                <Text style={styles.lineLabel}>{c.name}</Text>
+                <Text style={styles.lineValue}>
+                  -{formatLKR(c.amountCents)}
+                </Text>
+              </View>
+            ))}
+            {line.totalDeductionsCents === 0 &&
+              preTaxDeductionRows.length === 0 &&
+              postTaxDeductionRows.length === 0 && (
+                <Text style={styles.lineLabel}>No deductions</Text>
+              )}
+            <View style={styles.cardDivider} />
+            <View style={styles.subtotal}>
+              <Text style={styles.subtotalLabel}>Total deductions</Text>
+              <Text style={styles.subtotalValue}>
+                -
+                {formatLKR(
+                  Math.max(
+                    0,
+                    (line.earningsCents || line.grossCents) - line.netPayCents,
+                  ),
+                )}
+              </Text>
+            </View>
     case "billFrom":
       // POs render the supplier as the recipient — the buyer is
       // sending the order *to* the supplier, so the label is just
@@ -2959,6 +3276,79 @@ function renderProformaSection(
         </View>
       );
 
+    case "netPayBand":
+      return (
+        <View key={key} style={styles.netBand} wrap={false}>
+          <Text style={styles.netLabel}>
+            {section.label ?? "Net take-home pay"}
+          </Text>
+          <Text style={styles.netValue}>{formatLKR(line.netPayCents)}</Text>
+        </View>
+      );
+
+    case "leaveSummary":
+      if (
+        Number(line.paidLeaveDays) === 0 &&
+        Number(line.unpaidLeaveDays) === 0
+      )
+        return null;
+      return (
+        <View key={key} style={styles.employerNote} wrap={false}>
+          <Text style={styles.employerTitle}>Leave taken this period</Text>
+          {Number(line.paidLeaveDays) > 0 && (
+            <View style={styles.employerRow}>
+              <Text style={styles.lineLabel}>Paid leave</Text>
+              <Text style={styles.lineValue}>
+                {formatPayslipDays(line.paidLeaveDays)}
+              </Text>
+            </View>
+          )}
+          {Number(line.unpaidLeaveDays) > 0 && (
+            <View style={styles.employerRow}>
+              <Text style={styles.lineLabel}>No-pay leave</Text>
+              <Text style={styles.lineValue}>
+                {formatPayslipDays(line.unpaidLeaveDays)}
+              </Text>
+            </View>
+          )}
+        </View>
+      );
+
+    case "employerContributions":
+      if (line.epfEmployerCents === 0 && line.etfEmployerCents === 0) return null;
+      return (
+        <View key={key} style={styles.employerNote} wrap={false}>
+          <Text style={styles.employerTitle}>
+            Employer contributions (for your records)
+          </Text>
+          {line.epfEmployerCents > 0 && (
+            <View style={styles.employerRow}>
+              <Text style={styles.lineLabel}>EPF (employer, 12%)</Text>
+              <Text style={styles.lineValue}>
+                {formatLKR(line.epfEmployerCents)}
+              </Text>
+            </View>
+          )}
+          {line.etfEmployerCents > 0 && (
+            <View style={styles.employerRow}>
+              <Text style={styles.lineLabel}>ETF (employer, 3%)</Text>
+              <Text style={styles.lineValue}>
+                {formatLKR(line.etfEmployerCents)}
+              </Text>
+            </View>
+          )}
+        </View>
+      );
+
+    case "bankDisbursement":
+      if (!line.bankName || !line.bankAccountNo) return null;
+      return (
+        <View key={key} style={styles.employerNote} wrap={false}>
+          <Text style={styles.employerTitle}>Disbursed to</Text>
+          <Text style={styles.metaValue}>
+            {line.bankName} · {line.bankAccountNo}
+            {line.bankBranch ? ` · ${line.bankBranch}` : ""}
+          </Text>
     case "instructions": {
       const text = (section.text ?? PO_DEFAULT_INSTRUCTIONS_TEXT).replace(
         "{{poNumber}}",
@@ -3057,6 +3447,9 @@ function renderProformaSection(
           <Text>
             {section.text ?? "Generated with PettahPro — pettahpro.lk"}
           </Text>
+          <Text>
+            Payslip for {line.employeeFullName} · {periodLabel}
+          </Text>
           <Text>{tenant.businessName}</Text>
         </View>
       );
@@ -3083,6 +3476,17 @@ function renderProformaSection(
   }
 }
 
+export function renderPayslipTemplate(
+  layoutRaw: unknown,
+  ctx: PayslipContext,
+) {
+  const layout = parseLayout(layoutRaw);
+  const styles = buildPayslipStyles(layout.theme);
+  const periodLabel = `${PAYSLIP_MONTHS[ctx.run.periodMonth - 1]} ${ctx.run.periodYear}`;
+
+  return (
+    <Document
+      title={`Payslip ${ctx.line.employeeFullName} ${periodLabel}`}
 export function renderStockTransferTemplate(
   layoutRaw: unknown,
   ctx: StockTransferContext,
@@ -3119,6 +3523,7 @@ export function renderProformaInvoiceTemplate(
     >
       <Page size={pageSizeProp(layout.pageSize)} style={styles.page}>
         {layout.sections.map((section, i) =>
+          renderPayslipSection(section, ctx, styles, i),
           renderStockTransferSection(section, ctx, styles, i),
           renderPurchaseOrderSection(section, ctx, styles, i),
           renderProformaSection(section, ctx, styles, i),

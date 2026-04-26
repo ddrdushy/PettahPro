@@ -3,7 +3,16 @@ import { renderToBuffer } from "@react-pdf/renderer";
 import { PayslipPDF } from "@/lib/payslip-pdf";
 import { pdfResponse } from "@/lib/pdf-response";
 import { fetchTenantLogoDataUrl } from "@/lib/tenant-logo";
-import type { PayrollRun, PayrollRunLine, Tenant } from "@/lib/api";
+import {
+  buildPayslipContext,
+  renderPayslipTemplate,
+} from "@/lib/template-renderer";
+import type {
+  DocumentTemplate,
+  PayrollRun,
+  PayrollRunLine,
+  Tenant,
+} from "@/lib/api";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -18,12 +27,16 @@ export async function GET(
     return new Response("Unauthorized", { status: 401 });
   }
 
-  const [meRes, runRes, logoDataUrl] = await Promise.all([
+  const [meRes, runRes, tplRes, logoDataUrl] = await Promise.all([
     fetch(`${base}/auth/me`, { headers: { cookie: cookieHeader }, cache: "no-store" }),
     fetch(`${base}/payroll-runs/${params.id}`, {
       headers: { cookie: cookieHeader },
       cache: "no-store",
     }),
+    fetch(`${base}/document-templates/active?docType=payslip&language=en`, {
+      headers: { cookie: cookieHeader },
+      cache: "no-store",
+    }).catch(() => null),
     fetchTenantLogoDataUrl(cookieHeader),
   ]);
   if (meRes.status === 401) return new Response("Unauthorized", { status: 401 });
@@ -40,13 +53,35 @@ export async function GET(
   const line = runData.lines.find((l) => l.id === params.lineId);
   if (!line) return new Response("Payslip not found", { status: 404 });
 
+  let activeTemplate: DocumentTemplate | null = null;
+  if (tplRes && tplRes.ok) {
+    try {
+      const body = (await tplRes.json()) as {
+        template: DocumentTemplate | null;
+      };
+      activeTemplate = body.template;
+    } catch {
+      activeTemplate = null;
+    }
+  }
+
   const pdf = await renderToBuffer(
-    PayslipPDF({
-      tenant: { businessName: me.tenant.businessName },
-      run: runData.run,
-      line,
-      logoDataUrl,
-    }),
+    activeTemplate
+      ? renderPayslipTemplate(
+          activeTemplate.layoutJson,
+          buildPayslipContext({
+            tenant: { businessName: me.tenant.businessName },
+            run: runData.run,
+            line,
+            logoDataUrl,
+          }),
+        )
+      : PayslipPDF({
+          tenant: { businessName: me.tenant.businessName },
+          run: runData.run,
+          line,
+          logoDataUrl,
+        }),
   );
 
   const periodTag = `${runData.run.periodYear}-${String(runData.run.periodMonth).padStart(2, "0")}`;
