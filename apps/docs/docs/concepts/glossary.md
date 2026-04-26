@@ -5,164 +5,150 @@ sidebar_position: 1
 
 # Glossary
 
-Terms used across PettahPro. The Sri Lankan tax acronyms are unavoidable if you're running books here — even the bookkeeping terms have one or two local quirks worth flagging.
+The terms used across PettahPro. The Sri Lankan tax acronyms are unavoidable if you're running books here, and a few of the bookkeeping terms have local quirks worth flagging.
 
 ## Sri Lankan tax & statutory
 
 ### VAT — Value Added Tax
 
-Levied at **18%** on most taxable supplies (some categories are exempt or zero-rated). Registered persons issue **tax invoices** with VAT charged separately, and file the **VAT return** monthly or quarterly depending on turnover. PettahPro books VAT to **2100 VAT payable** on every taxable invoice and reverses it on credit notes.
+A **18%** tax charged on most goods and services. If your business turnover is over the threshold you need to register for VAT, charge it on every sale, and file a VAT return monthly or quarterly. PettahPro keeps VAT separate from your sales income on every invoice so you can see what you've collected and what you owe Inland Revenue.
 
 ### SSCL — Social Security Contribution Levy
 
-A **2.5%** levy on turnover for businesses above the threshold, introduced October 2022. SSCL is **not** input-creditable — it sits on top of VAT as a real cost. PettahPro applies it as a separate line via the SSCL tax code where applicable.
+A **2.5%** levy on turnover, introduced in October 2022. Unlike VAT, you can't claim it back as input — it's a real cost on top of the sale. PettahPro applies it as a separate line where it's relevant.
 
 ### EPF — Employees' Provident Fund
 
-Mandatory retirement fund. Contributions: **employee 8%**, **employer 12%**, totalling 20% of gross. Remitted monthly to the Central Bank's EPF department, with the schedule (Form C) filed alongside.
+The mandatory retirement fund. Each month, **8%** is deducted from the employee's salary and the **employer adds another 12%** — so a total of 20% of gross pay goes into the EPF account. PettahPro calculates this for every payroll run and produces the file you upload to the EPF e-portal.
 
 ### ETF — Employees' Trust Fund
 
-Employer-only contribution at **3%** of gross, on top of EPF. Remitted monthly to the ETF Board.
+An employer-only contribution at **3%** of gross salary, on top of EPF. Also calculated and remitted monthly.
 
 ### PAYE — Pay As You Earn
 
-Income tax deducted at source by the employer from employee salary. Brackets and exempt threshold are set in `payroll_settings.payeBrackets` and update with each annual budget. Remitted monthly to Inland Revenue.
+Income tax that you (the employer) deduct from your employee's salary and pay to Inland Revenue on their behalf. The brackets and exemption threshold change with each annual budget — PettahPro updates them when the budget changes them, so you don't have to.
 
 ### WHT — Withholding Tax
 
-Income tax withheld at source on certain payments — typically **5%** on professional services and **10%** on rent and director fees. The payer files and remits; the recipient claims credit on their own return. PettahPro tracks WHT on supplier bills and produces the **Form WHT-T** at year-end.
+Tax that you withhold when paying for certain things — typically **5%** on professional services and **10%** on rent and director fees. The recipient claims credit for it on their own tax return. PettahPro tracks WHT on supplier bills and produces the year-end summary you need to file.
 
 ### TIN — Taxpayer Identification Number
 
-Issued by Inland Revenue. Required on every tax invoice for VAT-registered persons.
+Your Inland Revenue ID. You need to print it on every tax invoice if you're VAT-registered.
 
-### BR / BRA — Business Registration / Business Registration Act
+### BR / BRA — Business Registration
 
-The certificate that registers a sole-proprietor or partnership with the Divisional Secretariat. Companies use the **Companies Act** number instead.
+The certificate that registers a sole proprietor or partnership with the local Divisional Secretariat. Companies use the **Companies Act** number instead.
 
-### Inland Revenue Department (IRD)
+### IRD — Inland Revenue Department
 
-The tax authority. Returns are filed via the IRD e-Services portal. PettahPro produces the data; you file it.
+The tax authority. You file VAT returns, PAYE summaries, and income tax through their e-Services portal. PettahPro produces the data; you submit it.
 
-## Accounting
+## Accounting terms
 
 ### DR / CR — Debit / Credit
 
-Every journal has at least one debit and one credit, equal in total. Convention:
-- Assets and expenses go up on the **debit** side.
-- Liabilities, equity, and income go up on the **credit** side.
+Every transaction in your books has at least one debit and one credit, and they always balance. The convention:
+- Asset and expense accounts go **up** when debited.
+- Liability, equity, and income accounts go **up** when credited.
 
-If a journal isn't balanced, PettahPro refuses to post it.
+If the two sides don't balance, PettahPro won't let you save.
 
 ### AR — Accounts Receivable
 
-Money customers owe you. Booked when you post an invoice (`DR 1100 AR`); cleared when payment lands (`CR 1100 AR`). The **AR aging** report buckets unpaid invoices by days overdue.
+Money your customers owe you. Goes up when you post an invoice; comes down when the customer pays. The **AR aging** report tells you who's overdue and by how long.
 
 ### AP — Accounts Payable
 
-Money you owe suppliers. Mirror of AR, on **2000 AP**. Booked when you post a bill; cleared when you pay.
+Money you owe your suppliers. The mirror image of AR. Goes up when you post a bill; comes down when you pay it.
 
 ### COGS — Cost of Goods Sold
 
-The cost side of stock-tracked sales. When you sell a product, PettahPro books `DR 5000 COGS / CR 1200 Inventory` at the item's buy price, so gross margin shows up correctly on the P&L.
+The cost side of stock-tracked sales. When you sell a product, PettahPro records what that item cost you to buy, so your gross margin shows up properly on the P&L.
 
-### GL — General Ledger
+### General ledger (GL)
 
-The complete list of journal lines for a period, by account. PettahPro's `/app/reports/gl` lets you drill from any account total back to the source documents.
+The complete, chronological list of every transaction by account. The GL report lets you click any total and drill back to the original document — useful when an auditor asks "where did this number come from?"
 
 ### Trial balance
 
-The list of every account's debit and credit totals. Should always balance. The report at `/app/reports/trial-balance` is the first thing an auditor opens.
+The snapshot list of every account's debit and credit totals as of a chosen date. Always balances. Usually the first thing an auditor opens.
 
 ### P&L — Profit & Loss
 
-Income minus expenses for a period. Also called the **income statement**.
+Income minus expenses for a period. Also called the **income statement**. Tells you whether you made or lost money in the period.
 
 ### Balance sheet
 
-Assets = Liabilities + Equity, at a point in time. The **opening balance** module is what you use to load these into a fresh PettahPro tenant from your previous system.
+A snapshot of what you own (assets), what you owe (liabilities), and what's left for the owners (equity), at a point in time. The **opening balance** module is what you use to load these from your previous system when you switch to PettahPro.
 
 ### FY — Financial Year
 
-Sri Lanka's standard FY runs **1 April → 31 March**. PettahPro's period structure follows this by default but is configurable per tenant.
+Sri Lanka's standard financial year runs **1 April → 31 March**. PettahPro defaults to this but you can change it for your business.
 
 ### Period lock
 
-A closed accounting period. Once locked, journals cannot post into it without unlock. Used to freeze a month or year after reconciliation. See [Period lock](../accounting/period-lock).
+A closed accounting period. Once you close a month or year, no further transactions can post into it without unlocking it first. Used to "freeze" a period after you've reconciled everything.
 
-### Cost center
+### Cost centre
 
-An optional dimension on each journal line — used to slice the P&L by department, branch, or project without creating separate accounts. Reports under `/app/reports/cost-centers`.
+An optional tag you can put on each transaction line — used to slice your P&L by department, branch, or project without having to create separate accounts for each.
 
-## Inventory
+## Inventory terms
 
 ### SKU
 
-Stock-keeping unit. PettahPro's **item code** is the SKU.
+Stock-keeping unit. PettahPro's **item code** is your SKU.
 
 ### GRN — Goods Received Note
 
-The document that records stock arriving from a supplier. Books `DR 1200 Inventory / CR 2200 GRN clearing`; the bill clears the GRN clearing account when posted. See [GRNs](../buy/grns).
+The document that records stock arriving from a supplier. Increases your inventory; the supplier's bill clears it later when it's posted.
 
 ### Bundle / Kit
 
-A virtual SKU made of components. Selling a bundle explodes into per-component stock issues at invoice post.
+A package made of other items. Selling a bundle automatically reduces stock on each of the component items.
 
 ### Batch / Lot
 
-A group of stock units sharing an expiry date or supplier batch number. Used for pharma, food, anything with a shelf life.
+A group of stock units that share an expiry date or supplier batch number. Used for things like medicines, food, or anything with a shelf life.
 
 ### Serial
 
-A unique unit identifier — phone IMEIs, appliance serials. Each serial has a status (in stock / sold / returned).
+A unique identifier on a single unit — phone IMEIs, appliance serial numbers, etc. PettahPro tracks each serial through its full life: in stock → sold → returned.
 
 ## Documents & flow
 
 ### Quotation → Sales order → Delivery note → Invoice
 
-The full sell-side document chain. Most SMEs skip the middle two and go straight from quote to invoice; PettahPro supports either.
+The full set of selling documents you might use for a single transaction. Most small businesses skip the middle two and go straight from quotation to invoice — that works fine in PettahPro.
 
 ### Credit note
 
-The reverse of an invoice. Issued for returns, allowances, or correction of an error after the original invoice has been sent. Reduces AR and reverses the original VAT.
+The reverse of an invoice. You send one to a customer when they return goods, when you've over-charged them, or when you need to correct an error after the original invoice has gone out. It reduces what they owe you and reverses the VAT on the original.
 
 ### Debit note
 
-Supplier-side credit note — what you send a supplier when returning goods or claiming a credit against a bill.
+The supplier-side equivalent — you send one to your supplier when you're returning goods or claiming a credit against a bill they've already sent.
 
 ### Proforma invoice
 
-A non-posting "what-the-invoice-will-look-like" document, often required for advance payment or import paperwork. Doesn't touch the ledger.
+A "what the invoice will look like" document — useful for getting an advance payment, or for import paperwork. It doesn't post to your books; it's a quote in invoice format.
 
 ### Three-way match
 
-Reconciling **PO ↔ GRN ↔ bill**. The report at `/app/reports/three-way-match` flags bills that don't match a GRN or PO.
+Reconciling a purchase order, the GRN that records the stock arriving, and the bill from the supplier. PettahPro's report flags any bill that doesn't match a GRN or a PO — useful for catching duplicate billing.
 
-## Local payments
+## Local payment methods
 
 ### LankaQR
 
-Sri Lanka's national QR-code payment standard. PettahPro accepts LankaQR as a customer payment method.
+Sri Lanka's national QR-code payment standard. PettahPro accepts LankaQR as a payment method on customer payments.
 
 ### FriMi, Genie
 
-Mobile wallet payment apps. First-class payment methods on the customer payment screen.
+Mobile wallet apps. Both are first-class methods on the customer payment screen.
 
 ### Cheque
 
-Still everywhere in SL business. PettahPro tracks cheque number, bank, and clearance date — and posts the bank entry only when the cheque clears, not when it's deposited.
-
-## Platform
-
-### Tenant
-
-One company's data inside PettahPro. Every row in every table carries a `tenant_id`. Postgres **row-level security** ensures one tenant's session can never see another tenant's rows. See [Multi-tenant and RLS](./multi-tenant-and-rls).
-
-### Realm
-
-A login surface. PettahPro has three: **tenant** (`/app/*` — your staff), **portal** (`/portal/*` — your customers), **platform** (`/platform/*` — PettahPro operators).
-
-### Plan / Add-on
-
-What controls what your tenant can do. The plan caps users, transactions, modules; add-ons unlock specific features (e.g. multi-warehouse, payroll). Set on `/platform/tenants/<id>/plan`.
+Still widely used in Sri Lankan business. PettahPro tracks the cheque number, the bank, and the clearance date — and only counts the money in your bank when the cheque actually clears, not when it's deposited.

@@ -5,185 +5,159 @@ sidebar_position: 1
 
 # Payroll
 
-## Overview
+## What it does
 
-Payroll is the monthly cycle that pays employees and remits the statutory deductions — **EPF**, **ETF**, and **PAYE** — to the relevant authorities. PettahPro models payroll as a **payroll run** (one per pay period per group of employees) that, on approval, posts the salary expense, books the employer-side liabilities, and generates the per-employee payslip PDFs. Form C (EPF), the ETF schedule, and the PAYE return are produced as exportable files at month-end.
+Payroll is the monthly cycle that pays your employees and remits the statutory deductions — **EPF**, **ETF**, and **PAYE** — to the relevant authorities. PettahPro takes care of the calculations, generates the per-employee payslips, books the salary expense and the related liabilities to your books, and produces the files you need for filing.
+
+A payroll run is one set of payments for one pay period (usually a month). On approval, payslips are generated, salary moves into the "ready to pay" stage, and the EPF/ETF/PAYE amounts are added to what you owe Inland Revenue and the funds.
 
 ## Walkthrough
 
 A typical month looks like this.
 
-### 1 — Confirm employee data is current
+### 1 — Make sure your employee records are up to date
 
-Visit `/app/hr/employees`. Make sure new hires are added and exits are marked. Each employee needs:
+Open **HR → Employees**. Make sure new hires have been added and anyone who's left has been marked as exited. For each employee you need:
 
-- **Salary structure** — basic + the components that apply (allowances, transport, etc.).
-- **EPF/ETF number** — required for the Form C and ETF schedule.
-- **Tax-relevant info** — TIN if applicable, and any tax-residency or exemption flags.
-- **Bank details** — account number and branch for the disbursement file.
+- **Salary structure** — basic plus any allowances, transport, etc.
+- **EPF/ETF number** — required for the filings.
+- **Tax info** — TIN if applicable, plus any tax-residency or exemption flags.
+- **Bank details** — account number and branch for the salary disbursement file.
 
-### 2 — Process variable inputs
+### 2 — Capture the things that vary month-to-month
 
-Anything that varies month-to-month is captured before the run:
+Anything that changes from one month to the next gets captured before you run payroll:
 
-- **Attendance / leave** — pulled from the leave module (or from the optional attendance module if you use it). Unpaid leave reduces the run; paid leave doesn't.
-- **Loan repayments** — the active **staff loan** module schedules these and surfaces them on the run automatically.
-- **One-off bonuses or allowances** — added via the run's **adjustments** section, or created as a separate **bonus run**.
-- **Expense claims** — approved claims can be added to the salary run for disbursement, or paid separately.
+- **Attendance and leave** — pulled in from the leave module (or the optional attendance module if you use it). Unpaid leave reduces the run; paid leave doesn't.
+- **Loan repayments** — if an employee has an active staff loan, the scheduled repayment for the month shows up automatically.
+- **One-off bonuses or allowances** — added in the run's adjustments section, or processed as a separate **bonus run**.
+- **Expense claims** — approved expense claims can be paid alongside the salary, or paid separately.
 
 ### 3 — Create the payroll run
 
-Visit `/app/payroll/runs/new`.
+Go to **Payroll → Runs → + New run**.
 
-1. Pick the **pay period** (month or fortnight).
+1. Pick the **pay period** (usually a calendar month).
 2. Pick the **employee group** — usually "all active", but you can run sub-groups (e.g. salaried vs. hourly) separately if your structure needs it.
 3. Click **Calculate**.
 
-The system computes for each employee:
-- **Gross** = sum of salary components for the period (prorated for joiners/exits).
+PettahPro works out, for each employee:
+
+- **Gross pay** — adds up all their salary components for the period (pro-rated for joiners/leavers).
 - **EPF (employee 8%)** — deducted from gross.
-- **PAYE** — computed from year-to-date taxable earnings using the bracket table.
-- **Other deductions** — loan repayments, advances, salary advances, etc.
+- **PAYE** — calculated using their year-to-date earnings against the bracket table.
+- **Other deductions** — loan repayments, salary advances, etc.
 - **Net pay** = gross − EPF − PAYE − other deductions.
 
-It also computes employer-side amounts (not deducted, but booked):
+It also calculates what you the employer owe on top:
+
 - **EPF (employer 12%)**
 - **ETF (3%)**
 
-The result lands in **Draft** status. Review the per-employee table, drill into anyone whose number looks off, and adjust as needed.
+The run lands in **Draft** status. Look through the per-employee table, click into anyone whose number looks off, and adjust if needed.
 
 ### 4 — Approve and post
 
-Click **Approve** when you're satisfied. The system:
+Click **Approve** when you're happy. PettahPro:
 
-- Locks the run (no further edits).
-- Books the salary journal (see Behind the scenes).
+- Locks the run (no more edits).
+- Posts the salary expense to your books.
 - Generates the per-employee payslip PDFs.
-- Adds the totals to **EPF payable**, **ETF payable**, **PAYE payable** for end-of-month remittance.
+- Adds the totals to your EPF / ETF / PAYE liability accounts, ready for end-of-month remittance.
 
-### 5 — Disburse net pay
+### 5 — Pay out
 
-Visit the run's **Disbursement** tab. Two options:
+Open the run's **Disbursement** tab. Two options:
 
-- **Generate bank file.** Produces the bank's expected CSV/text format for bulk salary credit. Upload to your corporate banking portal.
-- **Mark as paid manually.** For tenants paying by cheque or internal transfer.
+- **Generate the bank file.** PettahPro produces the file in the format your bank expects for bulk salary credit. Upload it to your corporate banking portal.
+- **Mark as paid manually.** For tenants paying by cheque or by individual transfer.
 
-Either way, the disbursement step books `DR Salaries payable / CR Bank` for the disbursed amount and flips the run to **Paid**.
+Either way, your bank balance reflects the payment going out and the run flips from **Approved** to **Paid**.
 
 ### 6 — Send payslips
 
-Open the run → **Send payslips**. Each employee with an email gets their payslip PDF as an attachment. Employees can also self-serve via the employee portal if you've enabled it.
+On the run, click **Send payslips**. Each employee with an email address gets their own PDF. If you've enabled the employee portal, they can also download it themselves there.
 
 ### 7 — End-of-month statutory remittance
 
-Visit `/app/payroll/statutory`.
+Go to **Payroll → Statutory**.
 
-- **EPF Form C** — exports the file in the EPF Department's expected format. File via the EPF e-portal; once paid, post a payment against the **2300 EPF payable** account to clear the balance.
+- **EPF (Form C)** — exports the file in the format the EPF Department's e-portal expects. Upload it there. Once you've paid, record the payment in PettahPro to clear the EPF liability.
 - **ETF schedule** — same shape, ETF Board format.
-- **PAYE return** — monthly summary; remit via IRD e-Services.
+- **PAYE return** — monthly summary; remit through Inland Revenue's e-Services.
 
-PettahPro produces the data; you file and remit via the relevant portals.
+PettahPro produces the data; you upload and pay through the relevant portals.
 
 ## Common tasks
 
 ### Add a new salary component
 
-Visit `/app/payroll/components`. Define the component's name, calculation rule (fixed amount, percentage of basic, or formula), tax treatment (taxable / non-taxable), and EPF treatment (counts towards EPF or not). Then add it to the relevant employees' salary structures.
+Open **Payroll → Components**. Define the component's name, how it's calculated (fixed amount, percentage of basic, or a formula), whether it's taxable, and whether it counts towards EPF. Then add it to the relevant employees' salary structures.
 
-### Process a final settlement (employee leaving)
+### Process a leaver's final settlement
 
-Use the **Final settlement** flow at `/app/payroll/settlements/new` rather than a normal run. It computes:
+Use the **Final settlement** flow at **Payroll → Settlements → + New settlement** rather than putting them on the regular run. It works out:
 
 - Pro-rated salary for the partial month worked.
-- Accrued leave encashment.
-- Gratuity (if eligible — typically 5+ years service).
-- Final EPF/ETF/PAYE on the above.
+- Encashment of any accrued leave.
+- Gratuity if eligible (typically 5+ years of service).
+- Final EPF, ETF, and PAYE on the above.
 - Settlement of any outstanding loan or advance.
 
-It produces a **settlement letter** — a separate document type with its own template.
+It produces a **settlement letter** that you give to the employee.
 
 ### Reverse a posted run
 
-You can't edit, but you can reverse: open the run → **Reverse**. This books the inverse journal and unlocks the run for re-processing. The original run stays in the audit trail with status **Reversed**.
+You can't edit a posted run, but you can reverse it: open it → **Reverse**. PettahPro books the opposite entries to undo it and unlocks the run for re-processing. The original run stays in the audit trail with status **Reversed**.
 
-### Run a bonus separately
+### Run a one-off bonus
 
-Use the **Bonus run** at `/app/payroll/bonus-runs/new` for one-offs (festival bonus, performance bonus). It's a slimmer version of the payroll run — picks up the bonus amount per employee, applies PAYE, optionally applies EPF if the bonus is EPF-bearing, and disburses.
+Use **Payroll → Bonus runs → + New bonus run**. It's a slimmer version of the regular run — picks up a bonus amount per employee, applies PAYE (and EPF if the bonus is EPF-bearing), and pays it out.
 
-### Multi-currency employees
+### Pay an employee in a foreign currency
 
-If you employ someone in a foreign currency: set their salary structure in that currency. The run computes their gross in their currency, applies PAYE on the LKR-equivalent (per IRD rules), and books to the GL in LKR at the run's FX rate.
+Set their salary structure in that currency. The run calculates their gross pay in their currency, applies PAYE on the LKR-equivalent (per Inland Revenue rules), and books to your LKR books at the run's exchange rate.
 
-## Behind the scenes
+## What gets posted
 
-### Journal entry on approval
+When you approve a payroll run, PettahPro books the salary expense and the various liabilities. For an employee with a 100,000 gross, 8,000 employee EPF, 12,000 employer EPF, 3,000 ETF, and 5,000 PAYE, the entry looks like this:
 
-For a single employee with salary 100,000, EPF (employee) 8,000, EPF (employer) 12,000, ETF 3,000, PAYE 5,000:
+| Account | Debit | Credit |
+|---|---|---|
+| Salaries — gross | 100,000 | |
+| EPF — employer | 12,000 | |
+| ETF — employer | 3,000 | |
+| EPF payable | | 20,000 *(8k employee + 12k employer)* |
+| ETF payable | | 3,000 |
+| PAYE payable | | 5,000 |
+| Salaries payable | | 87,000 *(100k − 8k − 5k)* |
 
-```
-DR  6100 Salaries — gross         100,000
-DR  6110 EPF — employer            12,000
-DR  6120 ETF — employer             3,000
-    CR  2300 EPF payable           20,000   (8k employee + 12k employer)
-    CR  2310 ETF payable            3,000
-    CR  2320 PAYE payable           5,000
-    CR  2400 Salaries payable      87,000   (100k − 8k EPF − 5k PAYE)
-```
+When you actually pay the employee, **Salaries payable** is cleared against your **Bank** for the 87,000.
 
-The disbursement step then books `DR 2400 Salaries payable / CR 1010 Bank` for 87,000.
-
-Loan repayments inside a run net against the loan balance:
-
-```
-DR  2400 Salaries payable           [repayment]
-    CR  1300 Staff loans receivable [repayment]
-```
-
-The employee's net pay is reduced accordingly.
-
-### Tables touched
-
-- `payroll_runs` — header.
-- `payroll_run_lines` — one row per employee per component (salary, EPF, ETF, PAYE, allowances, deductions, loan repayments).
-- `journals` + `journal_lines` — the GL posting.
-- `staff_loans` + `staff_loan_repayments` — repayment ledger.
-- `leave_balances` — adjustments for leave taken / encashed.
-- `audit_events` — approver, time, IP.
-
-### What's enforced
-
-- **Period not locked.** Run period must be in an open accounting period.
-- **No overlapping runs.** Two approved runs cannot cover the same employee in the same period.
-- **PAYE bracket validity.** The bracket table must have an effective row for the run's pay-period date.
-- **EPF/ETF caps.** Component flags determine whether each component contributes to EPF/ETF gross — wired in, not configurable per-run.
-- **Approver permission.** Only roles with `payroll.approve` can move a run from Draft to Approved.
-
-### Statutory file formats
-
-The exporters at `/app/payroll/statutory` produce files in the formats specified by the relevant authority — these are versioned in code (not configurable) so they can be updated centrally when the authority changes the spec.
+If the run includes a loan repayment, that amount is taken off the salary payable and used to reduce the employee's loan balance instead.
 
 ## FAQ
 
-**Can a run mix monthly and hourly employees?**
-Yes — the calculation rule is per-component, not per-run. An hourly employee just has a component whose rule is "rate × hours from attendance".
+**Can I mix monthly-paid and hourly-paid employees in the same run?**
+Yes. The calculation is per component, not per run. An hourly employee just has a component that calculates "rate × hours from attendance".
 
-**Salaries for the run look right but the bank file is rejected.**
-Almost always a bank-account-format issue. Check that every employee in the run has an account number and branch code in the format your bank expects. Settings → Payroll → Bank export format lets you pick the right template.
+**The run looks correct but the bank file is rejected by my bank.**
+Almost always a bank-account-format issue. Check that every employee in the run has an account number and branch code in the format your bank expects. **Settings → Payroll → Bank export format** lets you pick the right template for your bank.
 
 **An approved run had a wrong amount for one employee — what's the cleanest fix?**
-Reverse the run, fix the input (e.g. attendance, salary structure), re-approve. If you've already disbursed and the employee has been paid the wrong amount, the cleanest path is to absorb the variance into next month's run via an adjustment line — auditors prefer the trail to closure-and-restart-from-scratch.
+Reverse the run, fix the underlying input (attendance, salary structure, whatever it was), and re-approve. If you've already paid out the wrong amount, the cleanest path is usually to absorb the variance into next month's run as an adjustment line — auditors much prefer to see "noted and corrected next month" over "reversed and restarted from scratch".
 
-**EPF/ETF rates change in the budget. Do I update them?**
-No. They're wired into the system as defaults and updated centrally in a release when the budget changes them. You don't configure 8/12/3 per tenant.
+**EPF or ETF rates change in the budget. Do I need to update them?**
+No. Statutory rates are baked in and are updated centrally when the budget changes them. You don't configure them per business.
 
-**PAYE is showing zero for someone earning over the threshold.**
-Check (a) their YTD taxable earnings — if you imported mid-year, you need an opening YTD entry; (b) any active exemption flags on the employee; (c) the bracket table's effective dates for the run period.
+**PAYE is showing zero for someone earning over the threshold — why?**
+Three things to check: (a) their year-to-date earnings — if you started using PettahPro mid-year, you need to enter an opening YTD amount; (b) any tax-exemption flags on the employee record; (c) whether the bracket table has an effective entry for the run's pay date.
 
-## Related modules
+## Related
 
-- [Employees](../hr/payroll) — master data.
-- [Leave](../hr/payroll) — feeds the run.
-- [Staff loans](../hr/payroll) — repayments net against pay.
-- [Bonus runs](../hr/payroll) — one-off payments.
-- [Final settlements](../hr/payroll) — exits.
-- [Period lock](../accounting/period-lock) — closing the month after payroll.
+- **Employees** — your employee master data.
+- **Leave** — feeds the run.
+- **Staff loans** — repayments come out of pay automatically.
+- **Bonus runs** — one-off payments.
+- **Final settlements** — for employees leaving.
+- **Period close** — closing the month after payroll has run.
