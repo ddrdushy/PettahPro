@@ -201,6 +201,33 @@ const LIBRARY: readonly LibraryTemplate[] = [
     layout: CLASSIC_CREDIT_NOTE_LAYOUT,
   },
   {
+    libraryKey: "delivery_note_classic",
+    docType: "delivery_note",
+    name: "Classic delivery note",
+    description:
+      "Logistics doc — no money. Two-column 'Deliver to' + shipping address, qty-only line table, signature block at the bottom for delivered-by / received-by sign-off.",
+    languages: ["en"],
+    layout: {
+      pageSize: "a4",
+      theme: CLASSIC_THEME,
+      sections: [
+        { type: "header", showLogo: true, showStatusPill: true },
+        {
+          type: "metaRow",
+          fields: [
+            "deliveryDate",
+            "carrier",
+            "trackingNumber",
+            "deliveredAt",
+          ],
+        },
+        { type: "partiesRow" },
+        { type: "lineItemsTable" },
+        { type: "notes" },
+        { type: "signBlock" },
+        { type: "footer", text: "Generated with PettahPro — pettahpro.lk" },
+      ],
+    },
     libraryKey: "debit_note_classic",
     docType: "debit_note",
     name: "Classic debit note",
