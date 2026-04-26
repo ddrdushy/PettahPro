@@ -237,6 +237,11 @@ const LIBRARY: readonly LibraryTemplate[] = [
     layout: CLASSIC_DEBIT_NOTE_LAYOUT,
   },
   {
+    libraryKey: "stock_transfer_classic",
+    docType: "stock_transfer",
+    name: "Classic stock transfer",
+    description:
+      "Internal logistics doc. Source-→-destination warehouse pair, three-quantity table (Requested / Dispatched / Received) with discrepancy highlighting, signature block for dispatched-by / received-by sign-off.",
     libraryKey: "purchase_order_classic",
     docType: "purchase_order",
     name: "Classic purchase order",
@@ -255,6 +260,17 @@ const LIBRARY: readonly LibraryTemplate[] = [
         { type: "header", showLogo: true, showStatusPill: true },
         {
           type: "metaRow",
+          fields: [
+            "requestedDate",
+            "dispatchedAt",
+            "receivedAt",
+            "discrepancy",
+          ],
+        },
+        { type: "warehouseRow" },
+        { type: "lineItemsTable" },
+        { type: "notes" },
+        { type: "signBlock" },
           fields: ["orderDate", "expectedDeliveryDate", "reference", "currency"],
         },
         { type: "billFrom" },

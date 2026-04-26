@@ -28,6 +28,9 @@ import type {
   ProformaInvoiceLine,
   QuotationDetail,
   QuotationLine,
+  StockTransferDetail,
+  StockTransferLineRow,
+  StockTransferWarehouse,
   Supplier,
   Tenant,
 } from "@/lib/api";
@@ -108,6 +111,12 @@ type Section =
   // invoice) and debit notes (against a bill) so the recipient can
   // see what the credit/debit applies to.
   | { type: "linkedDocument" }
+  // Source → destination warehouse row used by stock transfers.
+  // Renders the source warehouse name + code on the left, an arrow,
+  // and the destination on the right.
+  | { type: "warehouseRow" }
+  // Signature block for paper sign-off — used on stock transfers
+  // (Dispatched-by / Received-by) and delivery notes.
   // Labelled callout — used for PO supplier instructions and
   // similar boilerplate. Both label and text are template-overridable.
   // Generic enough to reuse on stock_transfer / settlement_letter.
@@ -2369,6 +2378,43 @@ export function renderDebitNoteTemplate(
 }
 
 // -----------------------------------------------------------------
+// Stock transfer context + renderer (M2 #8/10)
+//
+// Stock transfer is an internal logistics doc — no money, but a
+// 3-quantity table (Requested / Dispatched / Received) and a
+// source-→-destination warehouse pair instead of a customer block.
+// signBlock reuses the labels Dispatched-by / Received-by.
+// -----------------------------------------------------------------
+export type StockTransferContext = {
+  docType: "stock_transfer";
+  tenant: Pick<Tenant, "businessName">;
+  transfer: StockTransferDetail;
+  lines: StockTransferLineRow[];
+  source: StockTransferWarehouse | null;
+  destination: StockTransferWarehouse | null;
+  logoDataUrl?: string | null;
+};
+
+export function buildStockTransferContext(args: {
+  tenant: Pick<Tenant, "businessName">;
+  transfer: StockTransferDetail;
+  lines: StockTransferLineRow[];
+  source: StockTransferWarehouse | null;
+  destination: StockTransferWarehouse | null;
+  logoDataUrl?: string | null;
+}): StockTransferContext {
+  return { docType: "stock_transfer", ...args };
+}
+
+function buildStockTransferStyles(theme: Theme) {
+  const base = buildInvoiceStyles(theme);
+  return StyleSheet.create({
+    ...base,
+    warehouseRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 12,
+      marginBottom: 24,
 // Purchase order context + renderer (M2 #7/10)
 //
 // PO is the AP-side counterpart to a quotation. Has its own status
@@ -2410,11 +2456,65 @@ function buildPurchaseOrderStyles(theme: Theme) {
       backgroundColor: theme.surfaceRecessed,
       borderRadius: 4,
     },
+    warehouseCol: { flex: 1 },
+    warehouseLabel: {
+      fontSize: 8,
+      textTransform: "uppercase",
+      letterSpacing: 0.8,
+      color: theme.textTertiary,
+      marginBottom: 4,
+    },
+    warehouseName: {
+      fontSize: 12,
+      fontFamily: `${theme.fontFamily}-Bold`,
+    },
+    warehouseLine: { color: theme.textSecondary, marginTop: 2, fontSize: 9 },
+    arrow: {
+      fontSize: 16,
+      color: theme.textTertiary,
+    },
+    stColNum: { width: 24, textAlign: "center" },
+    stColDesc: { flex: 1, paddingRight: 8 },
+    stColQty: { width: 80, textAlign: "right" },
+    tdShort: { fontSize: 10, color: "#B47A15" },
+    signBlock: {
+      flexDirection: "row",
+      gap: 24,
+      marginTop: 32,
+    },
+    signCol: { flex: 1 },
+    signLine: {
+      borderTop: `0.5pt solid ${theme.textPrimary}`,
+      paddingTop: 8,
+      minHeight: 56,
+    },
+    signLabel: {
     instructionsLabel: {
       fontSize: 8,
       textTransform: "uppercase",
       letterSpacing: 0.8,
       color: theme.textTertiary,
+    },
+  });
+}
+
+function formatStQty(n: string | number | null | undefined): string {
+  if (n === null || n === undefined) return "—";
+  return Number(n).toLocaleString("en-LK", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 4,
+  });
+}
+
+function renderStockTransferSection(
+  section: Section,
+  ctx: StockTransferContext,
+  styles: ReturnType<typeof buildStockTransferStyles>,
+  key: number,
+) {
+  const { transfer, lines, source, destination, tenant } = ctx;
+  const isDispatchedOrLater =
+    transfer.status === "dispatched" || transfer.status === "received";
       marginBottom: 6,
     },
     instructionsText: { color: theme.textSecondary, lineHeight: 1.5 },
@@ -2502,6 +2602,12 @@ function renderProformaSection(
             <Text style={styles.tenantMeta}>Sri Lanka</Text>
           </View>
           <View style={styles.invoiceHeader}>
+            <Text style={styles.invoiceLabel}>Stock transfer</Text>
+            <Text style={styles.invoiceNumber}>
+              {transfer.transferNumber ?? "Draft"}
+            </Text>
+            {section.showStatusPill !== false && (
+              <Text style={styles.statusPill}>{transfer.status}</Text>
             <Text style={styles.invoiceLabel}>Purchase order</Text>
             <Text style={styles.invoiceNumber}>{po.poNumber ?? "Draft"}</Text>
             {section.showStatusPill !== false && (
@@ -2519,6 +2625,42 @@ function renderProformaSection(
 
     case "metaRow": {
       const fields = section.fields ?? [
+        "requestedDate",
+        "dispatchedAt",
+        "receivedAt",
+        "discrepancy",
+      ];
+      const cells: Array<{ label: string; value: string | null }> = fields.map(
+        (f) => {
+          if (f === "requestedDate")
+            return {
+              label: "Requested",
+              value: formatDate(transfer.requestedDate),
+            };
+          if (f === "dispatchedAt")
+            return {
+              label: "Dispatched",
+              value: transfer.dispatchedAt
+                ? formatDate(transfer.dispatchedAt.slice(0, 10))
+                : null,
+            };
+          if (f === "receivedAt")
+            return {
+              label: "Received",
+              value: transfer.receivedAt
+                ? formatDate(transfer.receivedAt.slice(0, 10))
+                : null,
+            };
+          if (f === "discrepancy")
+            return {
+              label: "Discrepancy",
+              value: transfer.hasDiscrepancy ? "Flagged" : null,
+            };
+          if (f === "transferNumber")
+            return {
+              label: "Transfer #",
+              value: transfer.transferNumber ?? null,
+            };
         "orderDate",
         "expectedDeliveryDate",
         "issueDate",
@@ -2569,6 +2711,37 @@ function renderProformaSection(
         </View>
       );
     }
+
+    case "warehouseRow":
+      return (
+        <View key={key} style={styles.warehouseRow}>
+          <View style={styles.warehouseCol}>
+            <Text style={styles.warehouseLabel}>From (source)</Text>
+            {source ? (
+              <>
+                <Text style={styles.warehouseName}>{source.name}</Text>
+                <Text style={styles.warehouseLine}>Code: {source.code}</Text>
+              </>
+            ) : (
+              <Text style={styles.warehouseLine}>—</Text>
+            )}
+          </View>
+          <Text style={styles.arrow}>→</Text>
+          <View style={styles.warehouseCol}>
+            <Text style={styles.warehouseLabel}>To (destination)</Text>
+            {destination ? (
+              <>
+                <Text style={styles.warehouseName}>{destination.name}</Text>
+                <Text style={styles.warehouseLine}>
+                  Code: {destination.code}
+                </Text>
+              </>
+            ) : (
+              <Text style={styles.warehouseLine}>—</Text>
+            )}
+          </View>
+        </View>
+      );
 
     case "billFrom":
       // POs render the supplier as the recipient — the buyer is
@@ -2632,6 +2805,65 @@ function renderProformaSection(
       return (
         <View key={key} style={styles.table}>
           <View style={[styles.row, styles.rowHeader]}>
+            <Text style={[styles.stColNum, styles.th]}>#</Text>
+            <Text style={[styles.stColDesc, styles.th]}>Item</Text>
+            <Text style={[styles.stColQty, styles.th]}>Requested</Text>
+            <Text style={[styles.stColQty, styles.th]}>Dispatched</Text>
+            <Text style={[styles.stColQty, styles.th]}>Received</Text>
+          </View>
+          {lines.map((l) => {
+            const dispatched = Number(l.quantity_dispatched ?? 0);
+            const received =
+              l.quantity_received != null ? Number(l.quantity_received) : null;
+            const isShort =
+              isDispatchedOrLater && received !== null && received < dispatched;
+            return (
+              <View key={l.id} style={styles.row} wrap={false}>
+                <Text style={[styles.stColNum, styles.td]}>{l.line_no}</Text>
+                <View style={styles.stColDesc}>
+                  <Text style={styles.td}>{l.item_name}</Text>
+                  {l.sku && <Text style={styles.tdMuted}>{l.sku}</Text>}
+                  {l.notes && <Text style={styles.tdMuted}>{l.notes}</Text>}
+                </View>
+                <Text style={[styles.stColQty, styles.td]}>
+                  {formatStQty(l.quantity_requested)} {l.unit}
+                </Text>
+                <Text style={[styles.stColQty, styles.td]}>
+                  {l.quantity_dispatched != null
+                    ? `${formatStQty(l.quantity_dispatched)} ${l.unit}`
+                    : "—"}
+                </Text>
+                <Text
+                  style={
+                    isShort
+                      ? [styles.stColQty, styles.tdShort]
+                      : [styles.stColQty, styles.td]
+                  }
+                >
+                  {l.quantity_received != null
+                    ? `${formatStQty(l.quantity_received)} ${l.unit}`
+                    : "—"}
+                </Text>
+              </View>
+            );
+          })}
+        </View>
+      );
+
+    case "notes": {
+      const blocks: Array<{ label: string; text: string }> = [];
+      if (transfer.notes) blocks.push({ label: "Notes", text: transfer.notes });
+      if (transfer.cancelledReason)
+        blocks.push({ label: "Cancelled reason", text: transfer.cancelledReason });
+      if (blocks.length === 0) return null;
+      return (
+        <View key={key} style={styles.notes} wrap={false}>
+          {blocks.map((b, i) => (
+            <View key={i} style={i > 0 ? { marginTop: 14 } : undefined}>
+              <Text style={styles.notesLabel}>{b.label}</Text>
+              <Text style={styles.notesText}>{b.text}</Text>
+            </View>
+          ))}
             <Text style={[styles.colNum, styles.th]}>#</Text>
             <Text style={[styles.colDesc, styles.th]}>Description</Text>
             <Text style={[styles.colQty, styles.th]}>Qty</Text>
@@ -2742,6 +2974,23 @@ function renderProformaSection(
       );
     }
 
+    case "signBlock":
+      return (
+        <View key={key} style={styles.signBlock} wrap={false}>
+          <View style={styles.signCol}>
+            <View style={styles.signLine}>
+              <Text style={styles.signLabel}>
+                {section.leftLabel ?? "Dispatched by (name & signature)"}
+              </Text>
+            </View>
+          </View>
+          <View style={styles.signCol}>
+            <View style={styles.signLine}>
+              <Text style={styles.signLabel}>
+                {section.rightLabel ?? "Received by (name & signature)"}
+              </Text>
+            </View>
+          </View>
     case "notes":
       if (!po.notes && !po.terms) return null;
       return (
@@ -2834,6 +3083,16 @@ function renderProformaSection(
   }
 }
 
+export function renderStockTransferTemplate(
+  layoutRaw: unknown,
+  ctx: StockTransferContext,
+) {
+  const layout = parseLayout(layoutRaw);
+  const styles = buildStockTransferStyles(layout.theme);
+
+  return (
+    <Document
+      title={ctx.transfer.transferNumber ?? "Stock transfer"}
 export function renderPurchaseOrderTemplate(
   layoutRaw: unknown,
   ctx: PurchaseOrderContext,
@@ -2860,6 +3119,7 @@ export function renderProformaInvoiceTemplate(
     >
       <Page size={pageSizeProp(layout.pageSize)} style={styles.page}>
         {layout.sections.map((section, i) =>
+          renderStockTransferSection(section, ctx, styles, i),
           renderPurchaseOrderSection(section, ctx, styles, i),
           renderProformaSection(section, ctx, styles, i),
         )}
