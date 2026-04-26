@@ -1,0 +1,73 @@
+/**
+ * PettahPro brand tokens applied to Infima (Docusaurus's CSS variable
+ * system). Mint accent + charcoal text, matching apps/web's
+ * brand-kit.md §5. Light mode is the canonical look; dark mode
+ * inherits the same hue but inverts surfaces.
+ */
+
+:root {
+  --ifm-color-primary: #3d6b52;
+  --ifm-color-primary-dark: #376049;
+  --ifm-color-primary-darker: #345a45;
+  --ifm-color-primary-darkest: #2b4a39;
+  --ifm-color-primary-light: #4d7e63;
+  --ifm-color-primary-lighter: #5e8a72;
+  --ifm-color-primary-lightest: #7fa991;
+
+  --ifm-background-color: #ffffff;
+  --ifm-background-surface-color: #fafaf7;
+  --ifm-color-content: #1a1a1a;
+  --ifm-color-content-secondary: #5f5e5a;
+
+  --ifm-code-font-size: 90%;
+  --docusaurus-highlighted-code-line-bg: rgba(61, 107, 82, 0.12);
+
+  --ifm-font-family-base:
+    "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --ifm-font-family-monospace:
+    ui-monospace, "SF Mono", Menlo, Monaco, "Cascadia Code", monospace;
+
+  --ifm-heading-font-weight: 600;
+  --ifm-h1-font-size: 2.25rem;
+  --ifm-h2-font-size: 1.625rem;
+
+  --ifm-navbar-background-color: #ffffff;
+  --ifm-navbar-shadow: 0 1px 0 #e5e5e3;
+
+  --ifm-footer-background-color: #f1efe8;
+}
+
+[data-theme="dark"] {
+  --ifm-color-primary: #7fa991;
+  --ifm-color-primary-dark: #6c9a82;
+  --ifm-color-primary-darker: #5e8a72;
+  --ifm-color-primary-darkest: #4d7e63;
+  --ifm-color-primary-light: #94b8a4;
+  --ifm-color-primary-lighter: #a8c7b6;
+  --ifm-color-primary-lightest: #c4d8ca;
+
+  --ifm-background-color: #1a1a1a;
+  --ifm-background-surface-color: #232323;
+  --ifm-color-content: #f0f0ed;
+  --ifm-color-content-secondary: #b0afaa;
+
+  --docusaurus-highlighted-code-line-bg: rgba(127, 169, 145, 0.18);
+}
+
+/* Tighten code blocks visually — defaults are too airy. */
+.theme-code-block {
+  font-size: 0.9rem;
+}
+
+/* Module group headers in the sidebar should feel like section
+   labels rather than clickable items. */
+.menu__list-item-collapsible--active,
+.menu__link--active {
+  font-weight: 600;
+}
+
+/* Subtle callout for "Why this matters" / SL-specific notes — apply
+   with `:::note` admonitions; Docusaurus already provides the box. */
+.markdown h2 {
+  margin-top: 2rem;
+}
