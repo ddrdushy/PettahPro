@@ -209,6 +209,28 @@ const LIBRARY: readonly LibraryTemplate[] = [
     languages: ["en"],
     layout: CLASSIC_DEBIT_NOTE_LAYOUT,
   },
+  {
+    libraryKey: "payslip_classic",
+    docType: "payslip",
+    name: "Classic payslip",
+    description:
+      "Two-column earnings/deductions cards, highlighted net-pay band, and optional leave / employer-contribution / bank-disbursement blocks. Each block is its own section so payroll admins can rearrange or drop any optional piece.",
+    languages: ["en"],
+    layout: {
+      pageSize: "a4",
+      theme: CLASSIC_THEME,
+      sections: [
+        { type: "header", showLogo: true, showStatusPill: true },
+        { type: "employeeBlock" },
+        { type: "payslipColumns" },
+        { type: "netPayBand" },
+        { type: "leaveSummary" },
+        { type: "employerContributions" },
+        { type: "bankDisbursement" },
+        { type: "footer" },
+      ],
+    },
+  },
 ] as const;
 
 export function listLibraryTemplates(filters: {
