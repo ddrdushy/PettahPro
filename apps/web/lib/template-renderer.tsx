@@ -14,6 +14,10 @@ import type {
   CreditNoteLinkedInvoice,
   CreditNoteReason,
   Customer,
+  DebitNoteDetail,
+  DebitNoteLine,
+  DebitNoteLinkedBill,
+  DebitNoteReason,
   InvoiceDetail,
   InvoiceLine,
   QuotationDetail,
@@ -1728,6 +1732,371 @@ export function renderCreditNoteTemplate(
       <Page size={pageSizeProp(layout.pageSize)} style={styles.page}>
         {layout.sections.map((section, i) =>
           renderCreditNoteSection(section, ctx, styles, i),
+        )}
+      </Page>
+    </Document>
+  );
+}
+
+// -----------------------------------------------------------------
+// Debit note context + renderer (M2 #4/10)
+//
+// AP-side counterpart to credit notes. Differs in three places:
+// supplier (not customer), bill (not invoice) for the linkedDocument
+// badge, and a different reason set ("shortage" instead of
+// "write_off"). billFrom shows "Issued to" — the doc is *issued by*
+// the tenant *to* the supplier as a debit.
+// -----------------------------------------------------------------
+const DEBIT_NOTE_REASON_LABELS: Record<DebitNoteReason, string> = {
+  return: "Return",
+  price_adjustment: "Price adjustment",
+  discount: "Discount",
+  goodwill: "Goodwill",
+  shortage: "Shortage",
+  other: "Other",
+};
+
+export type DebitNoteContext = {
+  docType: "debit_note";
+  tenant: Pick<Tenant, "businessName">;
+  debitNote: DebitNoteDetail;
+  lines: DebitNoteLine[];
+  supplier: Supplier | null;
+  bill: DebitNoteLinkedBill | null;
+  logoDataUrl?: string | null;
+};
+
+export function buildDebitNoteContext(args: {
+  tenant: Pick<Tenant, "businessName">;
+  debitNote: DebitNoteDetail;
+  lines: DebitNoteLine[];
+  supplier: Supplier | null;
+  bill: DebitNoteLinkedBill | null;
+  logoDataUrl?: string | null;
+}): DebitNoteContext {
+  return { docType: "debit_note", ...args };
+}
+
+function buildDebitNoteStyles(theme: Theme) {
+  // Reuse credit-note styles — same draftBanner, linkedDocument shape.
+  return buildCreditNoteStyles(theme);
+}
+
+function renderDebitNoteSection(
+  section: Section,
+  ctx: DebitNoteContext,
+  styles: ReturnType<typeof buildDebitNoteStyles>,
+  key: number,
+) {
+  const { debitNote, lines, supplier, bill, tenant } = ctx;
+  const docNumber = debitNote.internalReference ?? "Draft";
+  const unapplied = debitNote.totalCents - debitNote.appliedCents;
+
+  switch (section.type) {
+    case "header":
+      return (
+        <View key={key} style={styles.header} fixed>
+          <View style={styles.tenantBlock}>
+            {section.showLogo !== false && (
+              <PdfLogoBlock logoDataUrl={ctx.logoDataUrl} />
+            )}
+            <Text style={styles.tenantName}>{tenant.businessName}</Text>
+            <Text style={styles.tenantMeta}>Sri Lanka</Text>
+          </View>
+          <View style={styles.invoiceHeader}>
+            <Text style={styles.invoiceLabel}>Debit Note</Text>
+            <Text style={styles.invoiceNumber}>{docNumber}</Text>
+            {section.showStatusPill !== false && (
+              <Text style={styles.statusPill}>{debitNote.status}</Text>
+            )}
+          </View>
+        </View>
+      );
+
+    case "draftBanner":
+      if (debitNote.status !== "draft") return null;
+      return (
+        <Text key={key} style={styles.draftBanner}>
+          {section.text ?? "Draft — not posted to the ledger"}
+        </Text>
+      );
+
+    case "metaRow": {
+      const fields = section.fields ?? [
+        "issueDate",
+        "reason",
+        "currency",
+        "supplierDebitNumber",
+        "postedAt",
+      ];
+      const cells: Array<{ label: string; value: string | null }> = fields.map(
+        (f) => {
+          if (f === "issueDate")
+            return {
+              label: "Issue date",
+              value: formatDate(debitNote.issueDate),
+            };
+          if (f === "reason")
+            return {
+              label: "Reason",
+              value:
+                DEBIT_NOTE_REASON_LABELS[debitNote.reason] ?? debitNote.reason,
+            };
+          if (f === "currency")
+            return { label: "Currency", value: debitNote.currency };
+          if (f === "supplierDebitNumber")
+            return {
+              label: "Supplier ref",
+              value: debitNote.supplierDebitNumber ?? null,
+            };
+          if (f === "postedAt")
+            return {
+              label: "Posted",
+              value: debitNote.postedAt
+                ? formatDate(debitNote.postedAt.slice(0, 10))
+                : null,
+            };
+          if (f === "internalReference")
+            return {
+              label: "Debit note #",
+              value: debitNote.internalReference ?? null,
+            };
+          return { label: f, value: null };
+        },
+      );
+      return (
+        <View key={key} style={styles.metaRow}>
+          {cells
+            .filter((c) => c.value !== null)
+            .map((c, i) => (
+              <View key={i} style={styles.metaCell}>
+                <Text style={styles.metaLabel}>{c.label}</Text>
+                <Text style={styles.metaValue}>{c.value}</Text>
+              </View>
+            ))}
+        </View>
+      );
+    }
+
+    case "linkedDocument":
+      if (!bill) return null;
+      return (
+        <View key={key} style={styles.linkedDocument} wrap={false}>
+          <Text style={styles.linkedDocumentLabel}>Debit against bill</Text>
+          <Text style={styles.linkedDocumentValue}>
+            {bill.internalReference ??
+              bill.supplierBillNumber ??
+              bill.id.slice(0, 8)}
+          </Text>
+        </View>
+      );
+
+    case "billFrom":
+      // Debit notes are issued *to* the supplier, so the supplier
+      // block reads "Issued to" rather than "Billed from".
+      if (!supplier) return null;
+      return (
+        <View key={key} style={styles.billFrom}>
+          <Text style={styles.billFromLabel}>Issued to</Text>
+          <Text style={styles.billFromName}>{supplier.name}</Text>
+          {supplier.legalName && supplier.legalName !== supplier.name && (
+            <Text style={styles.billFromLine}>{supplier.legalName}</Text>
+          )}
+          {supplier.addressLine1 && (
+            <Text style={styles.billFromLine}>{supplier.addressLine1}</Text>
+          )}
+          {supplier.addressLine2 && (
+            <Text style={styles.billFromLine}>{supplier.addressLine2}</Text>
+          )}
+          {supplier.city && (
+            <Text style={styles.billFromLine}>{supplier.city}</Text>
+          )}
+          {supplier.email && (
+            <Text style={styles.billFromLine}>{supplier.email}</Text>
+          )}
+          {supplier.phone && (
+            <Text style={styles.billFromLine}>{supplier.phone}</Text>
+          )}
+          {supplier.vatNo && (
+            <Text style={[styles.billFromLine, { marginTop: 4, fontSize: 8 }]}>
+              VAT: {supplier.vatNo}
+            </Text>
+          )}
+          {supplier.brNo && (
+            <Text style={[styles.billFromLine, { fontSize: 8 }]}>
+              BR: {supplier.brNo}
+            </Text>
+          )}
+        </View>
+      );
+
+    case "billTo":
+      return renderDebitNoteSection({ type: "billFrom" }, ctx, styles, key);
+
+    case "lineItemsTable":
+      return (
+        <View key={key} style={styles.table}>
+          <View style={[styles.row, styles.rowHeader]}>
+            <Text style={[styles.colNum, styles.th]}>#</Text>
+            <Text style={[styles.colDesc, styles.th]}>Description</Text>
+            <Text style={[styles.colQty, styles.th]}>Qty</Text>
+            <Text style={[styles.colUnit, styles.th]}>Unit</Text>
+            <Text style={[styles.colTax, styles.th]}>Tax</Text>
+            <Text style={[styles.colTotal, styles.th]}>Total</Text>
+          </View>
+          {lines.map((l) => (
+            <View key={l.id} style={styles.row} wrap={false}>
+              <Text style={[styles.colNum, styles.td]}>{l.lineNo}</Text>
+              <View style={styles.colDesc}>
+                <Text style={styles.td}>{l.description}</Text>
+                {l.discountCents > 0 && (
+                  <Text style={styles.tdMuted}>
+                    Discount {(l.discountPctBps / 100).toFixed(2)}% ·{" "}
+                    {formatLKR(l.discountCents)}
+                  </Text>
+                )}
+              </View>
+              <Text style={[styles.colQty, styles.td]}>
+                {Number(l.quantity).toLocaleString("en-LK")}
+              </Text>
+              <Text style={[styles.colUnit, styles.td]}>
+                {formatLKR(l.unitPriceCents)}
+              </Text>
+              <View style={styles.colTax}>
+                <Text style={styles.td}>
+                  {l.taxCents > 0 ? formatLKR(l.taxCents) : "—"}
+                </Text>
+                {l.taxCents > 0 && (
+                  <Text style={styles.tdMuted}>
+                    {(l.taxRateBps / 100).toFixed(2)}%
+                  </Text>
+                )}
+              </View>
+              <Text style={[styles.colTotal, styles.td]}>
+                {formatLKR(l.lineTotalCents)}
+              </Text>
+            </View>
+          ))}
+        </View>
+      );
+
+    case "totals":
+      return (
+        <View key={key} style={styles.totalsBlock}>
+          <View style={styles.totalRow}>
+            <Text style={styles.totalLabel}>Subtotal</Text>
+            <Text style={styles.totalValue}>
+              {formatLKR(debitNote.subtotalCents)}
+            </Text>
+          </View>
+          {debitNote.discountCents > 0 && (
+            <View style={styles.totalRow}>
+              <Text style={styles.totalLabel}>Discount</Text>
+              <Text style={styles.totalValue}>
+                -{formatLKR(debitNote.discountCents)}
+              </Text>
+            </View>
+          )}
+          <View style={styles.totalRow}>
+            <Text style={styles.totalLabel}>Tax</Text>
+            <Text style={styles.totalValue}>
+              {formatLKR(debitNote.taxCents)}
+            </Text>
+          </View>
+          <View style={styles.totalDivider} />
+          <View style={styles.grandTotal}>
+            <Text style={styles.grandLabel}>Debit total</Text>
+            <Text style={styles.grandValue}>
+              {formatLKR(debitNote.totalCents)}
+            </Text>
+          </View>
+          {debitNote.status === "posted" && debitNote.appliedCents > 0 && (
+            <>
+              <View style={styles.totalRow}>
+                <Text style={styles.totalLabel}>Applied to bill</Text>
+                <Text style={styles.totalValue}>
+                  {formatLKR(debitNote.appliedCents)}
+                </Text>
+              </View>
+              <View style={styles.totalRow}>
+                <Text
+                  style={[
+                    styles.totalLabel,
+                    { fontFamily: `${styles.grandLabel.fontFamily}` },
+                  ]}
+                >
+                  {unapplied > 0 ? "Standing debit" : "Fully applied"}
+                </Text>
+                <Text
+                  style={[
+                    styles.totalValue,
+                    { fontFamily: `${styles.grandLabel.fontFamily}` },
+                  ]}
+                >
+                  {formatLKR(unapplied)}
+                </Text>
+              </View>
+            </>
+          )}
+        </View>
+      );
+
+    case "notes":
+      if (!debitNote.notes) return null;
+      return (
+        <View key={key} style={styles.notes} wrap={false}>
+          <Text style={styles.notesLabel}>Notes</Text>
+          <Text style={styles.notesText}>{debitNote.notes}</Text>
+        </View>
+      );
+
+    case "footer":
+      return (
+        <View key={key} style={styles.footer} fixed>
+          <Text>{section.text ?? "Generated with PettahPro — pettahpro.lk"}</Text>
+          <Text>{tenant.businessName}</Text>
+        </View>
+      );
+
+    case "spacer":
+      return <View key={key} style={{ height: section.height ?? 12 }} />;
+
+    case "text": {
+      const s =
+        section.emphasis === "muted"
+          ? styles.textMuted
+          : section.emphasis === "label"
+            ? styles.textLabel
+            : styles.text;
+      return (
+        <Text key={key} style={s}>
+          {section.text}
+        </Text>
+      );
+    }
+
+    default:
+      return null;
+  }
+}
+
+export function renderDebitNoteTemplate(
+  layoutRaw: unknown,
+  ctx: DebitNoteContext,
+) {
+  const layout = parseLayout(layoutRaw);
+  const styles = buildDebitNoteStyles(layout.theme);
+
+  return (
+    <Document
+      title={ctx.debitNote.internalReference ?? "Debit note"}
+      author={ctx.tenant.businessName}
+      creator="PettahPro"
+      producer="PettahPro"
+    >
+      <Page size={pageSizeProp(layout.pageSize)} style={styles.page}>
+        {layout.sections.map((section, i) =>
+          renderDebitNoteSection(section, ctx, styles, i),
         )}
       </Page>
     </Document>

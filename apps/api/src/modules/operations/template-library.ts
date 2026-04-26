@@ -85,6 +85,36 @@ const CLASSIC_BILL_LAYOUT: Record<string, unknown> = {
   ],
 };
 
+// Classic debit note — AP-side counterpart to credit_note_classic.
+// Mirrors the hard-coded DebitNotePDF output: header, draft banner,
+// meta row (with reason + supplier ref), optional "Debit against
+// bill" badge, "Issued to" supplier, line items, totals with
+// "Applied to bill" / "Standing debit" once posted, notes, footer.
+const CLASSIC_DEBIT_NOTE_LAYOUT: Record<string, unknown> = {
+  pageSize: "a4",
+  theme: CLASSIC_THEME,
+  sections: [
+    { type: "header", showLogo: true, showStatusPill: true },
+    { type: "draftBanner" },
+    {
+      type: "metaRow",
+      fields: [
+        "issueDate",
+        "reason",
+        "currency",
+        "supplierDebitNumber",
+        "postedAt",
+      ],
+    },
+    { type: "linkedDocument" },
+    { type: "billFrom" },
+    { type: "lineItemsTable" },
+    { type: "totals" },
+    { type: "notes" },
+    { type: "footer", text: "Generated with PettahPro — pettahpro.lk" },
+  ],
+};
+
 // Classic credit note — mirrors the hard-coded CreditNotePDF output.
 // Specifics: status set (draft/posted/void), reason in the meta row,
 // optional "Credit against invoice" badge below meta when linked,
@@ -169,6 +199,15 @@ const LIBRARY: readonly LibraryTemplate[] = [
       "Sales-side refund / adjustment doc. Shows the reason, an optional 'Credit against invoice' badge when linked, an 'Issued to' customer block, and applied / standing credit lines once posted.",
     languages: ["en"],
     layout: CLASSIC_CREDIT_NOTE_LAYOUT,
+  },
+  {
+    libraryKey: "debit_note_classic",
+    docType: "debit_note",
+    name: "Classic debit note",
+    description:
+      "AP-side counterpart to the credit note. Shows the reason, an optional 'Debit against bill' badge when linked, an 'Issued to' supplier block, and applied / standing debit lines once posted.",
+    languages: ["en"],
+    layout: CLASSIC_DEBIT_NOTE_LAYOUT,
   },
 ] as const;
 
