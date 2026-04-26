@@ -30,19 +30,21 @@ export type LibraryTemplate = {
 // renderer falls back to the hard-coded component when no template
 // is configured, so this is also our "what does the fallback look
 // like" source of truth.
+const CLASSIC_THEME: Record<string, unknown> = {
+  accentColor: "#3D6B52",
+  mutedColor: "#E8EDE9",
+  textPrimary: "#1A1A1A",
+  textSecondary: "#5F5E5A",
+  textTertiary: "#888780",
+  borderColor: "#E5E5E3",
+  surfaceRecessed: "#F1EFE8",
+  fontFamily: "Helvetica",
+  fontSize: 10,
+};
+
 const CLASSIC_INVOICE_LAYOUT: Record<string, unknown> = {
   pageSize: "a4",
-  theme: {
-    accentColor: "#3D6B52",
-    mutedColor: "#E8EDE9",
-    textPrimary: "#1A1A1A",
-    textSecondary: "#5F5E5A",
-    textTertiary: "#888780",
-    borderColor: "#E5E5E3",
-    surfaceRecessed: "#F1EFE8",
-    fontFamily: "Helvetica",
-    fontSize: 10,
-  },
+  theme: CLASSIC_THEME,
   sections: [
     { type: "header", showLogo: true, showStatusPill: true },
     {
@@ -57,6 +59,32 @@ const CLASSIC_INVOICE_LAYOUT: Record<string, unknown> = {
   ],
 };
 
+// Classic bill — mirrors the hard-coded BillPDF component output so
+// cloning this and rendering it gives the exact same PDF a tenant
+// who never touches the builder gets. Sections in render order:
+// header (with logo) → draft banner (only when status='draft') →
+// meta row (bill date, due date, supplier ref, posted) → billed-from
+// supplier → line items → optional landed-cost charges → totals →
+// notes → footer.
+const CLASSIC_BILL_LAYOUT: Record<string, unknown> = {
+  pageSize: "a4",
+  theme: CLASSIC_THEME,
+  sections: [
+    { type: "header", showLogo: true, showStatusPill: true },
+    { type: "draftBanner" },
+    {
+      type: "metaRow",
+      fields: ["billDate", "dueDate", "supplierBillNumber", "postedAt"],
+    },
+    { type: "billFrom" },
+    { type: "lineItemsTable" },
+    { type: "chargesTable" },
+    { type: "totals" },
+    { type: "notes" },
+    { type: "footer", text: "Generated with PettahPro — pettahpro.lk" },
+  ],
+};
+
 const LIBRARY: readonly LibraryTemplate[] = [
   {
     libraryKey: "invoice_classic",
@@ -66,6 +94,15 @@ const LIBRARY: readonly LibraryTemplate[] = [
       "Clean, professional A4 layout with header, meta row, bill-to block, line items table, and totals with tax breakdown.",
     languages: ["en"],
     layout: CLASSIC_INVOICE_LAYOUT,
+  },
+  {
+    libraryKey: "bill_classic",
+    docType: "bill",
+    name: "Classic bill",
+    description:
+      "AP-side companion to the Classic invoice. Same tone, but supplier details ('Billed from'), Input tax, and an optional landed-cost charges table.",
+    languages: ["en"],
+    layout: CLASSIC_BILL_LAYOUT,
   },
 ] as const;
 

@@ -6,9 +6,13 @@ import {
   StyleSheet,
 } from "@react-pdf/renderer";
 import type {
+  BillCharge,
+  BillDetail,
+  BillLine,
   Customer,
   InvoiceDetail,
   InvoiceLine,
+  Supplier,
   Tenant,
 } from "@/lib/api";
 import { PdfLogoBlock } from "@/lib/pdf-logo-block";
@@ -67,7 +71,20 @@ type Section =
   | { type: "header"; showLogo?: boolean; showStatusPill?: boolean }
   | { type: "metaRow"; fields?: string[] }
   | { type: "billTo" }
+  // billFrom mirrors billTo but for the supplier party — used by
+  // bill / debit-note / PO templates where the document is *received
+  // from* a vendor.
+  | { type: "billFrom" }
   | { type: "lineItemsTable" }
+  // Bills can carry landed-cost / freight / clearing charges as a
+  // second table. chargesTable renders when the doc context has them
+  // and silently skips otherwise (so an invoice template with this
+  // section accidentally reused does nothing instead of crashing).
+  | { type: "chargesTable" }
+  // Soft "Draft — not posted to the ledger" banner. Visible only when
+  // the doc's status is draft; the template can still include the
+  // section unconditionally.
+  | { type: "draftBanner"; text?: string }
   | { type: "totals"; showTaxBreakdown?: boolean }
   | { type: "notes" }
   | { type: "footer"; text?: string }
@@ -605,6 +622,399 @@ export function renderInvoiceTemplate(
       <Page size={pageSizeProp(layout.pageSize)} style={styles.page}>
         {layout.sections.map((section, i) =>
           renderInvoiceSection(section, ctx, styles, i),
+        )}
+      </Page>
+    </Document>
+  );
+}
+
+// -----------------------------------------------------------------
+// Bill context + renderer (M2 — first migrated doc type after invoice)
+//
+// The bill PDF reuses the same brand tokens as invoice + the same
+// section vocabulary. Supplier-side data (`billFrom`, "Input tax"
+// instead of "Tax", "Bill total" instead of "Total due") is what
+// makes the bill renderer separate. The styles function is shared
+// because every line, totals row, and theme token is identical.
+// -----------------------------------------------------------------
+export type BillContext = {
+  docType: "bill";
+  tenant: Pick<Tenant, "businessName">;
+  bill: BillDetail;
+  lines: BillLine[];
+  charges: BillCharge[];
+  supplier: Supplier | null;
+  logoDataUrl?: string | null;
+};
+
+export function buildBillContext(args: {
+  tenant: Pick<Tenant, "businessName">;
+  bill: BillDetail;
+  lines: BillLine[];
+  charges: BillCharge[];
+  supplier: Supplier | null;
+  logoDataUrl?: string | null;
+}): BillContext {
+  return { docType: "bill", ...args };
+}
+
+// Bill-specific styles — extends invoice styles with the bits the
+// bill renderer needs that the invoice doesn't (draftBanner,
+// billFrom labels). Sharing buildInvoiceStyles avoids drift on the
+// brand tokens; this function returns a superset.
+function buildBillStyles(theme: Theme) {
+  const base = buildInvoiceStyles(theme);
+  return StyleSheet.create({
+    ...base,
+    billFrom: { marginBottom: 20 },
+    billFromLabel: {
+      fontSize: 8,
+      textTransform: "uppercase",
+      letterSpacing: 0.8,
+      color: theme.textTertiary,
+      marginBottom: 6,
+    },
+    billFromName: { fontSize: 12, fontFamily: `${theme.fontFamily}-Bold` },
+    billFromLine: { color: theme.textSecondary, marginTop: 2 },
+    draftBanner: {
+      backgroundColor: "#FAF0D9",
+      color: "#B47A15",
+      padding: 8,
+      marginBottom: 16,
+      fontSize: 9,
+      fontFamily: `${theme.fontFamily}-Bold`,
+      textTransform: "uppercase",
+      letterSpacing: 0.8,
+      textAlign: "center",
+    },
+  });
+}
+
+function renderBillSection(
+  section: Section,
+  ctx: BillContext,
+  styles: ReturnType<typeof buildBillStyles>,
+  key: number,
+) {
+  const { bill, lines, charges, supplier, tenant } = ctx;
+
+  switch (section.type) {
+    case "header":
+      return (
+        <View key={key} style={styles.header} fixed>
+          <View style={styles.tenantBlock}>
+            {section.showLogo !== false && (
+              <PdfLogoBlock logoDataUrl={ctx.logoDataUrl} />
+            )}
+            <Text style={styles.tenantName}>{tenant.businessName}</Text>
+            <Text style={styles.tenantMeta}>Sri Lanka</Text>
+          </View>
+          <View style={styles.invoiceHeader}>
+            <Text style={styles.invoiceLabel}>Bill</Text>
+            <Text style={styles.invoiceNumber}>
+              {bill.internalReference ?? "Draft"}
+            </Text>
+            {section.showStatusPill !== false && (
+              <Text style={styles.statusPill}>
+                {bill.status.replace("_", " ")}
+              </Text>
+            )}
+          </View>
+        </View>
+      );
+
+    case "draftBanner":
+      if (bill.status !== "draft") return null;
+      return (
+        <Text key={key} style={styles.draftBanner}>
+          {section.text ?? "Draft — not posted to the ledger"}
+        </Text>
+      );
+
+    case "metaRow": {
+      const fields = section.fields ?? [
+        "billDate",
+        "dueDate",
+        "supplierBillNumber",
+        "postedAt",
+      ];
+      const cells: Array<{ label: string; value: string | null }> = fields.map(
+        (f) => {
+          if (f === "billDate")
+            return { label: "Bill date", value: formatDate(bill.billDate) };
+          if (f === "dueDate")
+            return { label: "Due date", value: formatDate(bill.dueDate) };
+          if (f === "supplierBillNumber")
+            return {
+              label: "Supplier ref",
+              value: bill.supplierBillNumber ?? null,
+            };
+          if (f === "postedAt")
+            return {
+              label: "Posted",
+              value: bill.postedAt
+                ? formatDate(bill.postedAt.slice(0, 10))
+                : null,
+            };
+          if (f === "currency")
+            return { label: "Currency", value: bill.currency };
+          if (f === "internalReference")
+            return {
+              label: "Bill #",
+              value: bill.internalReference ?? null,
+            };
+          return { label: f, value: null };
+        },
+      );
+      return (
+        <View key={key} style={styles.metaRow}>
+          {cells
+            .filter((c) => c.value !== null)
+            .map((c, i) => (
+              <View key={i} style={styles.metaCell}>
+                <Text style={styles.metaLabel}>{c.label}</Text>
+                <Text style={styles.metaValue}>{c.value}</Text>
+              </View>
+            ))}
+        </View>
+      );
+    }
+
+    case "billFrom":
+      if (!supplier) return null;
+      return (
+        <View key={key} style={styles.billFrom}>
+          <Text style={styles.billFromLabel}>Billed from</Text>
+          <Text style={styles.billFromName}>{supplier.name}</Text>
+          {supplier.legalName && supplier.legalName !== supplier.name && (
+            <Text style={styles.billFromLine}>{supplier.legalName}</Text>
+          )}
+          {supplier.addressLine1 && (
+            <Text style={styles.billFromLine}>{supplier.addressLine1}</Text>
+          )}
+          {supplier.addressLine2 && (
+            <Text style={styles.billFromLine}>{supplier.addressLine2}</Text>
+          )}
+          {supplier.city && (
+            <Text style={styles.billFromLine}>{supplier.city}</Text>
+          )}
+          {supplier.email && (
+            <Text style={styles.billFromLine}>{supplier.email}</Text>
+          )}
+          {supplier.vatNo && (
+            <Text style={[styles.billFromLine, { marginTop: 4, fontSize: 8 }]}>
+              VAT: {supplier.vatNo}
+            </Text>
+          )}
+        </View>
+      );
+
+    // billTo on a bill is interchangeable with billFrom — invoice
+    // templates accidentally reused on a bill should still render
+    // the supplier rather than crash.
+    case "billTo":
+      return renderBillSection({ type: "billFrom" }, ctx, styles, key);
+
+    case "lineItemsTable":
+      return (
+        <View key={key} style={styles.table}>
+          <View style={[styles.row, styles.rowHeader]}>
+            <Text style={[styles.colNum, styles.th]}>#</Text>
+            <Text style={[styles.colDesc, styles.th]}>Description</Text>
+            <Text style={[styles.colQty, styles.th]}>Qty</Text>
+            <Text style={[styles.colUnit, styles.th]}>Unit</Text>
+            <Text style={[styles.colTax, styles.th]}>Tax</Text>
+            <Text style={[styles.colTotal, styles.th]}>Total</Text>
+          </View>
+          {lines.map((l) => (
+            <View key={l.id} style={styles.row} wrap={false}>
+              <Text style={[styles.colNum, styles.td]}>{l.lineNo}</Text>
+              <View style={styles.colDesc}>
+                <Text style={styles.td}>{l.description}</Text>
+                {l.discountCents > 0 && (
+                  <Text style={styles.tdMuted}>
+                    Discount {(l.discountPctBps / 100).toFixed(2)}% ·{" "}
+                    {formatLKR(l.discountCents)}
+                  </Text>
+                )}
+              </View>
+              <Text style={[styles.colQty, styles.td]}>
+                {Number(l.quantity).toLocaleString("en-LK")}
+              </Text>
+              <Text style={[styles.colUnit, styles.td]}>
+                {formatLKR(l.unitPriceCents)}
+              </Text>
+              <View style={styles.colTax}>
+                <Text style={styles.td}>
+                  {l.taxCents > 0 ? formatLKR(l.taxCents) : "—"}
+                </Text>
+                {l.taxCents > 0 && (
+                  <Text style={styles.tdMuted}>
+                    {(l.taxRateBps / 100).toFixed(2)}%
+                  </Text>
+                )}
+              </View>
+              <Text style={[styles.colTotal, styles.td]}>
+                {formatLKR(l.lineTotalCents)}
+              </Text>
+            </View>
+          ))}
+        </View>
+      );
+
+    case "chargesTable":
+      if (charges.length === 0) return null;
+      return (
+        <View key={key} style={styles.table} wrap={false}>
+          <View style={[styles.row, styles.rowHeader]}>
+            <Text style={[styles.colNum, styles.th]}>#</Text>
+            <Text style={[styles.colDesc, styles.th]}>
+              Additional charges — allocated by{" "}
+              {bill.chargeAllocationMethod === "quantity"
+                ? "quantity"
+                : "value"}
+            </Text>
+            <Text style={[styles.colTotal, styles.th]}>Amount</Text>
+          </View>
+          {charges.map((c) => (
+            <View key={c.id} style={styles.row} wrap={false}>
+              <Text style={[styles.colNum, styles.td]}>{c.lineNo}</Text>
+              <View style={styles.colDesc}>
+                <Text style={[styles.td, { textTransform: "capitalize" }]}>
+                  {c.kind}
+                </Text>
+                {c.description && (
+                  <Text style={styles.tdMuted}>{c.description}</Text>
+                )}
+              </View>
+              <Text style={[styles.colTotal, styles.td]}>
+                {formatLKR(c.amountCents)}
+              </Text>
+            </View>
+          ))}
+        </View>
+      );
+
+    case "totals":
+      return (
+        <View key={key} style={styles.totalsBlock}>
+          <View style={styles.totalRow}>
+            <Text style={styles.totalLabel}>Subtotal</Text>
+            <Text style={styles.totalValue}>
+              {formatLKR(bill.subtotalCents)}
+            </Text>
+          </View>
+          {bill.discountCents > 0 && (
+            <View style={styles.totalRow}>
+              <Text style={styles.totalLabel}>Discount</Text>
+              <Text style={styles.totalValue}>
+                -{formatLKR(bill.discountCents)}
+              </Text>
+            </View>
+          )}
+          <View style={styles.totalRow}>
+            <Text style={styles.totalLabel}>Input tax</Text>
+            <Text style={styles.totalValue}>{formatLKR(bill.taxCents)}</Text>
+          </View>
+          {bill.chargesTotalCents > 0 && (
+            <View style={styles.totalRow}>
+              <Text style={styles.totalLabel}>Charges (landed cost)</Text>
+              <Text style={styles.totalValue}>
+                {formatLKR(bill.chargesTotalCents)}
+              </Text>
+            </View>
+          )}
+          <View style={styles.totalDivider} />
+          <View style={styles.grandTotal}>
+            <Text style={styles.grandLabel}>Bill total</Text>
+            <Text style={styles.grandValue}>
+              {formatLKR(bill.totalCents)}
+            </Text>
+          </View>
+          {bill.amountPaidCents > 0 && (
+            <>
+              <View style={styles.totalRow}>
+                <Text style={styles.totalLabel}>Paid to date</Text>
+                <Text style={styles.totalValue}>
+                  {formatLKR(bill.amountPaidCents)}
+                </Text>
+              </View>
+              <View style={styles.totalRow}>
+                <Text
+                  style={[
+                    styles.totalLabel,
+                    { fontFamily: `${styles.grandLabel.fontFamily}` },
+                  ]}
+                >
+                  Balance due
+                </Text>
+                <Text
+                  style={[
+                    styles.totalValue,
+                    { fontFamily: `${styles.grandLabel.fontFamily}` },
+                  ]}
+                >
+                  {formatLKR(bill.balanceDueCents)}
+                </Text>
+              </View>
+            </>
+          )}
+        </View>
+      );
+
+    case "notes":
+      if (!bill.notes) return null;
+      return (
+        <View key={key} style={styles.notes} wrap={false}>
+          <Text style={styles.notesLabel}>Notes</Text>
+          <Text style={styles.notesText}>{bill.notes}</Text>
+        </View>
+      );
+
+    case "footer":
+      return (
+        <View key={key} style={styles.footer} fixed>
+          <Text>{section.text ?? "Generated with PettahPro — pettahpro.lk"}</Text>
+          <Text>{tenant.businessName}</Text>
+        </View>
+      );
+
+    case "spacer":
+      return <View key={key} style={{ height: section.height ?? 12 }} />;
+
+    case "text": {
+      const s =
+        section.emphasis === "muted"
+          ? styles.textMuted
+          : section.emphasis === "label"
+            ? styles.textLabel
+            : styles.text;
+      return (
+        <Text key={key} style={s}>
+          {section.text}
+        </Text>
+      );
+    }
+
+    default:
+      return null;
+  }
+}
+
+export function renderBillTemplate(layoutRaw: unknown, ctx: BillContext) {
+  const layout = parseLayout(layoutRaw);
+  const styles = buildBillStyles(layout.theme);
+
+  return (
+    <Document
+      title={ctx.bill.internalReference ?? "Bill"}
+      author={ctx.tenant.businessName}
+      creator="PettahPro"
+      producer="PettahPro"
+    >
+      <Page size={pageSizeProp(layout.pageSize)} style={styles.page}>
+        {layout.sections.map((section, i) =>
+          renderBillSection(section, ctx, styles, i),
         )}
       </Page>
     </Document>
