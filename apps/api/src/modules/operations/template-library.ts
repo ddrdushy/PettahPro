@@ -85,6 +85,30 @@ const CLASSIC_BILL_LAYOUT: Record<string, unknown> = {
   ],
 };
 
+// Classic quotation — mirrors the hard-coded QuotationPDF output.
+// Different from invoice in three places: status set, "Prepared
+// for" label on the customer block (handled inside the renderer's
+// billTo case for quotation context), and a validity callout block
+// that switches to a "this quotation expired" message when the
+// valid_until date is in the past.
+const CLASSIC_QUOTATION_LAYOUT: Record<string, unknown> = {
+  pageSize: "a4",
+  theme: CLASSIC_THEME,
+  sections: [
+    { type: "header", showLogo: true, showStatusPill: true },
+    {
+      type: "metaRow",
+      fields: ["issueDate", "validUntil", "reference", "currency"],
+    },
+    { type: "billTo" },
+    { type: "lineItemsTable" },
+    { type: "totals" },
+    { type: "validity" },
+    { type: "notes" },
+    { type: "footer", text: "Generated with PettahPro — pettahpro.lk" },
+  ],
+};
+
 const LIBRARY: readonly LibraryTemplate[] = [
   {
     libraryKey: "invoice_classic",
@@ -103,6 +127,15 @@ const LIBRARY: readonly LibraryTemplate[] = [
       "AP-side companion to the Classic invoice. Same tone, but supplier details ('Billed from'), Input tax, and an optional landed-cost charges table.",
     languages: ["en"],
     layout: CLASSIC_BILL_LAYOUT,
+  },
+  {
+    libraryKey: "quotation_classic",
+    docType: "quotation",
+    name: "Classic quotation",
+    description:
+      "Pre-sale quote with 'Prepared for' customer block, a validity callout, and notes + terms. Switches to an expired-warning style when the valid-until date is in the past.",
+    languages: ["en"],
+    layout: CLASSIC_QUOTATION_LAYOUT,
   },
 ] as const;
 
