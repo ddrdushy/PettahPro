@@ -372,6 +372,10 @@ export const platformApi = {
   // #60 — observability read-out for /platform/health.
   getSystemHealth: () =>
     request<SystemHealthPayload>("/platform/system-health"),
+  // Revenue analytics (#131). Reads aggregate MRR/churn/signups/etc.
+  // for the platform; access gated to platform-staff roles server-side.
+  getRevenue: () => request<RevenuePayload>("/platform/revenue"),
+
   // #61 — pricing plans + tenant subscriptions.
   listPlans: () => request<{ plans: PlatformPlan[] }>("/platform/plans"),
   // Plan editor (super_admin only on the server). Calls hit a 403 if a
@@ -589,6 +593,42 @@ export type SubscriptionStatus = (typeof SUBSCRIPTION_STATUSES)[number];
 
 export const BILLING_CYCLES = ["monthly", "yearly"] as const;
 export type BillingCycle = (typeof BILLING_CYCLES)[number];
+
+// Revenue analytics payload (#131). Mirrors RevenuePayload in
+// apps/api/src/modules/platform-admin/revenue-routes.ts.
+export interface RevenuePayload {
+  mrrCents: number;
+  arrCents: number;
+  tenantCountsByStatus: {
+    trial: number;
+    active: number;
+    past_due: number;
+    paused: number;
+    cancelled: number;
+  };
+  mrrByPlan: Array<{
+    planCode: string;
+    planName: string;
+    activeSubscribers: number;
+    mrrCents: number;
+  }>;
+  signups: {
+    last30Days: number;
+    last12Months: Array<{ monthStart: string; count: number }>;
+  };
+  trialConversion: {
+    last30DaysConverted: number;
+    last30DaysExpired: number;
+    rate: number | null;
+  };
+  churn: {
+    thisMonthCount: number;
+    thisMonthMrrCents: number;
+    rate: number | null;
+  };
+  addons: { mrrCents: number; activeCount: number };
+  coupons: { activeRedemptions: number; redeemedThisMonth: number };
+}
 
 export interface PlatformPlan {
   id: string;

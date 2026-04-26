@@ -77,6 +77,9 @@ export default async function PlatformLayout({ children }: { children: ReactNode
             <Link href="/platform/coupons" className="hover:text-white">
               Coupons
             </Link>
+            <Link href="/platform/revenue" className="hover:text-white">
+              Revenue
+            </Link>
             {canImpersonate && (
               <Link href="/platform/impersonation" className="hover:text-white">
                 Impersonation
