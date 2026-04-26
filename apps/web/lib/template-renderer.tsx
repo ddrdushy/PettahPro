@@ -22,6 +22,9 @@ import type {
   InvoiceLine,
   QuotationDetail,
   QuotationLine,
+  StockTransferDetail,
+  StockTransferLineRow,
+  StockTransferWarehouse,
   Supplier,
   Tenant,
 } from "@/lib/api";
@@ -102,6 +105,13 @@ type Section =
   // invoice) and debit notes (against a bill) so the recipient can
   // see what the credit/debit applies to.
   | { type: "linkedDocument" }
+  // Source → destination warehouse row used by stock transfers.
+  // Renders the source warehouse name + code on the left, an arrow,
+  // and the destination on the right.
+  | { type: "warehouseRow" }
+  // Signature block for paper sign-off — used on stock transfers
+  // (Dispatched-by / Received-by) and delivery notes.
+  | { type: "signBlock"; leftLabel?: string; rightLabel?: string }
   | { type: "totals"; showTaxBreakdown?: boolean }
   | { type: "notes" }
   | { type: "footer"; text?: string }
@@ -2097,6 +2107,358 @@ export function renderDebitNoteTemplate(
       <Page size={pageSizeProp(layout.pageSize)} style={styles.page}>
         {layout.sections.map((section, i) =>
           renderDebitNoteSection(section, ctx, styles, i),
+        )}
+      </Page>
+    </Document>
+  );
+}
+
+// -----------------------------------------------------------------
+// Stock transfer context + renderer (M2 #8/10)
+//
+// Stock transfer is an internal logistics doc — no money, but a
+// 3-quantity table (Requested / Dispatched / Received) and a
+// source-→-destination warehouse pair instead of a customer block.
+// signBlock reuses the labels Dispatched-by / Received-by.
+// -----------------------------------------------------------------
+export type StockTransferContext = {
+  docType: "stock_transfer";
+  tenant: Pick<Tenant, "businessName">;
+  transfer: StockTransferDetail;
+  lines: StockTransferLineRow[];
+  source: StockTransferWarehouse | null;
+  destination: StockTransferWarehouse | null;
+  logoDataUrl?: string | null;
+};
+
+export function buildStockTransferContext(args: {
+  tenant: Pick<Tenant, "businessName">;
+  transfer: StockTransferDetail;
+  lines: StockTransferLineRow[];
+  source: StockTransferWarehouse | null;
+  destination: StockTransferWarehouse | null;
+  logoDataUrl?: string | null;
+}): StockTransferContext {
+  return { docType: "stock_transfer", ...args };
+}
+
+function buildStockTransferStyles(theme: Theme) {
+  const base = buildInvoiceStyles(theme);
+  return StyleSheet.create({
+    ...base,
+    warehouseRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 12,
+      marginBottom: 24,
+      padding: 12,
+      backgroundColor: theme.surfaceRecessed,
+      borderRadius: 4,
+    },
+    warehouseCol: { flex: 1 },
+    warehouseLabel: {
+      fontSize: 8,
+      textTransform: "uppercase",
+      letterSpacing: 0.8,
+      color: theme.textTertiary,
+      marginBottom: 4,
+    },
+    warehouseName: {
+      fontSize: 12,
+      fontFamily: `${theme.fontFamily}-Bold`,
+    },
+    warehouseLine: { color: theme.textSecondary, marginTop: 2, fontSize: 9 },
+    arrow: {
+      fontSize: 16,
+      color: theme.textTertiary,
+    },
+    stColNum: { width: 24, textAlign: "center" },
+    stColDesc: { flex: 1, paddingRight: 8 },
+    stColQty: { width: 80, textAlign: "right" },
+    tdShort: { fontSize: 10, color: "#B47A15" },
+    signBlock: {
+      flexDirection: "row",
+      gap: 24,
+      marginTop: 32,
+    },
+    signCol: { flex: 1 },
+    signLine: {
+      borderTop: `0.5pt solid ${theme.textPrimary}`,
+      paddingTop: 8,
+      minHeight: 56,
+    },
+    signLabel: {
+      fontSize: 8,
+      textTransform: "uppercase",
+      letterSpacing: 0.8,
+      color: theme.textTertiary,
+    },
+  });
+}
+
+function formatStQty(n: string | number | null | undefined): string {
+  if (n === null || n === undefined) return "—";
+  return Number(n).toLocaleString("en-LK", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 4,
+  });
+}
+
+function renderStockTransferSection(
+  section: Section,
+  ctx: StockTransferContext,
+  styles: ReturnType<typeof buildStockTransferStyles>,
+  key: number,
+) {
+  const { transfer, lines, source, destination, tenant } = ctx;
+  const isDispatchedOrLater =
+    transfer.status === "dispatched" || transfer.status === "received";
+
+  switch (section.type) {
+    case "header":
+      return (
+        <View key={key} style={styles.header} fixed>
+          <View style={styles.tenantBlock}>
+            {section.showLogo !== false && (
+              <PdfLogoBlock logoDataUrl={ctx.logoDataUrl} />
+            )}
+            <Text style={styles.tenantName}>{tenant.businessName}</Text>
+            <Text style={styles.tenantMeta}>Sri Lanka</Text>
+          </View>
+          <View style={styles.invoiceHeader}>
+            <Text style={styles.invoiceLabel}>Stock transfer</Text>
+            <Text style={styles.invoiceNumber}>
+              {transfer.transferNumber ?? "Draft"}
+            </Text>
+            {section.showStatusPill !== false && (
+              <Text style={styles.statusPill}>{transfer.status}</Text>
+            )}
+          </View>
+        </View>
+      );
+
+    case "metaRow": {
+      const fields = section.fields ?? [
+        "requestedDate",
+        "dispatchedAt",
+        "receivedAt",
+        "discrepancy",
+      ];
+      const cells: Array<{ label: string; value: string | null }> = fields.map(
+        (f) => {
+          if (f === "requestedDate")
+            return {
+              label: "Requested",
+              value: formatDate(transfer.requestedDate),
+            };
+          if (f === "dispatchedAt")
+            return {
+              label: "Dispatched",
+              value: transfer.dispatchedAt
+                ? formatDate(transfer.dispatchedAt.slice(0, 10))
+                : null,
+            };
+          if (f === "receivedAt")
+            return {
+              label: "Received",
+              value: transfer.receivedAt
+                ? formatDate(transfer.receivedAt.slice(0, 10))
+                : null,
+            };
+          if (f === "discrepancy")
+            return {
+              label: "Discrepancy",
+              value: transfer.hasDiscrepancy ? "Flagged" : null,
+            };
+          if (f === "transferNumber")
+            return {
+              label: "Transfer #",
+              value: transfer.transferNumber ?? null,
+            };
+          return { label: f, value: null };
+        },
+      );
+      return (
+        <View key={key} style={styles.metaRow}>
+          {cells
+            .filter((c) => c.value !== null)
+            .map((c, i) => (
+              <View key={i} style={styles.metaCell}>
+                <Text style={styles.metaLabel}>{c.label}</Text>
+                <Text style={styles.metaValue}>{c.value}</Text>
+              </View>
+            ))}
+        </View>
+      );
+    }
+
+    case "warehouseRow":
+      return (
+        <View key={key} style={styles.warehouseRow}>
+          <View style={styles.warehouseCol}>
+            <Text style={styles.warehouseLabel}>From (source)</Text>
+            {source ? (
+              <>
+                <Text style={styles.warehouseName}>{source.name}</Text>
+                <Text style={styles.warehouseLine}>Code: {source.code}</Text>
+              </>
+            ) : (
+              <Text style={styles.warehouseLine}>—</Text>
+            )}
+          </View>
+          <Text style={styles.arrow}>→</Text>
+          <View style={styles.warehouseCol}>
+            <Text style={styles.warehouseLabel}>To (destination)</Text>
+            {destination ? (
+              <>
+                <Text style={styles.warehouseName}>{destination.name}</Text>
+                <Text style={styles.warehouseLine}>
+                  Code: {destination.code}
+                </Text>
+              </>
+            ) : (
+              <Text style={styles.warehouseLine}>—</Text>
+            )}
+          </View>
+        </View>
+      );
+
+    case "lineItemsTable":
+      return (
+        <View key={key} style={styles.table}>
+          <View style={[styles.row, styles.rowHeader]}>
+            <Text style={[styles.stColNum, styles.th]}>#</Text>
+            <Text style={[styles.stColDesc, styles.th]}>Item</Text>
+            <Text style={[styles.stColQty, styles.th]}>Requested</Text>
+            <Text style={[styles.stColQty, styles.th]}>Dispatched</Text>
+            <Text style={[styles.stColQty, styles.th]}>Received</Text>
+          </View>
+          {lines.map((l) => {
+            const dispatched = Number(l.quantity_dispatched ?? 0);
+            const received =
+              l.quantity_received != null ? Number(l.quantity_received) : null;
+            const isShort =
+              isDispatchedOrLater && received !== null && received < dispatched;
+            return (
+              <View key={l.id} style={styles.row} wrap={false}>
+                <Text style={[styles.stColNum, styles.td]}>{l.line_no}</Text>
+                <View style={styles.stColDesc}>
+                  <Text style={styles.td}>{l.item_name}</Text>
+                  {l.sku && <Text style={styles.tdMuted}>{l.sku}</Text>}
+                  {l.notes && <Text style={styles.tdMuted}>{l.notes}</Text>}
+                </View>
+                <Text style={[styles.stColQty, styles.td]}>
+                  {formatStQty(l.quantity_requested)} {l.unit}
+                </Text>
+                <Text style={[styles.stColQty, styles.td]}>
+                  {l.quantity_dispatched != null
+                    ? `${formatStQty(l.quantity_dispatched)} ${l.unit}`
+                    : "—"}
+                </Text>
+                <Text
+                  style={
+                    isShort
+                      ? [styles.stColQty, styles.tdShort]
+                      : [styles.stColQty, styles.td]
+                  }
+                >
+                  {l.quantity_received != null
+                    ? `${formatStQty(l.quantity_received)} ${l.unit}`
+                    : "—"}
+                </Text>
+              </View>
+            );
+          })}
+        </View>
+      );
+
+    case "notes": {
+      const blocks: Array<{ label: string; text: string }> = [];
+      if (transfer.notes) blocks.push({ label: "Notes", text: transfer.notes });
+      if (transfer.cancelledReason)
+        blocks.push({ label: "Cancelled reason", text: transfer.cancelledReason });
+      if (blocks.length === 0) return null;
+      return (
+        <View key={key} style={styles.notes} wrap={false}>
+          {blocks.map((b, i) => (
+            <View key={i} style={i > 0 ? { marginTop: 14 } : undefined}>
+              <Text style={styles.notesLabel}>{b.label}</Text>
+              <Text style={styles.notesText}>{b.text}</Text>
+            </View>
+          ))}
+        </View>
+      );
+    }
+
+    case "signBlock":
+      return (
+        <View key={key} style={styles.signBlock} wrap={false}>
+          <View style={styles.signCol}>
+            <View style={styles.signLine}>
+              <Text style={styles.signLabel}>
+                {section.leftLabel ?? "Dispatched by (name & signature)"}
+              </Text>
+            </View>
+          </View>
+          <View style={styles.signCol}>
+            <View style={styles.signLine}>
+              <Text style={styles.signLabel}>
+                {section.rightLabel ?? "Received by (name & signature)"}
+              </Text>
+            </View>
+          </View>
+        </View>
+      );
+
+    case "footer":
+      return (
+        <View key={key} style={styles.footer} fixed>
+          <Text>
+            {section.text ?? "Generated with PettahPro — pettahpro.lk"}
+          </Text>
+          <Text>{tenant.businessName}</Text>
+        </View>
+      );
+
+    case "spacer":
+      return <View key={key} style={{ height: section.height ?? 12 }} />;
+
+    case "text": {
+      const s =
+        section.emphasis === "muted"
+          ? styles.textMuted
+          : section.emphasis === "label"
+            ? styles.textLabel
+            : styles.text;
+      return (
+        <Text key={key} style={s}>
+          {section.text}
+        </Text>
+      );
+    }
+
+    default:
+      return null;
+  }
+}
+
+export function renderStockTransferTemplate(
+  layoutRaw: unknown,
+  ctx: StockTransferContext,
+) {
+  const layout = parseLayout(layoutRaw);
+  const styles = buildStockTransferStyles(layout.theme);
+
+  return (
+    <Document
+      title={ctx.transfer.transferNumber ?? "Stock transfer"}
+      author={ctx.tenant.businessName}
+      creator="PettahPro"
+      producer="PettahPro"
+    >
+      <Page size={pageSizeProp(layout.pageSize)} style={styles.page}>
+        {layout.sections.map((section, i) =>
+          renderStockTransferSection(section, ctx, styles, i),
         )}
       </Page>
     </Document>

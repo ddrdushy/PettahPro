@@ -209,6 +209,35 @@ const LIBRARY: readonly LibraryTemplate[] = [
     languages: ["en"],
     layout: CLASSIC_DEBIT_NOTE_LAYOUT,
   },
+  {
+    libraryKey: "stock_transfer_classic",
+    docType: "stock_transfer",
+    name: "Classic stock transfer",
+    description:
+      "Internal logistics doc. Source-→-destination warehouse pair, three-quantity table (Requested / Dispatched / Received) with discrepancy highlighting, signature block for dispatched-by / received-by sign-off.",
+    languages: ["en"],
+    layout: {
+      pageSize: "a4",
+      theme: CLASSIC_THEME,
+      sections: [
+        { type: "header", showLogo: true, showStatusPill: true },
+        {
+          type: "metaRow",
+          fields: [
+            "requestedDate",
+            "dispatchedAt",
+            "receivedAt",
+            "discrepancy",
+          ],
+        },
+        { type: "warehouseRow" },
+        { type: "lineItemsTable" },
+        { type: "notes" },
+        { type: "signBlock" },
+        { type: "footer", text: "Generated with PettahPro — pettahpro.lk" },
+      ],
+    },
+  },
 ] as const;
 
 export function listLibraryTemplates(filters: {
