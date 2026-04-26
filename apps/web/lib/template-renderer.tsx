@@ -14,6 +14,8 @@ import type {
   CreditNoteLinkedInvoice,
   CreditNoteReason,
   Customer,
+  DeliveryNoteDetail,
+  DeliveryNoteLine,
   InvoiceDetail,
   InvoiceLine,
   QuotationDetail,
@@ -98,6 +100,14 @@ type Section =
   // invoice) and debit notes (against a bill) so the recipient can
   // see what the credit/debit applies to.
   | { type: "linkedDocument" }
+  // Two-column "Deliver to" + "Shipping address" block used by
+  // delivery notes. Customer-facing left column, free-form ship-to
+  // right column when the DN carries an explicit shipping address.
+  | { type: "partiesRow" }
+  // Signature block for paper sign-off — used on delivery notes and
+  // stock transfers. Renders side-by-side dotted lines with role
+  // labels under each.
+  | { type: "signBlock"; leftLabel?: string; rightLabel?: string }
   | { type: "totals"; showTaxBreakdown?: boolean }
   | { type: "notes" }
   | { type: "footer"; text?: string }
@@ -1728,6 +1738,344 @@ export function renderCreditNoteTemplate(
       <Page size={pageSizeProp(layout.pageSize)} style={styles.page}>
         {layout.sections.map((section, i) =>
           renderCreditNoteSection(section, ctx, styles, i),
+        )}
+      </Page>
+    </Document>
+  );
+}
+
+// -----------------------------------------------------------------
+// Delivery note context + renderer (M2 #5/10)
+//
+// DN is a logistics doc: no money, just a record of what physically
+// left the warehouse and went to the customer. New section types
+// `partiesRow` (two-column Deliver-to + Shipping-address) and
+// `signBlock` (Delivered by / Received by) capture the doc's two
+// distinguishing pieces. Line items table is qty-only — no prices
+// because the DN is not a fiscal document.
+// -----------------------------------------------------------------
+export type DeliveryNoteContext = {
+  docType: "delivery_note";
+  tenant: Pick<Tenant, "businessName">;
+  deliveryNote: DeliveryNoteDetail;
+  lines: DeliveryNoteLine[];
+  customer: Customer | null;
+  logoDataUrl?: string | null;
+};
+
+export function buildDeliveryNoteContext(args: {
+  tenant: Pick<Tenant, "businessName">;
+  deliveryNote: DeliveryNoteDetail;
+  lines: DeliveryNoteLine[];
+  customer: Customer | null;
+  logoDataUrl?: string | null;
+}): DeliveryNoteContext {
+  return { docType: "delivery_note", ...args };
+}
+
+function buildDeliveryNoteStyles(theme: Theme) {
+  const base = buildInvoiceStyles(theme);
+  return StyleSheet.create({
+    ...base,
+    partiesRow: {
+      flexDirection: "row",
+      gap: 24,
+      marginBottom: 24,
+    },
+    partyCol: { flex: 1 },
+    partyLabel: {
+      fontSize: 8,
+      textTransform: "uppercase",
+      letterSpacing: 0.8,
+      color: theme.textTertiary,
+      marginBottom: 6,
+    },
+    partyName: {
+      fontSize: 12,
+      fontFamily: `${theme.fontFamily}-Bold`,
+      marginBottom: 2,
+    },
+    partyLine: { color: theme.textSecondary, marginTop: 2 },
+    // DN line items are qty-only — override the standard column
+    // widths so Description gets all the room.
+    dnColNum: { width: 24, textAlign: "center" },
+    dnColDesc: { flex: 1, paddingRight: 8 },
+    dnColQty: { width: 100, textAlign: "right" },
+    signBlock: {
+      flexDirection: "row",
+      gap: 24,
+      marginTop: 32,
+    },
+    signCol: { flex: 1 },
+    signLine: {
+      borderTop: `0.5pt solid ${theme.textPrimary}`,
+      paddingTop: 8,
+      minHeight: 56,
+    },
+    signLabel: {
+      fontSize: 8,
+      textTransform: "uppercase",
+      letterSpacing: 0.8,
+      color: theme.textTertiary,
+    },
+    signName: {
+      marginTop: 4,
+      fontSize: 10,
+      color: theme.textPrimary,
+    },
+  });
+}
+
+function formatDnQty(n: string | number): string {
+  return Number(n).toLocaleString("en-LK", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 4,
+  });
+}
+
+function renderDeliveryNoteSection(
+  section: Section,
+  ctx: DeliveryNoteContext,
+  styles: ReturnType<typeof buildDeliveryNoteStyles>,
+  key: number,
+) {
+  const { deliveryNote, lines, customer, tenant } = ctx;
+  const shipAddress = [
+    deliveryNote.shippingAddressLine1,
+    deliveryNote.shippingAddressLine2,
+    deliveryNote.shippingCity,
+    deliveryNote.shippingPostalCode,
+  ].filter(Boolean) as string[];
+
+  switch (section.type) {
+    case "header":
+      return (
+        <View key={key} style={styles.header} fixed>
+          <View style={styles.tenantBlock}>
+            {section.showLogo !== false && (
+              <PdfLogoBlock logoDataUrl={ctx.logoDataUrl} />
+            )}
+            <Text style={styles.tenantName}>{tenant.businessName}</Text>
+            <Text style={styles.tenantMeta}>Sri Lanka</Text>
+          </View>
+          <View style={styles.invoiceHeader}>
+            <Text style={styles.invoiceLabel}>Delivery note</Text>
+            <Text style={styles.invoiceNumber}>
+              {deliveryNote.dnNumber ?? "Draft"}
+            </Text>
+            {section.showStatusPill !== false && (
+              <Text style={styles.statusPill}>{deliveryNote.status}</Text>
+            )}
+          </View>
+        </View>
+      );
+
+    case "metaRow": {
+      const fields = section.fields ?? [
+        "deliveryDate",
+        "carrier",
+        "trackingNumber",
+        "deliveredAt",
+      ];
+      const cells: Array<{ label: string; value: string | null }> = fields.map(
+        (f) => {
+          if (f === "deliveryDate")
+            return {
+              label: "Delivery date",
+              value: formatDate(deliveryNote.deliveryDate),
+            };
+          if (f === "carrier")
+            return { label: "Carrier", value: deliveryNote.carrier ?? null };
+          if (f === "trackingNumber")
+            return {
+              label: "Tracking #",
+              value: deliveryNote.trackingNumber ?? null,
+            };
+          if (f === "deliveredAt")
+            return {
+              label: "Delivered",
+              value: deliveryNote.deliveredAt
+                ? formatDate(deliveryNote.deliveredAt.slice(0, 10))
+                : null,
+            };
+          if (f === "dnNumber")
+            return {
+              label: "DN #",
+              value: deliveryNote.dnNumber ?? null,
+            };
+          return { label: f, value: null };
+        },
+      );
+      return (
+        <View key={key} style={styles.metaRow}>
+          {cells
+            .filter((c) => c.value !== null)
+            .map((c, i) => (
+              <View key={i} style={styles.metaCell}>
+                <Text style={styles.metaLabel}>{c.label}</Text>
+                <Text style={styles.metaValue}>{c.value}</Text>
+              </View>
+            ))}
+        </View>
+      );
+    }
+
+    case "partiesRow":
+      if (!customer && shipAddress.length === 0) return null;
+      return (
+        <View key={key} style={styles.partiesRow}>
+          {customer && (
+            <View style={styles.partyCol}>
+              <Text style={styles.partyLabel}>Deliver to</Text>
+              <Text style={styles.partyName}>{customer.name}</Text>
+              {customer.addressLine1 && (
+                <Text style={styles.partyLine}>{customer.addressLine1}</Text>
+              )}
+              {customer.addressLine2 && (
+                <Text style={styles.partyLine}>{customer.addressLine2}</Text>
+              )}
+              {customer.city && (
+                <Text style={styles.partyLine}>{customer.city}</Text>
+              )}
+              {customer.phone && (
+                <Text style={styles.partyLine}>{customer.phone}</Text>
+              )}
+            </View>
+          )}
+          {shipAddress.length > 0 && (
+            <View style={styles.partyCol}>
+              <Text style={styles.partyLabel}>Shipping address</Text>
+              {shipAddress.map((line, i) => (
+                <Text key={i} style={styles.partyLine}>
+                  {line}
+                </Text>
+              ))}
+            </View>
+          )}
+        </View>
+      );
+
+    // billTo on a DN context falls back to a single-column Deliver-to
+    // so a generic library template that contains {type:"billTo"}
+    // still renders the customer block usefully.
+    case "billTo":
+      if (!customer) return null;
+      return (
+        <View key={key} style={styles.billTo}>
+          <Text style={styles.billToLabel}>Deliver to</Text>
+          <Text style={styles.billToName}>{customer.name}</Text>
+          {customer.addressLine1 && (
+            <Text style={styles.billToLine}>{customer.addressLine1}</Text>
+          )}
+          {customer.city && (
+            <Text style={styles.billToLine}>{customer.city}</Text>
+          )}
+        </View>
+      );
+
+    case "lineItemsTable":
+      return (
+        <View key={key} style={styles.table}>
+          <View style={[styles.row, styles.rowHeader]}>
+            <Text style={[styles.dnColNum, styles.th]}>#</Text>
+            <Text style={[styles.dnColDesc, styles.th]}>Description</Text>
+            <Text style={[styles.dnColQty, styles.th]}>Qty delivered</Text>
+          </View>
+          {lines.map((l) => (
+            <View key={l.id} style={styles.row} wrap={false}>
+              <Text style={[styles.dnColNum, styles.td]}>{l.lineNo}</Text>
+              <Text style={[styles.dnColDesc, styles.td]}>{l.description}</Text>
+              <Text style={[styles.dnColQty, styles.td]}>
+                {formatDnQty(l.quantity)}
+              </Text>
+            </View>
+          ))}
+        </View>
+      );
+
+    case "notes":
+      if (!deliveryNote.notes) return null;
+      return (
+        <View key={key} style={styles.notes} wrap={false}>
+          <Text style={styles.notesLabel}>Notes</Text>
+          <Text style={styles.notesText}>{deliveryNote.notes}</Text>
+        </View>
+      );
+
+    case "signBlock":
+      return (
+        <View key={key} style={styles.signBlock} wrap={false}>
+          <View style={styles.signCol}>
+            <View style={styles.signLine}>
+              <Text style={styles.signLabel}>
+                {section.leftLabel ?? "Delivered by (name & signature)"}
+              </Text>
+            </View>
+          </View>
+          <View style={styles.signCol}>
+            <View style={styles.signLine}>
+              <Text style={styles.signLabel}>
+                {section.rightLabel ?? "Received by (name & signature)"}
+              </Text>
+              {deliveryNote.receivedByName && (
+                <Text style={styles.signName}>
+                  {deliveryNote.receivedByName}
+                </Text>
+              )}
+            </View>
+          </View>
+        </View>
+      );
+
+    case "footer":
+      return (
+        <View key={key} style={styles.footer} fixed>
+          <Text>
+            {section.text ?? "Generated with PettahPro — pettahpro.lk"}
+          </Text>
+          <Text>{tenant.businessName}</Text>
+        </View>
+      );
+
+    case "spacer":
+      return <View key={key} style={{ height: section.height ?? 12 }} />;
+
+    case "text": {
+      const s =
+        section.emphasis === "muted"
+          ? styles.textMuted
+          : section.emphasis === "label"
+            ? styles.textLabel
+            : styles.text;
+      return (
+        <Text key={key} style={s}>
+          {section.text}
+        </Text>
+      );
+    }
+
+    default:
+      return null;
+  }
+}
+
+export function renderDeliveryNoteTemplate(
+  layoutRaw: unknown,
+  ctx: DeliveryNoteContext,
+) {
+  const layout = parseLayout(layoutRaw);
+  const styles = buildDeliveryNoteStyles(layout.theme);
+
+  return (
+    <Document
+      title={ctx.deliveryNote.dnNumber ?? "Delivery note"}
+      author={ctx.tenant.businessName}
+      creator="PettahPro"
+      producer="PettahPro"
+    >
+      <Page size={pageSizeProp(layout.pageSize)} style={styles.page}>
+        {layout.sections.map((section, i) =>
+          renderDeliveryNoteSection(section, ctx, styles, i),
         )}
       </Page>
     </Document>
