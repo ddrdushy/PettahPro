@@ -1066,6 +1066,60 @@ export const api = {
   deleteCostCenter: (id: string) =>
     request<{ ok: true }>(`/cost-centers/${id}`, { method: "DELETE" }),
 
+  // Budgets (#133 / gaps B2).
+  listBudgets: () => request<{ budgets: Budget[] }>("/budgets"),
+  getBudget: (id: string) =>
+    request<{ budget: Budget; lines: BudgetLine[] }>(`/budgets/${id}`),
+  createBudget: (body: {
+    name: string;
+    fiscalYear: number;
+    status?: "draft" | "active" | "archived";
+    notes?: string | null;
+  }) => request<{ budget: Budget }>("/budgets", { method: "POST", json: body }),
+  updateBudget: (
+    id: string,
+    body: {
+      name?: string;
+      status?: "draft" | "active" | "archived";
+      notes?: string | null;
+    },
+  ) =>
+    request<{ budget: Budget }>(`/budgets/${id}`, {
+      method: "PATCH",
+      json: body,
+    }),
+  deleteBudget: (id: string) =>
+    request<{ ok: true }>(`/budgets/${id}`, { method: "DELETE" }),
+  replaceBudgetLines: (
+    id: string,
+    lines: Array<{
+      accountId: string;
+      costCenterId?: string | null;
+      amountCents: number;
+      notes?: string | null;
+    }>,
+  ) =>
+    request<{ lines: BudgetLine[] }>(`/budgets/${id}/lines`, {
+      method: "PUT",
+      json: { lines },
+    }),
+  getBudgetVsActual: (params: {
+    budgetId?: string;
+    fiscalYear?: number;
+    from?: string;
+    to?: string;
+  }) => {
+    const qs = new URLSearchParams();
+    if (params.budgetId) qs.set("budgetId", params.budgetId);
+    if (params.fiscalYear != null) qs.set("fiscalYear", String(params.fiscalYear));
+    if (params.from) qs.set("from", params.from);
+    if (params.to) qs.set("to", params.to);
+    const q = qs.toString();
+    return request<BudgetVsActualReport>(
+      `/reports/budget-vs-actual${q ? `?${q}` : ""}`,
+    );
+  },
+
   // Pause / resume (#125).
   pauseMySubscription: (body: { reason: string; resumeAt?: string }) =>
     request<{ ok: true; status: "paused"; resumeAt: string | null }>(
@@ -5585,6 +5639,56 @@ export interface CostCenter {
   deletedAt: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+// Budgets (#133 / gaps B2).
+export interface Budget {
+  id: string;
+  name: string;
+  fiscalYear: number;
+  status: "draft" | "active" | "archived";
+  notes: string | null;
+  deletedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BudgetLine {
+  id: string;
+  budgetId: string;
+  accountId: string;
+  costCenterId: string | null;
+  amountCents: number;
+  notes: string | null;
+}
+
+export interface BudgetVsActualReport {
+  budget: {
+    id: string;
+    name: string;
+    fiscalYear: number;
+    status: string;
+  };
+  period: { from: string; to: string; days: number };
+  lines: Array<{
+    accountId: string;
+    accountCode: string;
+    accountName: string;
+    costCenterId: string | null;
+    costCenterCode: string | null;
+    costCenterName: string | null;
+    budgetedAnnualCents: number;
+    budgetedProratedCents: number;
+    actualCents: number;
+    varianceCents: number;
+    pctConsumed: number | null;
+  }>;
+  totals: {
+    budgetedAnnualCents: number;
+    budgetedProratedCents: number;
+    actualCents: number;
+    varianceCents: number;
+  };
 }
 
 export interface FxRate {

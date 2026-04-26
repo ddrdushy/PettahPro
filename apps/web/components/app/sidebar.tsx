@@ -121,6 +121,7 @@ const nav: Group[] = [
       { label: "Bank reconciliation", href: "/app/bank-reconciliation", icon: ScrollText },
       { label: "Cheques", href: "/app/cheques", icon: FileSignature },
       { label: "Petty cash", href: "/app/petty-cash", icon: Wallet },
+      { label: "Budgets", href: "/app/accounting/budgets", icon: FileBarChart },
     ],
   },
   {
@@ -160,6 +161,7 @@ const nav: Group[] = [
       { label: "Payables aging", href: "/app/reports/ap-aging", icon: FileBarChart },
       { label: "3-way match", href: "/app/reports/three-way-match", icon: FileBarChart },
       { label: "Bad debts", href: "/app/reports/bad-debts", icon: FileBarChart },
+      { label: "Budget vs actual", href: "/app/reports/budget-vs-actual", icon: FileBarChart },
     ],
   },
   {
