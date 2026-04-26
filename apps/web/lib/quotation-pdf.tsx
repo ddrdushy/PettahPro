@@ -1,4 +1,5 @@
 import { Document, Page, Text, View, StyleSheet } from "@react-pdf/renderer";
+import { PdfLogoBlock } from "@/lib/pdf-logo-block";
 import type { Customer, QuotationDetail, QuotationLine, Tenant } from "@/lib/api";
 
 // Brand tokens from brand-kit.md §5 (shared with invoice-pdf).
@@ -197,11 +198,13 @@ export function QuotationPDF({
   quotation,
   lines,
   customer,
+  logoDataUrl,
 }: {
   tenant: Pick<Tenant, "businessName">;
   quotation: QuotationDetail;
   lines: QuotationLine[];
   customer: Customer | null;
+  logoDataUrl?: string | null;
 }) {
   const statusStyle = {
     draft: styles.statusDraft,
@@ -228,6 +231,7 @@ export function QuotationPDF({
       <Page size="A4" style={styles.page}>
         <View style={styles.header} fixed>
           <View style={styles.tenantBlock}>
+            <PdfLogoBlock logoDataUrl={logoDataUrl} />
             <Text style={styles.tenantName}>{tenant.businessName}</Text>
             <Text style={styles.tenantMeta}>Sri Lanka</Text>
           </View>

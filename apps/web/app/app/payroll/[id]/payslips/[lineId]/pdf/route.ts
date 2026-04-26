@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import { renderToBuffer } from "@react-pdf/renderer";
 import { PayslipPDF } from "@/lib/payslip-pdf";
 import { pdfResponse } from "@/lib/pdf-response";
+import { fetchTenantLogoDataUrl } from "@/lib/tenant-logo";
 import type { PayrollRun, PayrollRunLine, Tenant } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
@@ -17,12 +18,13 @@ export async function GET(
     return new Response("Unauthorized", { status: 401 });
   }
 
-  const [meRes, runRes] = await Promise.all([
+  const [meRes, runRes, logoDataUrl] = await Promise.all([
     fetch(`${base}/auth/me`, { headers: { cookie: cookieHeader }, cache: "no-store" }),
     fetch(`${base}/payroll-runs/${params.id}`, {
       headers: { cookie: cookieHeader },
       cache: "no-store",
     }),
+    fetchTenantLogoDataUrl(cookieHeader),
   ]);
   if (meRes.status === 401) return new Response("Unauthorized", { status: 401 });
   if (runRes.status === 404) return new Response("Run not found", { status: 404 });
@@ -43,6 +45,7 @@ export async function GET(
       tenant: { businessName: me.tenant.businessName },
       run: runData.run,
       line,
+      logoDataUrl,
     }),
   );
 

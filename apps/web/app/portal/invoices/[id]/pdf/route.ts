@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import { renderToBuffer } from "@react-pdf/renderer";
 import { InvoicePDF } from "@/lib/invoice-pdf";
 import { pdfResponse } from "@/lib/pdf-response";
+import { fetchTenantLogoDataUrl } from "@/lib/tenant-logo";
 import type { Customer, InvoiceDetail, InvoiceLine, PortalMeResult } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
@@ -21,12 +22,13 @@ export async function GET(
   const cookieHeader = cookies().toString();
   if (!cookieHeader) return new Response("Unauthorized", { status: 401 });
 
-  const [meRes, invRes] = await Promise.all([
+  const [meRes, invRes, logoDataUrl] = await Promise.all([
     fetch(`${base}/portal/auth/me`, { headers: { cookie: cookieHeader }, cache: "no-store" }),
     fetch(`${base}/portal/invoices/${params.id}`, {
       headers: { cookie: cookieHeader },
       cache: "no-store",
     }),
+    fetchTenantLogoDataUrl(cookieHeader, "/portal/tenant-logo"),
   ]);
   if (meRes.status === 401) return new Response("Unauthorized", { status: 401 });
   if (invRes.status === 404) return new Response("Invoice not found", { status: 404 });
@@ -47,6 +49,7 @@ export async function GET(
       invoice: invData.invoice,
       lines: invData.lines,
       customer: invData.customer,
+      logoDataUrl,
     }),
   );
 

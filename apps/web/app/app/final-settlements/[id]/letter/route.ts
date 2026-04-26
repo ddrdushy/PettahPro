@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import { renderToBuffer } from "@react-pdf/renderer";
 import { SettlementLetterPDF } from "@/lib/settlement-letter-pdf";
 import { pdfResponse } from "@/lib/pdf-response";
+import { fetchTenantLogoDataUrl } from "@/lib/tenant-logo";
 import type { FinalSettlementRow, Tenant } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
@@ -17,7 +18,7 @@ export async function GET(
     return new Response("Unauthorized", { status: 401 });
   }
 
-  const [meRes, settlementRes] = await Promise.all([
+  const [meRes, settlementRes, logoDataUrl] = await Promise.all([
     fetch(`${base}/auth/me`, {
       headers: { cookie: cookieHeader },
       cache: "no-store",
@@ -26,6 +27,7 @@ export async function GET(
       headers: { cookie: cookieHeader },
       cache: "no-store",
     }),
+    fetchTenantLogoDataUrl(cookieHeader),
   ]);
   if (meRes.status === 401) return new Response("Unauthorized", { status: 401 });
   if (settlementRes.status === 404)
@@ -43,6 +45,7 @@ export async function GET(
     SettlementLetterPDF({
       tenant: { businessName: me.tenant.businessName },
       settlement,
+      logoDataUrl,
     }),
   );
 

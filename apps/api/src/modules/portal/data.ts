@@ -6,6 +6,7 @@ import {
   computeCustomerStatement,
   defaultStatementRange,
 } from "../operations/customer-statement.js";
+import { getObjectStream } from "../../lib/object-storage.js";
 
 /**
  * Portal data endpoints. Every handler:
@@ -296,5 +297,42 @@ export const portalDataRoutes: FastifyPluginAsync = async (fastify) => {
     });
 
     return reply.send({ recurring: templates });
+  });
+
+  // GET /portal/tenant-logo
+  //
+  // Streams the tenant's logo image to portal users so the invoice
+  // PDF served from the portal carries the same branding as the
+  // admin-side render. The MinIO key is read out of tenant_settings
+  // under the portal session's tenant scope.
+  fastify.get("/tenant-logo", async (req, reply) => {
+    const session = requirePortalSession(req, reply);
+    if (!session) return;
+
+    const settings = await withTenant(session.tenantId, async (tx) => {
+      const rows = (await tx.execute(sql`
+        SELECT settings FROM tenant_settings WHERE tenant_id = current_tenant_id()
+      `)) as unknown as Array<{ settings: Record<string, unknown> | null }>;
+      return rows[0]?.settings ?? {};
+    });
+
+    const objectKey = (settings as Record<string, unknown>).logoObjectKey;
+    const contentType = (settings as Record<string, unknown>).logoContentType;
+    if (typeof objectKey !== "string" || typeof contentType !== "string") {
+      return reply.status(404).send({ error: { code: "NO_LOGO" } });
+    }
+
+    const obj = await getObjectStream(objectKey);
+    if (!obj) {
+      return reply.status(404).send({ error: { code: "OBJECT_MISSING" } });
+    }
+
+    reply
+      .type(obj.contentType ?? contentType)
+      .header("Cache-Control", "private, max-age=3600");
+    if (obj.contentLength !== null) {
+      reply.header("Content-Length", String(obj.contentLength));
+    }
+    return reply.send(obj.stream);
   });
 };

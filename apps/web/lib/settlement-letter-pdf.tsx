@@ -1,4 +1,5 @@
 import { Document, Page, Text, View, StyleSheet } from "@react-pdf/renderer";
+import { PdfLogoBlock } from "@/lib/pdf-logo-block";
 import type { FinalSettlementRow, Tenant } from "@/lib/api";
 
 // Brand tokens from brand-kit.md §5
@@ -177,9 +178,11 @@ function formatDate(iso: string): string {
 export function SettlementLetterPDF({
   tenant,
   settlement,
+  logoDataUrl,
 }: {
   tenant: Pick<Tenant, "businessName">;
   settlement: FinalSettlementRow;
+  logoDataUrl?: string | null;
 }) {
   const lines = settlement.linesSnapshot ?? [];
   const earningRows = lines.filter((l) => l.kind === "earning");
@@ -216,6 +219,7 @@ export function SettlementLetterPDF({
       <Page size="A4" style={styles.page}>
         <View style={styles.header} fixed>
           <View style={styles.tenantBlock}>
+            <PdfLogoBlock logoDataUrl={logoDataUrl} />
             <Text style={styles.tenantName}>{tenant.businessName}</Text>
             <Text style={styles.tenantMeta}>
               Final settlement · confidential

@@ -1,4 +1,5 @@
 import { Document, Page, Text, View, StyleSheet } from "@react-pdf/renderer";
+import { PdfLogoBlock } from "@/lib/pdf-logo-block";
 import type { PayrollRun, PayrollRunLine, Tenant } from "@/lib/api";
 
 // Brand tokens from brand-kit.md §5
@@ -199,10 +200,12 @@ export function PayslipPDF({
   tenant,
   run,
   line,
+  logoDataUrl,
 }: {
   tenant: Pick<Tenant, "businessName">;
   run: PayrollRun;
   line: PayrollRunLine;
+  logoDataUrl?: string | null;
 }) {
   const periodLabel = `${MONTHS[run.periodMonth - 1]} ${run.periodYear}`;
 
@@ -229,6 +232,7 @@ export function PayslipPDF({
       <Page size="A4" style={styles.page}>
         <View style={styles.header} fixed>
           <View style={styles.tenantBlock}>
+            <PdfLogoBlock logoDataUrl={logoDataUrl} />
             <Text style={styles.tenantName}>{tenant.businessName}</Text>
             <Text style={styles.tenantMeta}>Payslip · confidential</Text>
           </View>

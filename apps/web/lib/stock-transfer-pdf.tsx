@@ -1,4 +1,5 @@
 import { Document, Page, Text, View, StyleSheet } from "@react-pdf/renderer";
+import { PdfLogoBlock } from "@/lib/pdf-logo-block";
 import type {
   StockTransferDetail,
   StockTransferLineRow,
@@ -186,12 +187,14 @@ export function StockTransferPDF({
   lines,
   source,
   destination,
+  logoDataUrl,
 }: {
   tenant: Pick<Tenant, "businessName">;
   transfer: StockTransferDetail;
   lines: StockTransferLineRow[];
   source: StockTransferWarehouse | null;
   destination: StockTransferWarehouse | null;
+  logoDataUrl?: string | null;
 }) {
   const statusStyle = {
     draft: styles.statusDraft,
@@ -213,6 +216,7 @@ export function StockTransferPDF({
       <Page size="A4" style={styles.page}>
         <View style={styles.header} fixed>
           <View style={styles.tenantBlock}>
+            <PdfLogoBlock logoDataUrl={logoDataUrl} />
             <Text style={styles.tenantName}>{tenant.businessName}</Text>
             <Text style={styles.tenantMeta}>Sri Lanka</Text>
           </View>

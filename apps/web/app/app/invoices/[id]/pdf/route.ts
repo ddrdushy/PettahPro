@@ -6,6 +6,7 @@ import {
   renderInvoiceTemplate,
 } from "@/lib/template-renderer";
 import { pdfResponse } from "@/lib/pdf-response";
+import { fetchTenantLogoDataUrl } from "@/lib/tenant-logo";
 import type {
   Customer,
   DocumentTemplate,
@@ -33,7 +34,7 @@ export async function GET(
   // users hit this route too), we silently fall back to the
   // hard-coded InvoicePDF component. This keeps behaviour identical
   // to pre-#33 for tenants that never touch the template builder.
-  const [meRes, invRes, tplRes] = await Promise.all([
+  const [meRes, invRes, tplRes, logoDataUrl] = await Promise.all([
     fetch(`${base}/auth/me`, {
       headers: { cookie: cookieHeader },
       cache: "no-store",
@@ -46,6 +47,7 @@ export async function GET(
       headers: { cookie: cookieHeader },
       cache: "no-store",
     }).catch(() => null),
+    fetchTenantLogoDataUrl(cookieHeader),
   ]);
   if (meRes.status === 401) return new Response("Unauthorized", { status: 401 });
   if (invRes.status === 404)
@@ -86,6 +88,7 @@ export async function GET(
             invoice: invData.invoice,
             lines: invData.lines,
             customer: invData.customer,
+            logoDataUrl,
           }),
         )
       : InvoicePDF({
@@ -93,6 +96,7 @@ export async function GET(
           invoice: invData.invoice,
           lines: invData.lines,
           customer: invData.customer,
+          logoDataUrl,
         }),
   );
 
