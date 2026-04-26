@@ -92,6 +92,8 @@ export type AuditEventKind =
   // Settings
   | "settings.update"
   | "number_series.update"
+  | "tenant.logo_uploaded"
+  | "tenant.logo_deleted"
   // Customer portal
   | "portal.login"
   | "portal.logout"
