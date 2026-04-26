@@ -22,6 +22,8 @@ import type {
   DebitNoteReason,
   InvoiceDetail,
   InvoiceLine,
+  ProformaInvoiceDetail,
+  ProformaInvoiceLine,
   QuotationDetail,
   QuotationLine,
   Supplier,
@@ -104,6 +106,10 @@ type Section =
   // invoice) and debit notes (against a bill) so the recipient can
   // see what the credit/debit applies to.
   | { type: "linkedDocument" }
+  // Italic disclaimer / legal notice block — used by proforma
+  // invoices for the "this is not a tax invoice" copy and by
+  // settlement letters for the "final and binding" clause.
+  | { type: "disclaimer"; text?: string }
   // Two-column "Deliver to" + "Shipping address" block used by
   // delivery notes. Customer-facing left column, free-form ship-to
   // right column when the DN carries an explicit shipping address.
@@ -2350,6 +2356,332 @@ export function renderDebitNoteTemplate(
         {layout.sections.map((section, i) =>
           renderDeliveryNoteSection(section, ctx, styles, i),
           renderDebitNoteSection(section, ctx, styles, i),
+        )}
+      </Page>
+    </Document>
+  );
+}
+
+// -----------------------------------------------------------------
+// Proforma invoice context + renderer (M2 #6/10)
+//
+// Proformas are pre-sale documents for advance payment / customs /
+// LC purposes. Same shape as a quotation (validity callout, money,
+// "Prepared for" customer block) plus a fixed legal disclaimer at
+// the bottom: "This is not a tax invoice." The disclaimer is its
+// own section type so settlement_letter (M2 #10) can reuse it.
+// -----------------------------------------------------------------
+const PROFORMA_DEFAULT_DISCLAIMER =
+  "This is a proforma invoice issued for advance payment, customs, or letter-of-credit purposes. It is not a tax invoice. A final VAT invoice will be issued on supply.";
+
+export type ProformaInvoiceContext = {
+  docType: "proforma_invoice";
+  tenant: Pick<Tenant, "businessName">;
+  proformaInvoice: ProformaInvoiceDetail;
+  lines: ProformaInvoiceLine[];
+  customer: Customer | null;
+  logoDataUrl?: string | null;
+};
+
+export function buildProformaInvoiceContext(args: {
+  tenant: Pick<Tenant, "businessName">;
+  proformaInvoice: ProformaInvoiceDetail;
+  lines: ProformaInvoiceLine[];
+  customer: Customer | null;
+  logoDataUrl?: string | null;
+}): ProformaInvoiceContext {
+  return { docType: "proforma_invoice", ...args };
+}
+
+function buildProformaStyles(theme: Theme) {
+  // Reuse quotation styles — same validity callout shape.
+  const base = buildQuotationStyles(theme);
+  return StyleSheet.create({
+    ...base,
+    disclaimer: {
+      marginTop: 18,
+      padding: 12,
+      borderLeft: `2pt solid ${theme.borderColor}`,
+    },
+    disclaimerText: {
+      fontSize: 9,
+      fontStyle: "italic",
+      color: theme.textSecondary,
+      lineHeight: 1.5,
+    },
+  });
+}
+
+function renderProformaSection(
+  section: Section,
+  ctx: ProformaInvoiceContext,
+  styles: ReturnType<typeof buildProformaStyles>,
+  key: number,
+) {
+  const { proformaInvoice: pf, lines, customer, tenant } = ctx;
+  const today = new Date().toISOString().slice(0, 10);
+  const isExpired =
+    pf.status !== "converted" &&
+    pf.status !== "cancelled" &&
+    pf.validUntil < today;
+
+  switch (section.type) {
+    case "header":
+      return (
+        <View key={key} style={styles.header} fixed>
+          <View style={styles.tenantBlock}>
+            {section.showLogo !== false && (
+              <PdfLogoBlock logoDataUrl={ctx.logoDataUrl} />
+            )}
+            <Text style={styles.tenantName}>{tenant.businessName}</Text>
+            <Text style={styles.tenantMeta}>Sri Lanka</Text>
+          </View>
+          <View style={styles.invoiceHeader}>
+            <Text style={styles.invoiceLabel}>Proforma invoice</Text>
+            <Text style={styles.invoiceNumber}>
+              {pf.proformaNumber ?? "Draft"}
+            </Text>
+            {section.showStatusPill !== false && (
+              <Text style={styles.statusPill}>{pf.status}</Text>
+            )}
+          </View>
+        </View>
+      );
+
+    case "metaRow": {
+      const fields = section.fields ?? [
+        "issueDate",
+        "validUntil",
+        "reference",
+        "currency",
+      ];
+      const cells: Array<{ label: string; value: string | null }> = fields.map(
+        (f) => {
+          if (f === "issueDate")
+            return { label: "Issue date", value: formatDate(pf.issueDate) };
+          if (f === "validUntil")
+            return { label: "Valid until", value: formatDate(pf.validUntil) };
+          if (f === "reference")
+            return { label: "Reference", value: pf.reference ?? null };
+          if (f === "currency")
+            return { label: "Currency", value: pf.currency };
+          if (f === "proformaNumber")
+            return { label: "Proforma #", value: pf.proformaNumber ?? null };
+          return { label: f, value: null };
+        },
+      );
+      return (
+        <View key={key} style={styles.metaRow}>
+          {cells
+            .filter((c) => c.value !== null)
+            .map((c, i) => (
+              <View key={i} style={styles.metaCell}>
+                <Text style={styles.metaLabel}>{c.label}</Text>
+                <Text style={styles.metaValue}>{c.value}</Text>
+              </View>
+            ))}
+        </View>
+      );
+    }
+
+    case "billTo":
+      if (!customer) return null;
+      return (
+        <View key={key} style={styles.billTo}>
+          <Text style={styles.billToLabel}>Prepared for</Text>
+          <Text style={styles.billToName}>{customer.name}</Text>
+          {customer.addressLine1 && (
+            <Text style={styles.billToLine}>{customer.addressLine1}</Text>
+          )}
+          {customer.city && (
+            <Text style={styles.billToLine}>{customer.city}</Text>
+          )}
+          {customer.email && (
+            <Text style={styles.billToLine}>{customer.email}</Text>
+          )}
+          {customer.vatNo && (
+            <Text style={[styles.billToLine, { marginTop: 4, fontSize: 8 }]}>
+              VAT: {customer.vatNo}
+            </Text>
+          )}
+        </View>
+      );
+
+    case "lineItemsTable":
+      return (
+        <View key={key} style={styles.table}>
+          <View style={[styles.row, styles.rowHeader]}>
+            <Text style={[styles.colNum, styles.th]}>#</Text>
+            <Text style={[styles.colDesc, styles.th]}>Description</Text>
+            <Text style={[styles.colQty, styles.th]}>Qty</Text>
+            <Text style={[styles.colUnit, styles.th]}>Unit</Text>
+            <Text style={[styles.colTax, styles.th]}>Tax</Text>
+            <Text style={[styles.colTotal, styles.th]}>Total</Text>
+          </View>
+          {lines.map((l) => (
+            <View key={l.id} style={styles.row} wrap={false}>
+              <Text style={[styles.colNum, styles.td]}>{l.lineNo}</Text>
+              <View style={styles.colDesc}>
+                <Text style={styles.td}>{l.description}</Text>
+                {l.discountCents > 0 && (
+                  <Text style={styles.tdMuted}>
+                    Discount {(l.discountPctBps / 100).toFixed(2)}% ·{" "}
+                    {formatLKR(l.discountCents, pf.currency)}
+                  </Text>
+                )}
+              </View>
+              <Text style={[styles.colQty, styles.td]}>
+                {Number(l.quantity).toLocaleString("en-LK")}
+              </Text>
+              <Text style={[styles.colUnit, styles.td]}>
+                {formatLKR(l.unitPriceCents, pf.currency)}
+              </Text>
+              <View style={styles.colTax}>
+                <Text style={styles.td}>
+                  {l.taxCents > 0 ? formatLKR(l.taxCents, pf.currency) : "—"}
+                </Text>
+                {l.taxCents > 0 && (
+                  <Text style={styles.tdMuted}>
+                    {(l.taxRateBps / 100).toFixed(2)}%
+                  </Text>
+                )}
+              </View>
+              <Text style={[styles.colTotal, styles.td]}>
+                {formatLKR(l.lineTotalCents, pf.currency)}
+              </Text>
+            </View>
+          ))}
+        </View>
+      );
+
+    case "totals":
+      return (
+        <View key={key} style={styles.totalsBlock}>
+          <View style={styles.totalRow}>
+            <Text style={styles.totalLabel}>Subtotal</Text>
+            <Text style={styles.totalValue}>
+              {formatLKR(pf.subtotalCents, pf.currency)}
+            </Text>
+          </View>
+          {pf.discountCents > 0 && (
+            <View style={styles.totalRow}>
+              <Text style={styles.totalLabel}>Discount</Text>
+              <Text style={styles.totalValue}>
+                -{formatLKR(pf.discountCents, pf.currency)}
+              </Text>
+            </View>
+          )}
+          <View style={styles.totalRow}>
+            <Text style={styles.totalLabel}>Tax</Text>
+            <Text style={styles.totalValue}>
+              {formatLKR(pf.taxCents, pf.currency)}
+            </Text>
+          </View>
+          <View style={styles.totalDivider} />
+          <View style={styles.grandTotal}>
+            <Text style={styles.grandLabel}>Total</Text>
+            <Text style={styles.grandValue}>
+              {formatLKR(pf.totalCents, pf.currency)}
+            </Text>
+          </View>
+        </View>
+      );
+
+    case "validity":
+      return (
+        <View key={key} style={styles.validity} wrap={false}>
+          <Text style={styles.validityLabel}>Validity</Text>
+          <Text
+            style={
+              isExpired
+                ? [styles.validityText, styles.validityExpired]
+                : styles.validityText
+            }
+          >
+            {isExpired
+              ? `This proforma expired on ${formatDate(pf.validUntil)}. Please request a fresh proforma.`
+              : `This proforma is valid until ${formatDate(pf.validUntil)}. Prices and availability may change after that date.`}
+          </Text>
+        </View>
+      );
+
+    case "disclaimer":
+      return (
+        <View key={key} style={styles.disclaimer} wrap={false}>
+          <Text style={styles.disclaimerText}>
+            {section.text ?? PROFORMA_DEFAULT_DISCLAIMER}
+          </Text>
+        </View>
+      );
+
+    case "notes":
+      if (!pf.notes && !pf.terms) return null;
+      return (
+        <View key={key} style={styles.notes} wrap={false}>
+          {pf.notes && (
+            <>
+              <Text style={styles.notesLabel}>Notes</Text>
+              <Text style={styles.notesText}>{pf.notes}</Text>
+            </>
+          )}
+          {pf.terms && (
+            <View style={{ marginTop: pf.notes ? 14 : 0 }}>
+              <Text style={styles.notesLabel}>Terms</Text>
+              <Text style={styles.notesText}>{pf.terms}</Text>
+            </View>
+          )}
+        </View>
+      );
+
+    case "footer":
+      return (
+        <View key={key} style={styles.footer} fixed>
+          <Text>
+            {section.text ?? "Generated with PettahPro — pettahpro.lk"}
+          </Text>
+          <Text>{tenant.businessName}</Text>
+        </View>
+      );
+
+    case "spacer":
+      return <View key={key} style={{ height: section.height ?? 12 }} />;
+
+    case "text": {
+      const s =
+        section.emphasis === "muted"
+          ? styles.textMuted
+          : section.emphasis === "label"
+            ? styles.textLabel
+            : styles.text;
+      return (
+        <Text key={key} style={s}>
+          {section.text}
+        </Text>
+      );
+    }
+
+    default:
+      return null;
+  }
+}
+
+export function renderProformaInvoiceTemplate(
+  layoutRaw: unknown,
+  ctx: ProformaInvoiceContext,
+) {
+  const layout = parseLayout(layoutRaw);
+  const styles = buildProformaStyles(layout.theme);
+
+  return (
+    <Document
+      title={ctx.proformaInvoice.proformaNumber ?? "Proforma invoice"}
+      author={ctx.tenant.businessName}
+      creator="PettahPro"
+      producer="PettahPro"
+    >
+      <Page size={pageSizeProp(layout.pageSize)} style={styles.page}>
+        {layout.sections.map((section, i) =>
+          renderProformaSection(section, ctx, styles, i),
         )}
       </Page>
     </Document>

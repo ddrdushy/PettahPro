@@ -236,6 +236,32 @@ const LIBRARY: readonly LibraryTemplate[] = [
     languages: ["en"],
     layout: CLASSIC_DEBIT_NOTE_LAYOUT,
   },
+  {
+    libraryKey: "proforma_invoice_classic",
+    docType: "proforma_invoice",
+    name: "Classic proforma invoice",
+    description:
+      "Pre-sale doc for advance payment / customs / LC purposes. Same shape as a quotation (validity callout, 'Prepared for') with an italic disclaimer at the bottom — 'this is not a tax invoice'.",
+    languages: ["en"],
+    layout: {
+      pageSize: "a4",
+      theme: CLASSIC_THEME,
+      sections: [
+        { type: "header", showLogo: true, showStatusPill: true },
+        {
+          type: "metaRow",
+          fields: ["issueDate", "validUntil", "reference", "currency"],
+        },
+        { type: "billTo" },
+        { type: "lineItemsTable" },
+        { type: "totals" },
+        { type: "validity" },
+        { type: "disclaimer" },
+        { type: "notes" },
+        { type: "footer", text: "Generated with PettahPro — pettahpro.lk" },
+      ],
+    },
+  },
 ] as const;
 
 export function listLibraryTemplates(filters: {
