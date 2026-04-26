@@ -85,6 +85,30 @@ const CLASSIC_BILL_LAYOUT: Record<string, unknown> = {
   ],
 };
 
+// Classic credit note — mirrors the hard-coded CreditNotePDF output.
+// Specifics: status set (draft/posted/void), reason in the meta row,
+// optional "Credit against invoice" badge below meta when linked,
+// "Issued to" customer label, and totals that show "Applied to
+// invoice" / "Standing credit" / "Fully applied" once posted.
+const CLASSIC_CREDIT_NOTE_LAYOUT: Record<string, unknown> = {
+  pageSize: "a4",
+  theme: CLASSIC_THEME,
+  sections: [
+    { type: "header", showLogo: true, showStatusPill: true },
+    { type: "draftBanner" },
+    {
+      type: "metaRow",
+      fields: ["issueDate", "reason", "currency", "postedAt"],
+    },
+    { type: "linkedDocument" },
+    { type: "billTo" },
+    { type: "lineItemsTable" },
+    { type: "totals" },
+    { type: "notes" },
+    { type: "footer", text: "Generated with PettahPro — pettahpro.lk" },
+  ],
+};
+
 // Classic quotation — mirrors the hard-coded QuotationPDF output.
 // Different from invoice in three places: status set, "Prepared
 // for" label on the customer block (handled inside the renderer's
@@ -136,6 +160,15 @@ const LIBRARY: readonly LibraryTemplate[] = [
       "Pre-sale quote with 'Prepared for' customer block, a validity callout, and notes + terms. Switches to an expired-warning style when the valid-until date is in the past.",
     languages: ["en"],
     layout: CLASSIC_QUOTATION_LAYOUT,
+  },
+  {
+    libraryKey: "credit_note_classic",
+    docType: "credit_note",
+    name: "Classic credit note",
+    description:
+      "Sales-side refund / adjustment doc. Shows the reason, an optional 'Credit against invoice' badge when linked, an 'Issued to' customer block, and applied / standing credit lines once posted.",
+    languages: ["en"],
+    layout: CLASSIC_CREDIT_NOTE_LAYOUT,
   },
 ] as const;
 
