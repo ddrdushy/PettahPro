@@ -237,6 +237,11 @@ const LIBRARY: readonly LibraryTemplate[] = [
     layout: CLASSIC_DEBIT_NOTE_LAYOUT,
   },
   {
+    libraryKey: "purchase_order_classic",
+    docType: "purchase_order",
+    name: "Classic purchase order",
+    description:
+      "Buyer-issued order with supplier block, line items priced for acknowledgement, totals, and a 'Supplier instructions' callout (PO number quoting + partial-shipment policy).",
     libraryKey: "proforma_invoice_classic",
     docType: "proforma_invoice",
     name: "Classic proforma invoice",
@@ -250,6 +255,12 @@ const LIBRARY: readonly LibraryTemplate[] = [
         { type: "header", showLogo: true, showStatusPill: true },
         {
           type: "metaRow",
+          fields: ["orderDate", "expectedDeliveryDate", "reference", "currency"],
+        },
+        { type: "billFrom" },
+        { type: "lineItemsTable" },
+        { type: "totals" },
+        { type: "instructions" },
           fields: ["issueDate", "validUntil", "reference", "currency"],
         },
         { type: "billTo" },

@@ -22,6 +22,8 @@ import type {
   DebitNoteReason,
   InvoiceDetail,
   InvoiceLine,
+  PurchaseOrderDetail,
+  PurchaseOrderLine,
   ProformaInvoiceDetail,
   ProformaInvoiceLine,
   QuotationDetail,
@@ -106,6 +108,10 @@ type Section =
   // invoice) and debit notes (against a bill) so the recipient can
   // see what the credit/debit applies to.
   | { type: "linkedDocument" }
+  // Labelled callout — used for PO supplier instructions and
+  // similar boilerplate. Both label and text are template-overridable.
+  // Generic enough to reuse on stock_transfer / settlement_letter.
+  | { type: "instructions"; label?: string; text?: string }
   // Italic disclaimer / legal notice block — used by proforma
   // invoices for the "this is not a tax invoice" copy and by
   // settlement letters for the "final and binding" clause.
@@ -2363,6 +2369,65 @@ export function renderDebitNoteTemplate(
 }
 
 // -----------------------------------------------------------------
+// Purchase order context + renderer (M2 #7/10)
+//
+// PO is the AP-side counterpart to a quotation. Has its own status
+// set (draft/pending_approval/sent/acknowledged/converted/cancelled)
+// and a fixed "supplier instructions" callout that the buyer needs
+// the supplier to acknowledge. instructions section type is generic
+// so the template author can override the label/text without code.
+// -----------------------------------------------------------------
+const PO_DEFAULT_INSTRUCTIONS_LABEL = "Supplier instructions";
+const PO_DEFAULT_INSTRUCTIONS_TEXT =
+  "Please quote PO number {{poNumber}} on your invoice and delivery note. Partial shipments must be agreed with the buyer in advance.";
+
+export type PurchaseOrderContext = {
+  docType: "purchase_order";
+  tenant: Pick<Tenant, "businessName">;
+  purchaseOrder: PurchaseOrderDetail;
+  lines: PurchaseOrderLine[];
+  supplier: Supplier | null;
+  logoDataUrl?: string | null;
+};
+
+export function buildPurchaseOrderContext(args: {
+  tenant: Pick<Tenant, "businessName">;
+  purchaseOrder: PurchaseOrderDetail;
+  lines: PurchaseOrderLine[];
+  supplier: Supplier | null;
+  logoDataUrl?: string | null;
+}): PurchaseOrderContext {
+  return { docType: "purchase_order", ...args };
+}
+
+function buildPurchaseOrderStyles(theme: Theme) {
+  const base = buildBillStyles(theme);
+  return StyleSheet.create({
+    ...base,
+    instructions: {
+      marginTop: 18,
+      padding: 12,
+      backgroundColor: theme.surfaceRecessed,
+      borderRadius: 4,
+    },
+    instructionsLabel: {
+      fontSize: 8,
+      textTransform: "uppercase",
+      letterSpacing: 0.8,
+      color: theme.textTertiary,
+      marginBottom: 6,
+    },
+    instructionsText: { color: theme.textSecondary, lineHeight: 1.5 },
+  });
+}
+
+function renderPurchaseOrderSection(
+  section: Section,
+  ctx: PurchaseOrderContext,
+  styles: ReturnType<typeof buildPurchaseOrderStyles>,
+  key: number,
+) {
+  const { purchaseOrder: po, lines, supplier, tenant } = ctx;
 // Proforma invoice context + renderer (M2 #6/10)
 //
 // Proformas are pre-sale documents for advance payment / customs /
@@ -2437,6 +2502,10 @@ function renderProformaSection(
             <Text style={styles.tenantMeta}>Sri Lanka</Text>
           </View>
           <View style={styles.invoiceHeader}>
+            <Text style={styles.invoiceLabel}>Purchase order</Text>
+            <Text style={styles.invoiceNumber}>{po.poNumber ?? "Draft"}</Text>
+            {section.showStatusPill !== false && (
+              <Text style={styles.statusPill}>{po.status}</Text>
             <Text style={styles.invoiceLabel}>Proforma invoice</Text>
             <Text style={styles.invoiceNumber}>
               {pf.proformaNumber ?? "Draft"}
@@ -2450,6 +2519,8 @@ function renderProformaSection(
 
     case "metaRow": {
       const fields = section.fields ?? [
+        "orderDate",
+        "expectedDeliveryDate",
         "issueDate",
         "validUntil",
         "reference",
@@ -2457,6 +2528,21 @@ function renderProformaSection(
       ];
       const cells: Array<{ label: string; value: string | null }> = fields.map(
         (f) => {
+          if (f === "orderDate")
+            return { label: "Order date", value: formatDate(po.orderDate) };
+          if (f === "expectedDeliveryDate")
+            return {
+              label: "Expected delivery",
+              value: po.expectedDeliveryDate
+                ? formatDate(po.expectedDeliveryDate)
+                : null,
+            };
+          if (f === "reference")
+            return { label: "Reference", value: po.reference ?? null };
+          if (f === "currency")
+            return { label: "Currency", value: po.currency };
+          if (f === "poNumber")
+            return { label: "PO #", value: po.poNumber ?? null };
           if (f === "issueDate")
             return { label: "Issue date", value: formatDate(pf.issueDate) };
           if (f === "validUntil")
@@ -2484,6 +2570,33 @@ function renderProformaSection(
       );
     }
 
+    case "billFrom":
+      // POs render the supplier as the recipient — the buyer is
+      // sending the order *to* the supplier, so the label is just
+      // "Supplier".
+      if (!supplier) return null;
+      return (
+        <View key={key} style={styles.billFrom}>
+          <Text style={styles.billFromLabel}>Supplier</Text>
+          <Text style={styles.billFromName}>{supplier.name}</Text>
+          {supplier.legalName && supplier.legalName !== supplier.name && (
+            <Text style={styles.billFromLine}>{supplier.legalName}</Text>
+          )}
+          {supplier.addressLine1 && (
+            <Text style={styles.billFromLine}>{supplier.addressLine1}</Text>
+          )}
+          {supplier.addressLine2 && (
+            <Text style={styles.billFromLine}>{supplier.addressLine2}</Text>
+          )}
+          {supplier.city && (
+            <Text style={styles.billFromLine}>{supplier.city}</Text>
+          )}
+          {supplier.email && (
+            <Text style={styles.billFromLine}>{supplier.email}</Text>
+          )}
+          {supplier.vatNo && (
+            <Text style={[styles.billFromLine, { marginTop: 4, fontSize: 8 }]}>
+              VAT: {supplier.vatNo}
     case "billTo":
       if (!customer) return null;
       return (
@@ -2507,6 +2620,14 @@ function renderProformaSection(
         </View>
       );
 
+    case "billTo":
+      return renderPurchaseOrderSection(
+        { type: "billFrom" },
+        ctx,
+        styles,
+        key,
+      );
+
     case "lineItemsTable":
       return (
         <View key={key} style={styles.table}>
@@ -2526,6 +2647,7 @@ function renderProformaSection(
                 {l.discountCents > 0 && (
                   <Text style={styles.tdMuted}>
                     Discount {(l.discountPctBps / 100).toFixed(2)}% ·{" "}
+                    {formatLKR(l.discountCents, po.currency)}
                     {formatLKR(l.discountCents, pf.currency)}
                   </Text>
                 )}
@@ -2534,6 +2656,11 @@ function renderProformaSection(
                 {Number(l.quantity).toLocaleString("en-LK")}
               </Text>
               <Text style={[styles.colUnit, styles.td]}>
+                {formatLKR(l.unitPriceCents, po.currency)}
+              </Text>
+              <View style={styles.colTax}>
+                <Text style={styles.td}>
+                  {l.taxCents > 0 ? formatLKR(l.taxCents, po.currency) : "—"}
                 {formatLKR(l.unitPriceCents, pf.currency)}
               </Text>
               <View style={styles.colTax}>
@@ -2547,6 +2674,7 @@ function renderProformaSection(
                 )}
               </View>
               <Text style={[styles.colTotal, styles.td]}>
+                {formatLKR(l.lineTotalCents, po.currency)}
                 {formatLKR(l.lineTotalCents, pf.currency)}
               </Text>
             </View>
@@ -2560,6 +2688,14 @@ function renderProformaSection(
           <View style={styles.totalRow}>
             <Text style={styles.totalLabel}>Subtotal</Text>
             <Text style={styles.totalValue}>
+              {formatLKR(po.subtotalCents, po.currency)}
+            </Text>
+          </View>
+          {po.discountCents > 0 && (
+            <View style={styles.totalRow}>
+              <Text style={styles.totalLabel}>Discount</Text>
+              <Text style={styles.totalValue}>
+                -{formatLKR(po.discountCents, po.currency)}
               {formatLKR(pf.subtotalCents, pf.currency)}
             </Text>
           </View>
@@ -2574,11 +2710,15 @@ function renderProformaSection(
           <View style={styles.totalRow}>
             <Text style={styles.totalLabel}>Tax</Text>
             <Text style={styles.totalValue}>
+              {formatLKR(po.taxCents, po.currency)}
               {formatLKR(pf.taxCents, pf.currency)}
             </Text>
           </View>
           <View style={styles.totalDivider} />
           <View style={styles.grandTotal}>
+            <Text style={styles.grandLabel}>Order total</Text>
+            <Text style={styles.grandValue}>
+              {formatLKR(po.totalCents, po.currency)}
             <Text style={styles.grandLabel}>Total</Text>
             <Text style={styles.grandValue}>
               {formatLKR(pf.totalCents, pf.currency)}
@@ -2587,6 +2727,35 @@ function renderProformaSection(
         </View>
       );
 
+    case "instructions": {
+      const text = (section.text ?? PO_DEFAULT_INSTRUCTIONS_TEXT).replace(
+        "{{poNumber}}",
+        po.poNumber ?? "—",
+      );
+      return (
+        <View key={key} style={styles.instructions} wrap={false}>
+          <Text style={styles.instructionsLabel}>
+            {section.label ?? PO_DEFAULT_INSTRUCTIONS_LABEL}
+          </Text>
+          <Text style={styles.instructionsText}>{text}</Text>
+        </View>
+      );
+    }
+
+    case "notes":
+      if (!po.notes && !po.terms) return null;
+      return (
+        <View key={key} style={styles.notes} wrap={false}>
+          {po.notes && (
+            <>
+              <Text style={styles.notesLabel}>Notes</Text>
+              <Text style={styles.notesText}>{po.notes}</Text>
+            </>
+          )}
+          {po.terms && (
+            <View style={{ marginTop: po.notes ? 14 : 0 }}>
+              <Text style={styles.notesLabel}>Terms</Text>
+              <Text style={styles.notesText}>{po.terms}</Text>
     case "validity":
       return (
         <View key={key} style={styles.validity} wrap={false}>
@@ -2665,6 +2834,16 @@ function renderProformaSection(
   }
 }
 
+export function renderPurchaseOrderTemplate(
+  layoutRaw: unknown,
+  ctx: PurchaseOrderContext,
+) {
+  const layout = parseLayout(layoutRaw);
+  const styles = buildPurchaseOrderStyles(layout.theme);
+
+  return (
+    <Document
+      title={ctx.purchaseOrder.poNumber ?? "Purchase order"}
 export function renderProformaInvoiceTemplate(
   layoutRaw: unknown,
   ctx: ProformaInvoiceContext,
@@ -2681,6 +2860,7 @@ export function renderProformaInvoiceTemplate(
     >
       <Page size={pageSizeProp(layout.pageSize)} style={styles.page}>
         {layout.sections.map((section, i) =>
+          renderPurchaseOrderSection(section, ctx, styles, i),
           renderProformaSection(section, ctx, styles, i),
         )}
       </Page>
