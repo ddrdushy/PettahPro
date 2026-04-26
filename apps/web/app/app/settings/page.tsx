@@ -6,6 +6,7 @@ import type { TenantSettingsResponse, TenantSubscriptionResponse } from "@/lib/a
 import { PageHeader } from "@/components/app/page-header";
 import { formatLKR, formatDate } from "@/lib/format";
 import { SettingsFormClient } from "./settings-form-client";
+import { BrandingFormClient } from "./branding-form-client";
 
 export const metadata: Metadata = { title: "Settings" };
 
@@ -185,6 +186,10 @@ export default async function SettingsPage() {
           );
         })()
       ) : null}
+
+      <div className="mt-6">
+        <BrandingFormClient initial={data.settings} />
+      </div>
 
       <SettingsFormClient initial={data.settings} defaults={data.defaults} />
 

@@ -98,6 +98,7 @@ import { arAgingRoutes, apAgingRoutes } from "./modules/reports/aging.js";
 import { badDebtsRoutes } from "./modules/reports/bad-debts.js";
 import { notificationsRoutes } from "./modules/notifications/routes.js";
 import { settingsRoutes } from "./modules/settings/routes.js";
+import { tenantLogoRoutes } from "./modules/settings/logo.js";
 import { subscriptionRoutes } from "./modules/subscription/routes.js";
 import { numberSeriesRoutes } from "./modules/settings/number-series.js";
 import { auditLogRoutes } from "./modules/audit/routes.js";
@@ -264,6 +265,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await server.register(badDebtsRoutes, { prefix: "/reports/bad-debts" });
   await server.register(notificationsRoutes, { prefix: "/notifications" });
   await server.register(settingsRoutes, { prefix: "/settings" });
+  await server.register(tenantLogoRoutes, { prefix: "/settings/logo" });
   await server.register(subscriptionRoutes, { prefix: "/subscription" });
   await server.register(numberSeriesRoutes, { prefix: "/number-series" });
   await server.register(auditLogRoutes, { prefix: "/audit-log" });

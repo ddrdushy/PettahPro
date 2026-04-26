@@ -962,6 +962,48 @@ export const api = {
   updateSettings: (body: Partial<TenantSettings>) =>
     request<TenantSettingsResponse>("/settings", { method: "PATCH", json: body }),
 
+  // Tenant logo (M9 / gaps M9). Upload bypasses request() because we
+  // need the browser to set the multipart boundary header. The URL
+  // helper is what <img src=...> consumes; pass `updatedAt` to bust
+  // the browser cache after a replace.
+  uploadTenantLogo: async (file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    // CSRF double-submit (#50): mirror the cookie into the header even
+    // though we aren't going through request().
+    const csrfToken = readCookie("pp_csrf");
+    const headers: Record<string, string> = {};
+    if (csrfToken) headers["X-CSRF-Token"] = csrfToken;
+    const res = await fetch(`${API_BASE}/settings/logo`, {
+      method: "POST",
+      credentials: "include",
+      headers,
+      body: fd,
+    });
+    const contentType = res.headers.get("content-type") ?? "";
+    const payload = contentType.includes("application/json")
+      ? await res.json()
+      : null;
+    if (!res.ok) {
+      const err = payload?.error;
+      throw new ApiError(
+        res.status,
+        err?.code ?? "UNKNOWN",
+        err?.message ?? res.statusText,
+        err?.issues,
+      );
+    }
+    return payload as {
+      logoContentType: string;
+      logoUpdatedAt: string;
+      sizeBytes: number;
+    };
+  },
+  deleteTenantLogo: () =>
+    request<{ ok: true }>("/settings/logo", { method: "DELETE" }),
+  tenantLogoUrl: (updatedAt: string | null) =>
+    `${API_BASE}/settings/logo${updatedAt ? `?v=${encodeURIComponent(updatedAt)}` : ""}`,
+
   // Tenant-side view of the current subscription (#62). Used by the
   // "Your plan" card on /app/settings and by upgrade-CTA dialogs that
   // need to render "Upgrade to <plan>" copy.
@@ -5454,6 +5496,12 @@ export interface TenantSettings {
   journalApprovalThresholdCents: number;
   // Master toggle for the purchase-requisitions module (roadmap #30).
   purchaseRequisitionsEnabled: boolean;
+  // Tenant logo (M9 / gaps M9). Bytes live behind GET /settings/logo;
+  // this metadata exists so the UI can decide whether to render the
+  // <img> at all and so the PDF renderer can cache-bust on replace.
+  logoObjectKey: string | null;
+  logoContentType: string | null;
+  logoUpdatedAt: string | null;
 }
 
 export interface OpeningBalanceState {

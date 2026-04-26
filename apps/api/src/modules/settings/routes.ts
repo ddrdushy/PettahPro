@@ -28,6 +28,14 @@ export interface TenantSettings {
   // by default; enabling exposes the sidebar entry, API routes (which
   // otherwise 403 FEATURE_DISABLED), and the settings-form toggle.
   purchaseRequisitionsEnabled: boolean;
+  // Tenant logo (M9 / gaps M9). Bytes live in MinIO under
+  // `<tenant>/_branding/logo`; we only persist the metadata here so the
+  // PDF renderer + web header can decide whether to fetch it. Mutated
+  // exclusively via /settings/logo (POST upload, DELETE clear) — the
+  // PATCH on /settings ignores these keys.
+  logoObjectKey: string | null;
+  logoContentType: string | null;
+  logoUpdatedAt: string | null;
 }
 
 export const SETTINGS_DEFAULTS: TenantSettings = {
@@ -35,6 +43,9 @@ export const SETTINGS_DEFAULTS: TenantSettings = {
   stockRelieveOn: "invoice",
   journalApprovalThresholdCents: 0,
   purchaseRequisitionsEnabled: false,
+  logoObjectKey: null,
+  logoContentType: null,
+  logoUpdatedAt: null,
 };
 
 const PatchSchema = z.object({
