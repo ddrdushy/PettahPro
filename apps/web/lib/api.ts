@@ -1097,6 +1097,15 @@ export const api = {
     request<{ inserted: number }>("/demo-data/load", { method: "POST" }),
   clearDemoData: () =>
     request<{ deleted: number }>("/demo-data/clear", { method: "POST" }),
+
+  // Onboarding checklist (gaps I2). Step completion is derived from
+  // tenant state on every fetch — no per-step "user clicked done"
+  // tracking, so the checklist self-heals as the tenant works.
+  getOnboarding: () => request<OnboardingChecklist>("/onboarding"),
+  dismissOnboarding: () =>
+    request<{ ok: true }>("/onboarding/dismiss", { method: "POST" }),
+  restoreOnboarding: () =>
+    request<{ ok: true }>("/onboarding/restore", { method: "POST" }),
   replaceBudgetLines: (
     id: string,
     lines: Array<{
@@ -7173,4 +7182,22 @@ export interface UpdateDocumentTemplate {
   description?: string | null;
   layout?: Record<string, unknown>;
   status?: DocumentTemplateStatus;
+}
+
+// Onboarding checklist (gaps I2). Returned by GET /onboarding.
+export interface OnboardingStep {
+  key: string;
+  label: string;
+  description: string;
+  deepLinkPath: string;
+  complete: boolean;
+  optional?: boolean;
+}
+
+export interface OnboardingChecklist {
+  dismissed: boolean;
+  allDone: boolean;
+  completedRequired: number;
+  totalRequired: number;
+  steps: OnboardingStep[];
 }
