@@ -209,6 +209,31 @@ const LIBRARY: readonly LibraryTemplate[] = [
     languages: ["en"],
     layout: CLASSIC_DEBIT_NOTE_LAYOUT,
   },
+  {
+    libraryKey: "purchase_order_classic",
+    docType: "purchase_order",
+    name: "Classic purchase order",
+    description:
+      "Buyer-issued order with supplier block, line items priced for acknowledgement, totals, and a 'Supplier instructions' callout (PO number quoting + partial-shipment policy).",
+    languages: ["en"],
+    layout: {
+      pageSize: "a4",
+      theme: CLASSIC_THEME,
+      sections: [
+        { type: "header", showLogo: true, showStatusPill: true },
+        {
+          type: "metaRow",
+          fields: ["orderDate", "expectedDeliveryDate", "reference", "currency"],
+        },
+        { type: "billFrom" },
+        { type: "lineItemsTable" },
+        { type: "totals" },
+        { type: "instructions" },
+        { type: "notes" },
+        { type: "footer", text: "Generated with PettahPro — pettahpro.lk" },
+      ],
+    },
+  },
 ] as const;
 
 export function listLibraryTemplates(filters: {

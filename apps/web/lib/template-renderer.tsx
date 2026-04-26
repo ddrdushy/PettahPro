@@ -20,6 +20,8 @@ import type {
   DebitNoteReason,
   InvoiceDetail,
   InvoiceLine,
+  PurchaseOrderDetail,
+  PurchaseOrderLine,
   QuotationDetail,
   QuotationLine,
   Supplier,
@@ -102,6 +104,10 @@ type Section =
   // invoice) and debit notes (against a bill) so the recipient can
   // see what the credit/debit applies to.
   | { type: "linkedDocument" }
+  // Labelled callout — used for PO supplier instructions and
+  // similar boilerplate. Both label and text are template-overridable.
+  // Generic enough to reuse on stock_transfer / settlement_letter.
+  | { type: "instructions"; label?: string; text?: string }
   | { type: "totals"; showTaxBreakdown?: boolean }
   | { type: "notes" }
   | { type: "footer"; text?: string }
@@ -2097,6 +2103,338 @@ export function renderDebitNoteTemplate(
       <Page size={pageSizeProp(layout.pageSize)} style={styles.page}>
         {layout.sections.map((section, i) =>
           renderDebitNoteSection(section, ctx, styles, i),
+        )}
+      </Page>
+    </Document>
+  );
+}
+
+// -----------------------------------------------------------------
+// Purchase order context + renderer (M2 #7/10)
+//
+// PO is the AP-side counterpart to a quotation. Has its own status
+// set (draft/pending_approval/sent/acknowledged/converted/cancelled)
+// and a fixed "supplier instructions" callout that the buyer needs
+// the supplier to acknowledge. instructions section type is generic
+// so the template author can override the label/text without code.
+// -----------------------------------------------------------------
+const PO_DEFAULT_INSTRUCTIONS_LABEL = "Supplier instructions";
+const PO_DEFAULT_INSTRUCTIONS_TEXT =
+  "Please quote PO number {{poNumber}} on your invoice and delivery note. Partial shipments must be agreed with the buyer in advance.";
+
+export type PurchaseOrderContext = {
+  docType: "purchase_order";
+  tenant: Pick<Tenant, "businessName">;
+  purchaseOrder: PurchaseOrderDetail;
+  lines: PurchaseOrderLine[];
+  supplier: Supplier | null;
+  logoDataUrl?: string | null;
+};
+
+export function buildPurchaseOrderContext(args: {
+  tenant: Pick<Tenant, "businessName">;
+  purchaseOrder: PurchaseOrderDetail;
+  lines: PurchaseOrderLine[];
+  supplier: Supplier | null;
+  logoDataUrl?: string | null;
+}): PurchaseOrderContext {
+  return { docType: "purchase_order", ...args };
+}
+
+function buildPurchaseOrderStyles(theme: Theme) {
+  const base = buildBillStyles(theme);
+  return StyleSheet.create({
+    ...base,
+    instructions: {
+      marginTop: 18,
+      padding: 12,
+      backgroundColor: theme.surfaceRecessed,
+      borderRadius: 4,
+    },
+    instructionsLabel: {
+      fontSize: 8,
+      textTransform: "uppercase",
+      letterSpacing: 0.8,
+      color: theme.textTertiary,
+      marginBottom: 6,
+    },
+    instructionsText: { color: theme.textSecondary, lineHeight: 1.5 },
+  });
+}
+
+function renderPurchaseOrderSection(
+  section: Section,
+  ctx: PurchaseOrderContext,
+  styles: ReturnType<typeof buildPurchaseOrderStyles>,
+  key: number,
+) {
+  const { purchaseOrder: po, lines, supplier, tenant } = ctx;
+
+  switch (section.type) {
+    case "header":
+      return (
+        <View key={key} style={styles.header} fixed>
+          <View style={styles.tenantBlock}>
+            {section.showLogo !== false && (
+              <PdfLogoBlock logoDataUrl={ctx.logoDataUrl} />
+            )}
+            <Text style={styles.tenantName}>{tenant.businessName}</Text>
+            <Text style={styles.tenantMeta}>Sri Lanka</Text>
+          </View>
+          <View style={styles.invoiceHeader}>
+            <Text style={styles.invoiceLabel}>Purchase order</Text>
+            <Text style={styles.invoiceNumber}>{po.poNumber ?? "Draft"}</Text>
+            {section.showStatusPill !== false && (
+              <Text style={styles.statusPill}>{po.status}</Text>
+            )}
+          </View>
+        </View>
+      );
+
+    case "metaRow": {
+      const fields = section.fields ?? [
+        "orderDate",
+        "expectedDeliveryDate",
+        "reference",
+        "currency",
+      ];
+      const cells: Array<{ label: string; value: string | null }> = fields.map(
+        (f) => {
+          if (f === "orderDate")
+            return { label: "Order date", value: formatDate(po.orderDate) };
+          if (f === "expectedDeliveryDate")
+            return {
+              label: "Expected delivery",
+              value: po.expectedDeliveryDate
+                ? formatDate(po.expectedDeliveryDate)
+                : null,
+            };
+          if (f === "reference")
+            return { label: "Reference", value: po.reference ?? null };
+          if (f === "currency")
+            return { label: "Currency", value: po.currency };
+          if (f === "poNumber")
+            return { label: "PO #", value: po.poNumber ?? null };
+          return { label: f, value: null };
+        },
+      );
+      return (
+        <View key={key} style={styles.metaRow}>
+          {cells
+            .filter((c) => c.value !== null)
+            .map((c, i) => (
+              <View key={i} style={styles.metaCell}>
+                <Text style={styles.metaLabel}>{c.label}</Text>
+                <Text style={styles.metaValue}>{c.value}</Text>
+              </View>
+            ))}
+        </View>
+      );
+    }
+
+    case "billFrom":
+      // POs render the supplier as the recipient — the buyer is
+      // sending the order *to* the supplier, so the label is just
+      // "Supplier".
+      if (!supplier) return null;
+      return (
+        <View key={key} style={styles.billFrom}>
+          <Text style={styles.billFromLabel}>Supplier</Text>
+          <Text style={styles.billFromName}>{supplier.name}</Text>
+          {supplier.legalName && supplier.legalName !== supplier.name && (
+            <Text style={styles.billFromLine}>{supplier.legalName}</Text>
+          )}
+          {supplier.addressLine1 && (
+            <Text style={styles.billFromLine}>{supplier.addressLine1}</Text>
+          )}
+          {supplier.addressLine2 && (
+            <Text style={styles.billFromLine}>{supplier.addressLine2}</Text>
+          )}
+          {supplier.city && (
+            <Text style={styles.billFromLine}>{supplier.city}</Text>
+          )}
+          {supplier.email && (
+            <Text style={styles.billFromLine}>{supplier.email}</Text>
+          )}
+          {supplier.vatNo && (
+            <Text style={[styles.billFromLine, { marginTop: 4, fontSize: 8 }]}>
+              VAT: {supplier.vatNo}
+            </Text>
+          )}
+        </View>
+      );
+
+    case "billTo":
+      return renderPurchaseOrderSection(
+        { type: "billFrom" },
+        ctx,
+        styles,
+        key,
+      );
+
+    case "lineItemsTable":
+      return (
+        <View key={key} style={styles.table}>
+          <View style={[styles.row, styles.rowHeader]}>
+            <Text style={[styles.colNum, styles.th]}>#</Text>
+            <Text style={[styles.colDesc, styles.th]}>Description</Text>
+            <Text style={[styles.colQty, styles.th]}>Qty</Text>
+            <Text style={[styles.colUnit, styles.th]}>Unit</Text>
+            <Text style={[styles.colTax, styles.th]}>Tax</Text>
+            <Text style={[styles.colTotal, styles.th]}>Total</Text>
+          </View>
+          {lines.map((l) => (
+            <View key={l.id} style={styles.row} wrap={false}>
+              <Text style={[styles.colNum, styles.td]}>{l.lineNo}</Text>
+              <View style={styles.colDesc}>
+                <Text style={styles.td}>{l.description}</Text>
+                {l.discountCents > 0 && (
+                  <Text style={styles.tdMuted}>
+                    Discount {(l.discountPctBps / 100).toFixed(2)}% ·{" "}
+                    {formatLKR(l.discountCents, po.currency)}
+                  </Text>
+                )}
+              </View>
+              <Text style={[styles.colQty, styles.td]}>
+                {Number(l.quantity).toLocaleString("en-LK")}
+              </Text>
+              <Text style={[styles.colUnit, styles.td]}>
+                {formatLKR(l.unitPriceCents, po.currency)}
+              </Text>
+              <View style={styles.colTax}>
+                <Text style={styles.td}>
+                  {l.taxCents > 0 ? formatLKR(l.taxCents, po.currency) : "—"}
+                </Text>
+                {l.taxCents > 0 && (
+                  <Text style={styles.tdMuted}>
+                    {(l.taxRateBps / 100).toFixed(2)}%
+                  </Text>
+                )}
+              </View>
+              <Text style={[styles.colTotal, styles.td]}>
+                {formatLKR(l.lineTotalCents, po.currency)}
+              </Text>
+            </View>
+          ))}
+        </View>
+      );
+
+    case "totals":
+      return (
+        <View key={key} style={styles.totalsBlock}>
+          <View style={styles.totalRow}>
+            <Text style={styles.totalLabel}>Subtotal</Text>
+            <Text style={styles.totalValue}>
+              {formatLKR(po.subtotalCents, po.currency)}
+            </Text>
+          </View>
+          {po.discountCents > 0 && (
+            <View style={styles.totalRow}>
+              <Text style={styles.totalLabel}>Discount</Text>
+              <Text style={styles.totalValue}>
+                -{formatLKR(po.discountCents, po.currency)}
+              </Text>
+            </View>
+          )}
+          <View style={styles.totalRow}>
+            <Text style={styles.totalLabel}>Tax</Text>
+            <Text style={styles.totalValue}>
+              {formatLKR(po.taxCents, po.currency)}
+            </Text>
+          </View>
+          <View style={styles.totalDivider} />
+          <View style={styles.grandTotal}>
+            <Text style={styles.grandLabel}>Order total</Text>
+            <Text style={styles.grandValue}>
+              {formatLKR(po.totalCents, po.currency)}
+            </Text>
+          </View>
+        </View>
+      );
+
+    case "instructions": {
+      const text = (section.text ?? PO_DEFAULT_INSTRUCTIONS_TEXT).replace(
+        "{{poNumber}}",
+        po.poNumber ?? "—",
+      );
+      return (
+        <View key={key} style={styles.instructions} wrap={false}>
+          <Text style={styles.instructionsLabel}>
+            {section.label ?? PO_DEFAULT_INSTRUCTIONS_LABEL}
+          </Text>
+          <Text style={styles.instructionsText}>{text}</Text>
+        </View>
+      );
+    }
+
+    case "notes":
+      if (!po.notes && !po.terms) return null;
+      return (
+        <View key={key} style={styles.notes} wrap={false}>
+          {po.notes && (
+            <>
+              <Text style={styles.notesLabel}>Notes</Text>
+              <Text style={styles.notesText}>{po.notes}</Text>
+            </>
+          )}
+          {po.terms && (
+            <View style={{ marginTop: po.notes ? 14 : 0 }}>
+              <Text style={styles.notesLabel}>Terms</Text>
+              <Text style={styles.notesText}>{po.terms}</Text>
+            </View>
+          )}
+        </View>
+      );
+
+    case "footer":
+      return (
+        <View key={key} style={styles.footer} fixed>
+          <Text>
+            {section.text ?? "Generated with PettahPro — pettahpro.lk"}
+          </Text>
+          <Text>{tenant.businessName}</Text>
+        </View>
+      );
+
+    case "spacer":
+      return <View key={key} style={{ height: section.height ?? 12 }} />;
+
+    case "text": {
+      const s =
+        section.emphasis === "muted"
+          ? styles.textMuted
+          : section.emphasis === "label"
+            ? styles.textLabel
+            : styles.text;
+      return (
+        <Text key={key} style={s}>
+          {section.text}
+        </Text>
+      );
+    }
+
+    default:
+      return null;
+  }
+}
+
+export function renderPurchaseOrderTemplate(
+  layoutRaw: unknown,
+  ctx: PurchaseOrderContext,
+) {
+  const layout = parseLayout(layoutRaw);
+  const styles = buildPurchaseOrderStyles(layout.theme);
+
+  return (
+    <Document
+      title={ctx.purchaseOrder.poNumber ?? "Purchase order"}
+      author={ctx.tenant.businessName}
+      creator="PettahPro"
+      producer="PettahPro"
+    >
+      <Page size={pageSizeProp(layout.pageSize)} style={styles.page}>
+        {layout.sections.map((section, i) =>
+          renderPurchaseOrderSection(section, ctx, styles, i),
         )}
       </Page>
     </Document>
