@@ -8,6 +8,7 @@ import {
   api,
   ApiError,
   type CommissionSalesperson,
+  type CostCenter,
   type Customer,
   type Item,
   type TaxCode,
@@ -65,15 +66,18 @@ export function NewInvoiceClient({
   items,
   taxCodes,
   salespeople,
+  costCenters,
 }: {
   customers: Customer[];
   items: Item[];
   taxCodes: TaxCode[];
   salespeople: CommissionSalesperson[];
+  costCenters: CostCenter[];
 }) {
   const router = useRouter();
   const [customerId, setCustomerId] = useState("");
   const [salespersonUserId, setSalespersonUserId] = useState("");
+  const [costCenterId, setCostCenterId] = useState("");
   const [issueDate, setIssueDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [dueDate, setDueDate] = useState("");
   const [reference, setReference] = useState("");
@@ -184,6 +188,7 @@ export function NewInvoiceClient({
       const { invoice } = await api.createInvoice({
         customerId,
         salespersonUserId: salespersonUserId || undefined,
+        costCenterId: costCenterId || undefined,
         issueDate,
         dueDate: effectiveDueDate || undefined,
         currency: currency.toUpperCase(),
@@ -322,6 +327,28 @@ export function NewInvoiceClient({
                     {salespeople.map((s) => (
                       <option key={s.userId} value={s.userId}>
                         {s.userFullName || s.userEmail}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              {costCenters.length > 0 && (
+                <div className="sm:col-span-2">
+                  <label className="block text-small font-medium text-charcoal">
+                    Cost center{" "}
+                    <span className="text-caption text-text-tertiary">
+                      (P&amp;L roll-up dimension)
+                    </span>
+                  </label>
+                  <select
+                    value={costCenterId}
+                    onChange={(e) => setCostCenterId(e.target.value)}
+                    className="mt-1.5 w-full rounded-md border-hairline border-border-emphasis bg-surface-elevated px-3 py-2.5 text-body text-charcoal focus:border-charcoal focus:outline-none focus:ring-1 focus:ring-charcoal"
+                  >
+                    <option value="">— Unassigned —</option>
+                    {costCenters.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.code} — {c.name}
                       </option>
                     ))}
                   </select>

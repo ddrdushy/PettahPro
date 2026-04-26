@@ -8,6 +8,7 @@ import {
   api,
   ApiError,
   type Account,
+  type CostCenter,
   type Customer,
   type Supplier,
   type CreateJournalEntryLine,
@@ -62,14 +63,17 @@ export function NewJournalClient({
   accounts,
   customers,
   suppliers,
+  costCenters,
 }: {
   accounts: Account[];
   customers: Customer[];
   suppliers: Supplier[];
+  costCenters: CostCenter[];
 }) {
   const router = useRouter();
   const [entryDate, setEntryDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [memo, setMemo] = useState("");
+  const [costCenterId, setCostCenterId] = useState("");
   const [lines, setLines] = useState<LineDraft[]>([emptyLine(), emptyLine()]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -151,6 +155,7 @@ export function NewJournalClient({
       const res = await api.createJournalEntry({
         entryDate,
         memo: memo.trim() || undefined,
+        costCenterId: costCenterId || undefined,
         lines: apiLines,
       });
       if (res.status === "pending_approval") {
@@ -212,6 +217,32 @@ export function NewJournalClient({
             className="mt-1.5 w-full rounded-md border-hairline border-border-emphasis bg-surface-elevated px-3 py-2 text-small text-charcoal focus:border-charcoal focus:outline-none"
           />
         </div>
+        {costCenters.length > 0 && (
+          <div>
+            <label
+              htmlFor="cost-center"
+              className="block text-caption uppercase tracking-wide text-text-tertiary"
+            >
+              Cost center{" "}
+              <span className="text-caption text-text-tertiary">
+                (header tag — applied to every line)
+              </span>
+            </label>
+            <select
+              id="cost-center"
+              value={costCenterId}
+              onChange={(e) => setCostCenterId(e.target.value)}
+              className="mt-1.5 w-full rounded-md border-hairline border-border-emphasis bg-surface-elevated px-3 py-2 text-small text-charcoal focus:border-charcoal focus:outline-none"
+            >
+              <option value="">— Unassigned —</option>
+              {costCenters.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.code} — {c.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
       </section>
 
       <section className="mt-6 overflow-hidden rounded-card border-hairline border-border bg-surface-elevated">

@@ -2993,6 +2993,11 @@ export interface CreateJournalEntryLine {
 export interface CreateJournalEntry {
   entryDate: string;
   memo?: string;
+  // Cost center dimension (#132 / gaps B1 follow-up). Header-level
+  // tag — folded onto every line by postJournal so manual entries
+  // tag once instead of per-line. Per-line override is a future
+  // feature; v1 is header-only.
+  costCenterId?: string;
   lines: CreateJournalEntryLine[];
 }
 
@@ -3281,6 +3286,9 @@ export interface CreateBill {
   currency?: string;
   fxRate?: number;
   notes?: string;
+  // Cost center dimension (#132 / gaps B1 follow-up). Optional;
+  // null/missing = "Unassigned" in the P&L cost-center filter.
+  costCenterId?: string;
   lines: CreateBillLine[];
   charges?: CreateBillCharge[];
   chargeAllocationMethod?: BillChargeAllocationMethod;
@@ -3463,6 +3471,9 @@ export interface CreateInvoiceLine {
 export interface CreateInvoice {
   customerId: string;
   salespersonUserId?: string;
+  // Cost center dimension (#129 / gaps B1). Optional; null/missing
+  // = "Unassigned" in the P&L cost-center filter.
+  costCenterId?: string;
   issueDate?: string;
   dueDate?: string;
   currency?: string;
