@@ -18,7 +18,6 @@ import {
 const KNOWN_FEATURES: string[] = [
   "payroll",
   "approval_workflows",
-  "supplier_portal",
   "ai_bill_entry",
 ];
 

@@ -48,7 +48,7 @@ type Item = {
   // picker instead of the gated page. Shows users what's available on
   // higher tiers without exposing them to a 403. The feature-code
   // strings match the API's `plans.features` JSONB payload.
-  requiresPlanFeature?: "payroll" | "approval_workflows" | "supplier_portal" | "ai_bill_entry";
+  requiresPlanFeature?: "payroll" | "approval_workflows" | "ai_bill_entry";
 };
 type Group = { title?: string; items: Item[] };
 
@@ -192,7 +192,6 @@ const PLAN_FEATURE_COPY: Record<
 > = {
   payroll: { upgradeTo: "Growth" },
   approval_workflows: { upgradeTo: "Scale" },
-  supplier_portal: { upgradeTo: "Scale" },
   ai_bill_entry: { upgradeTo: "Growth" },
 };
 

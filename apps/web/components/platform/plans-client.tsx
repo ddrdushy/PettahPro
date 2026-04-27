@@ -25,7 +25,6 @@ const KNOWN_FEATURES: string[] = [
   // Tier-gated capabilities
   "payroll",
   "ai_bill_entry",
-  "supplier_portal",
   "approval_workflows",
   // Support tiers
   "email_support",

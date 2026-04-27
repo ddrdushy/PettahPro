@@ -58,7 +58,6 @@ export const getPlanFeatures = cache(async (): Promise<string[]> => {
 export type PlanGateFeature =
   | "payroll"
   | "approval_workflows"
-  | "supplier_portal"
   | "ai_bill_entry";
 
 /**
@@ -80,12 +79,6 @@ export const PLAN_GATE_COPY: Record<
     title: "Approval workflows are on the Scale plan",
     description:
       "Route journals, expense claims, purchase orders and more through linear approval chains. Trigger by amount or submitter; route to roles or named users. Upgrade to unlock.",
-    upgradeTo: "Scale",
-  },
-  supplier_portal: {
-    title: "Supplier portal is on the Scale plan",
-    description:
-      "Give suppliers their own login to view POs, upload invoices, and track payment status. Upgrade to unlock.",
     upgradeTo: "Scale",
   },
   ai_bill_entry: {

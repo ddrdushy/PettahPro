@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS plans (
     max_branches int,
     max_warehouses int,
     -- Free-form capability codes — e.g. 'payroll', 'ai_bill_entry',
-    -- 'supplier_portal'. Consumed by requirePlan('supplier_portal').
+    -- 'approval_workflows'. Consumed by requirePlan('payroll') etc.
     -- jsonb > text[] because Drizzle's typescript story is cleaner on
     -- jsonb arrays and the filter-by-feature query uses `?` operator.
     features jsonb NOT NULL DEFAULT '[]'::jsonb,
@@ -177,7 +177,7 @@ INSERT INTO plans (
         'Established businesses with multi-branch operations',
         2990000, 29900000,
         NULL, NULL, NULL, NULL,
-        '["sell", "buy", "inventory", "vat_wht", "cheque_lifecycle", "payroll", "ai_bill_entry", "priority_support", "supplier_portal", "approval_workflows", "phone_support", "dedicated_csm"]'::jsonb,
+        '["sell", "buy", "inventory", "vat_wht", "cheque_lifecycle", "payroll", "ai_bill_entry", "priority_support", "approval_workflows", "phone_support", "dedicated_csm"]'::jsonb,
         30
     )
 ON CONFLICT (code) DO NOTHING;
