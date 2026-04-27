@@ -15,7 +15,7 @@ const sidebars: SidebarsConfig = {
       type: "category",
       label: "Concepts",
       collapsed: false,
-      items: ["concepts/glossary", "concepts/multi-tenant-and-rls"],
+      items: ["concepts/glossary"],
     },
     {
       type: "category",
@@ -32,6 +32,21 @@ const sidebars: SidebarsConfig = {
         // "sell/proforma-invoices",
         // "sell/customer-portal",
         // "sell/pos",
+      ],
+    },
+    {
+      type: "category",
+      label: "Buy",
+      collapsed: true,
+      items: [
+        "buy/bills",
+        "buy/purchase-orders",
+        "buy/grns",
+        // "buy/supplier-payments",
+        // "buy/debit-notes",
+        // "buy/recurring-bills",
+        // "buy/purchase-requisitions",
+        // "buy/landed-cost",
       ],
     },
     {
@@ -70,9 +85,6 @@ const sidebars: SidebarsConfig = {
     // first page lands. Docusaurus refuses to build empty categories,
     // so leaving them out keeps the build green during bootstrap.
     //
-    // - Buy: bills, purchase-orders, grns, supplier-payments,
-    //   debit-notes, recurring-bills, purchase-requisitions,
-    //   landed-cost
     // - Inventory: items, stock-counts, stock-transfers, categories,
     //   bundles, batches-and-serials
     // - Accounting: chart-of-accounts, journal-entries, period-lock,
