@@ -5,6 +5,7 @@ import {
   varchar,
   timestamp,
   integer,
+  smallint,
   index,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
@@ -88,6 +89,19 @@ export const tenantSubscriptions = pgTable(
     customMaxBranches: integer("custom_max_branches"),
     customMaxWarehouses: integer("custom_max_warehouses"),
     customLimitsNote: varchar("custom_limits_note", { length: 500 }),
+    // Dunning workflow (L2). When non-null, the worker should attempt
+    // to charge this subscription at or after this time. Cleared on
+    // success or terminal status transition.
+    nextChargeAttemptAt: timestamp("next_charge_attempt_at", {
+      withTimezone: true,
+    }),
+    // Counter of consecutive failed attempts in the current period.
+    // Resets on success or period rollover. Used by the dunning worker
+    // to look up the next retry interval and to know when to suspend.
+    // smallint (matches the SQL: 100-dunning.sql).
+    consecutiveFailedAttempts: smallint("consecutive_failed_attempts")
+      .notNull()
+      .default(0),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
