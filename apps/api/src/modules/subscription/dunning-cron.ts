@@ -1,5 +1,10 @@
 import { sql } from "drizzle-orm";
 import { schema, type Database } from "@pettahpro/db";
+import {
+  sendDunningEmail,
+  type DunningEmailContext,
+  type DunningEmailKind,
+} from "./dunning-emails.js";
 
 /**
  * Dunning cron — failed-payment retry workflow (pricing-plan-architecture
@@ -108,7 +113,10 @@ async function attemptCharge(
 interface DueSubscription {
   subscription_id: string;
   tenant_id: string;
+  tenant_name: string;
   plan_id: string;
+  plan_name: string;
+  currency: string;
   monthly_price_cents: string; // bigint comes back as string
   yearly_price_cents: string;
   billing_cycle: string;
@@ -122,6 +130,7 @@ interface EffectivePolicy {
   id: string;
   retry_intervals_days: number[];
   suspend_after_attempts: number;
+  email_after_attempts: number[];
   is_paused: boolean;
 }
 
@@ -139,6 +148,7 @@ async function resolvePolicy(
     SELECT id,
            retry_intervals_days,
            suspend_after_attempts,
+           email_after_attempts,
            is_paused
       FROM dunning_policies
      WHERE plan_id = ${planId}
@@ -149,6 +159,7 @@ async function resolvePolicy(
     id: string;
     retry_intervals_days: unknown;
     suspend_after_attempts: number;
+    email_after_attempts: unknown;
     is_paused: boolean;
   }>;
 
@@ -159,6 +170,7 @@ async function resolvePolicy(
       id: "00000000-0000-0000-0000-000000000000",
       retry_intervals_days: [1, 3, 7, 14],
       suspend_after_attempts: 5,
+      email_after_attempts: [1, 3, 5],
       is_paused: false,
     };
   }
@@ -170,6 +182,9 @@ async function resolvePolicy(
       ? (policy.retry_intervals_days as number[])
       : [1, 3, 7, 14],
     suspend_after_attempts: policy.suspend_after_attempts,
+    email_after_attempts: Array.isArray(policy.email_after_attempts)
+      ? (policy.email_after_attempts as number[])
+      : [1, 3, 5],
     is_paused: policy.is_paused,
   };
 }
@@ -199,7 +214,10 @@ export async function runDunningCron(
     dueSubs = (await db.execute(sql`
       SELECT s.id           AS subscription_id,
              s.tenant_id,
+             t.business_name AS tenant_name,
              s.plan_id,
+             p.name          AS plan_name,
+             p.currency,
              p.monthly_price_cents,
              p.yearly_price_cents,
              s.billing_cycle,
@@ -209,6 +227,7 @@ export async function runDunningCron(
              s.consecutive_failed_attempts
         FROM tenant_subscriptions s
         JOIN plans p ON p.id = s.plan_id
+        JOIN tenants t ON t.id = s.tenant_id
        WHERE s.status IN ('active', 'past_due')
          AND s.next_charge_attempt_at IS NOT NULL
          AND s.next_charge_attempt_at <= now()
@@ -315,6 +334,18 @@ export async function runDunningCron(
             attemptNumber,
           },
         });
+
+        // Recovered email — only fire if the subscription was past_due
+        // when this run picked it up (i.e. failed at least once
+        // before). A fresh charge on a previously-clean active sub
+        // doesn't need a "thanks for paying!" email every cycle.
+        if (sub.status === "past_due") {
+          await fireDunningEmail(db, log, "recovered", sub, policy, {
+            attemptNumber,
+            amountCents,
+            nextRetryAt: null,
+          });
+        }
         result.succeeded++;
         continue;
       }
@@ -368,6 +399,17 @@ export async function runDunningCron(
             lastAttemptId: pending!.id,
           },
         });
+
+        // Suspension email — final notice. Always fires regardless of
+        // policy.email_after_attempts (suspension is the most important
+        // event in the lifecycle).
+        await fireDunningEmail(db, log, "suspended", sub, policy, {
+          attemptNumber: newFailedCount,
+          amountCents,
+          nextRetryAt: null,
+          suspendedAt: new Date(),
+          failureReason: charge.failureReason,
+        });
         result.suspended++;
         result.failed++;
       } else {
@@ -396,6 +438,32 @@ export async function runDunningCron(
             policyId: policy.id,
           },
         });
+
+        // Email logic for the failure path. Two flavours:
+        //   - final_warning: only when the NEXT attempt is the last one
+        //     before suspension. Fired regardless of email_after_attempts —
+        //     this is critical-importance.
+        //   - charge_failed: fired when the current attempt_number is in
+        //     policy.email_after_attempts (default [1, 3, 5]).
+        const nextRetryAt = new Date(Date.now() + retryDays * 24 * 60 * 60 * 1000);
+        const nextAttemptIsLast =
+          newFailedCount + 1 === policy.suspend_after_attempts;
+
+        if (nextAttemptIsLast) {
+          await fireDunningEmail(db, log, "final_warning", sub, policy, {
+            attemptNumber: newFailedCount,
+            amountCents,
+            nextRetryAt,
+            failureReason: charge.failureReason,
+          });
+        } else if (policy.email_after_attempts.includes(newFailedCount)) {
+          await fireDunningEmail(db, log, "charge_failed", sub, policy, {
+            attemptNumber: newFailedCount,
+            amountCents,
+            nextRetryAt,
+            failureReason: charge.failureReason,
+          });
+        }
         result.failed++;
       }
     } catch (err) {
@@ -409,6 +477,67 @@ export async function runDunningCron(
 
   log.info({ ...result }, "dunning-cron run complete");
   return result;
+}
+
+/**
+ * Fire a dunning email + audit log entry. Encapsulates the
+ * "render-and-send + log to audit trail" pattern used by all four
+ * email kinds, so the inline call sites stay focused on state-machine
+ * logic rather than email plumbing.
+ *
+ * Failures are non-fatal — an SMTP outage doesn't roll back the
+ * subscription state change. We log loudly + write an audit row with
+ * sent=false so ops can find what didn't go out and resend manually.
+ */
+async function fireDunningEmail(
+  db: Database,
+  log: Log,
+  kind: DunningEmailKind,
+  sub: DueSubscription,
+  policy: EffectivePolicy,
+  extras: {
+    attemptNumber: number;
+    amountCents: number;
+    nextRetryAt: Date | null;
+    suspendedAt?: Date;
+    failureReason?: string;
+  },
+): Promise<void> {
+  const updateUrl = process.env.APP_BASE_URL
+    ? `${process.env.APP_BASE_URL.replace(/\/$/, "")}/app/settings/plan`
+    : undefined;
+
+  const ctx: DunningEmailContext = {
+    tenantId: sub.tenant_id,
+    tenantName: sub.tenant_name,
+    planName: sub.plan_name,
+    amountCents: extras.amountCents,
+    currency: sub.currency,
+    attemptNumber: extras.attemptNumber,
+    suspendAfterAttempts: policy.suspend_after_attempts,
+    nextRetryAt: extras.nextRetryAt,
+    suspendedAt: extras.suspendedAt,
+    failureReason: extras.failureReason,
+    updatePaymentUrl: updateUrl,
+  };
+
+  const result = await sendDunningEmail(db, log, kind, ctx);
+
+  await writeAudit(db, {
+    tenantId: sub.tenant_id,
+    kind: `subscription.email_${kind}`,
+    summary: result.sent
+      ? `Dunning email '${kind}' sent to ${result.recipients.length} recipient(s)`
+      : `Dunning email '${kind}' NOT sent (${result.reason ?? "unknown"})`,
+    metadata: {
+      subscriptionId: sub.subscription_id,
+      kind,
+      recipients: result.recipients,
+      messageId: result.messageId,
+      sent: result.sent,
+      reason: result.reason ?? null,
+    },
+  });
 }
 
 function amountForCycle(sub: DueSubscription): number {
