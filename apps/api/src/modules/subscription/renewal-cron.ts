@@ -325,6 +325,14 @@ export async function runRenewalCron(
                   WHEN 'yearly' THEN interval '365 days'
                   ELSE interval '30 days'
                 END),
+             -- L2 dunning: queue a charge for the new period. The
+             -- dunning cron picks up rows whose next_charge_attempt_at
+             -- is in the past. Setting to now() means "try as soon as
+             -- the dunning cron next runs". For 'active' rows starting
+             -- a new period this is the first attempt; for 'past_due'
+             -- rows the consecutive_failed_attempts counter persists
+             -- so retries continue from where they were.
+             next_charge_attempt_at = now(),
              updated_at = now()
        WHERE status IN ('active', 'past_due')
          AND current_period_end < now()

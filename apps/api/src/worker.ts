@@ -11,6 +11,7 @@ import { runMonthlyDepreciationForAllTenants } from "./modules/accounting/fixed-
 import { runNotificationDigests } from "./modules/notifications/digest-cron.js";
 import { runTrialExpiryJob } from "./modules/subscription/trial-expiry.js";
 import { runRenewalCron } from "./modules/subscription/renewal-cron.js";
+import { runDunningCron } from "./modules/subscription/dunning-cron.js";
 import { runTenantHealthCron } from "./modules/platform-admin/health-cron.js";
 import {
   initErrorTrackingForWorker,
@@ -159,6 +160,22 @@ async function registerSchedules() {
   );
   log.info("scheduled: subscription-renewal-sweep (daily)");
 
+  // Dunning cron (L2 §10). Fires daily AFTER the renewal sweep so it
+  // sees subscriptions whose period has just rolled forward (with
+  // their next_charge_attempt_at populated by renewal-cron). Also
+  // picks up past_due rows due for retry. Idempotent — re-running a
+  // tick that has nothing due is a no-op.
+  await scheduledQueue.add(
+    "subscription-dunning-sweep",
+    {},
+    {
+      repeat: { every: 24 * 60 * 60 * 1000 }, // 24h
+      removeOnComplete: 50,
+      removeOnFail: 50,
+    },
+  );
+  log.info("scheduled: subscription-dunning-sweep (daily)");
+
   // Tenant-health-score sweep (#134). Computes per-tenant churn-risk
   // signal daily and persists to tenant_health_scores. Platform UI
   // reads the latest row per tenant for the at-risk dashboard.
@@ -226,6 +243,9 @@ async function runScheduledJob(name: string): Promise<unknown> {
   }
   if (name === "subscription-renewal-sweep") {
     return runRenewalCron(db, log);
+  }
+  if (name === "subscription-dunning-sweep") {
+    return runDunningCron(db, log);
   }
   if (name === "tenant-health-score-sweep") {
     return runTenantHealthCron(db, log);
