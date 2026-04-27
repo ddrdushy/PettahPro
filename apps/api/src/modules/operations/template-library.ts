@@ -228,6 +228,8 @@ const LIBRARY: readonly LibraryTemplate[] = [
         { type: "footer", text: "Generated with PettahPro — pettahpro.lk" },
       ],
     },
+  },
+  {
     libraryKey: "debit_note_classic",
     docType: "debit_note",
     name: "Classic debit note",
@@ -242,26 +244,6 @@ const LIBRARY: readonly LibraryTemplate[] = [
     name: "Classic settlement letter",
     description:
       "Final settlement letter for a departing employee. Carries hire/exit dates and years of service, single-column earnings + deductions cards, a highlighted Net-payable band, and a Declaration paragraph asserting full-and-final settlement.",
-    libraryKey: "payslip_classic",
-    docType: "payslip",
-    name: "Classic payslip",
-    description:
-      "Two-column earnings/deductions cards, highlighted net-pay band, and optional leave / employer-contribution / bank-disbursement blocks. Each block is its own section so payroll admins can rearrange or drop any optional piece.",
-    libraryKey: "stock_transfer_classic",
-    docType: "stock_transfer",
-    name: "Classic stock transfer",
-    description:
-      "Internal logistics doc. Source-→-destination warehouse pair, three-quantity table (Requested / Dispatched / Received) with discrepancy highlighting, signature block for dispatched-by / received-by sign-off.",
-    libraryKey: "purchase_order_classic",
-    docType: "purchase_order",
-    name: "Classic purchase order",
-    description:
-      "Buyer-issued order with supplier block, line items priced for acknowledgement, totals, and a 'Supplier instructions' callout (PO number quoting + partial-shipment policy).",
-    libraryKey: "proforma_invoice_classic",
-    docType: "proforma_invoice",
-    name: "Classic proforma invoice",
-    description:
-      "Pre-sale doc for advance payment / customs / LC purposes. Same shape as a quotation (validity callout, 'Prepared for') with an italic disclaimer at the bottom — 'this is not a tax invoice'.",
     languages: ["en"],
     layout: {
       pageSize: "a4",
@@ -275,14 +257,44 @@ const LIBRARY: readonly LibraryTemplate[] = [
         { type: "settlementDeclaration" },
         { type: "notes" },
         { type: "settlementSignatures" },
-        { type: "footer" },
+        { type: "footer", text: "Generated with PettahPro — pettahpro.lk" },
+      ],
+    },
+  },
+  {
+    libraryKey: "payslip_classic",
+    docType: "payslip",
+    name: "Classic payslip",
+    description:
+      "Two-column earnings/deductions cards, highlighted net-pay band, and optional leave / employer-contribution / bank-disbursement blocks. Each block is its own section so payroll admins can rearrange or drop any optional piece.",
+    languages: ["en"],
+    layout: {
+      pageSize: "a4",
+      theme: CLASSIC_THEME,
+      sections: [
+        { type: "header", showLogo: true, showStatusPill: true },
         { type: "employeeBlock" },
         { type: "payslipColumns" },
         { type: "netPayBand" },
         { type: "leaveSummary" },
         { type: "employerContributions" },
         { type: "bankDisbursement" },
-        { type: "footer" },
+        { type: "footer", text: "Generated with PettahPro — pettahpro.lk" },
+      ],
+    },
+  },
+  {
+    libraryKey: "stock_transfer_classic",
+    docType: "stock_transfer",
+    name: "Classic stock transfer",
+    description:
+      "Internal logistics doc. Source-→-destination warehouse pair, three-quantity table (Requested / Dispatched / Received) with discrepancy highlighting, signature block for dispatched-by / received-by sign-off.",
+    languages: ["en"],
+    layout: {
+      pageSize: "a4",
+      theme: CLASSIC_THEME,
+      sections: [
+        { type: "header", showLogo: true, showStatusPill: true },
         {
           type: "metaRow",
           fields: [
@@ -296,12 +308,48 @@ const LIBRARY: readonly LibraryTemplate[] = [
         { type: "lineItemsTable" },
         { type: "notes" },
         { type: "signBlock" },
+        { type: "footer", text: "Generated with PettahPro — pettahpro.lk" },
+      ],
+    },
+  },
+  {
+    libraryKey: "purchase_order_classic",
+    docType: "purchase_order",
+    name: "Classic purchase order",
+    description:
+      "Buyer-issued order with supplier block, line items priced for acknowledgement, totals, and a 'Supplier instructions' callout (PO number quoting + partial-shipment policy).",
+    languages: ["en"],
+    layout: {
+      pageSize: "a4",
+      theme: CLASSIC_THEME,
+      sections: [
+        { type: "header", showLogo: true, showStatusPill: true },
+        {
+          type: "metaRow",
           fields: ["orderDate", "expectedDeliveryDate", "reference", "currency"],
         },
         { type: "billFrom" },
         { type: "lineItemsTable" },
         { type: "totals" },
         { type: "instructions" },
+        { type: "footer", text: "Generated with PettahPro — pettahpro.lk" },
+      ],
+    },
+  },
+  {
+    libraryKey: "proforma_invoice_classic",
+    docType: "proforma_invoice",
+    name: "Classic proforma invoice",
+    description:
+      "Pre-sale doc for advance payment / customs / LC purposes. Same shape as a quotation (validity callout, 'Prepared for') with an italic disclaimer at the bottom — 'this is not a tax invoice'.",
+    languages: ["en"],
+    layout: {
+      pageSize: "a4",
+      theme: CLASSIC_THEME,
+      sections: [
+        { type: "header", showLogo: true, showStatusPill: true },
+        {
+          type: "metaRow",
           fields: ["issueDate", "validUntil", "reference", "currency"],
         },
         { type: "billTo" },
