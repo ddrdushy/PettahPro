@@ -600,6 +600,11 @@ export async function getTenantSubscription(tenantId: string): Promise<{
     resumeAt: Date | null;
     reason: string | null;
   };
+  // Dunning state (L2). Lets the tenant-side banner differentiate
+  // "your trial expired" from "your last payment failed". Both surface
+  // as past_due in `status` but the messaging is different.
+  consecutiveFailedAttempts: number;
+  nextChargeAttemptAt: Date | null;
   // Active + pending_removal add-ons (#120). Cancelled addons are
   // hidden from this list — they're audit-only.
   addons: {
@@ -697,6 +702,8 @@ export async function getTenantSubscription(tenantId: string): Promise<{
       resumeAt: row.subscription.resumeAt,
       reason: row.subscription.pauseReason,
     },
+    consecutiveFailedAttempts: row.subscription.consecutiveFailedAttempts,
+    nextChargeAttemptAt: row.subscription.nextChargeAttemptAt,
     addons: await listActiveTenantAddons(tenantId),
   };
 }

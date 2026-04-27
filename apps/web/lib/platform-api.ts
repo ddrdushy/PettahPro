@@ -565,6 +565,40 @@ export const platformApi = {
       method: "PATCH",
       json: body,
     }),
+
+  // L2 dunning ops (#163 + this PR).
+  listDunning: (status: "past_due" | "all" = "all") =>
+    request<DunningListPayload>(
+      `/platform/dunning?status=${status}&limit=200`,
+    ),
+  getDunningTenant: (tenantId: string) =>
+    request<DunningTenantDetail>(`/platform/dunning/tenants/${tenantId}`),
+  dunningRetryNow: (tenantId: string, body: { reason: string }) =>
+    request<{ ok: true }>(
+      `/platform/dunning/tenants/${tenantId}/retry-now`,
+      { method: "POST", json: body },
+    ),
+  dunningMarkPaid: (
+    tenantId: string,
+    body: { reason: string; gatewayReference?: string },
+  ) =>
+    request<{ ok: true }>(
+      `/platform/dunning/tenants/${tenantId}/mark-paid`,
+      { method: "POST", json: body },
+    ),
+  dunningSuspendNow: (tenantId: string, body: { reason: string }) =>
+    request<{ ok: true }>(
+      `/platform/dunning/tenants/${tenantId}/suspend-now`,
+      { method: "POST", json: body },
+    ),
+  dunningPause: (
+    tenantId: string,
+    body: { reason: string; paused: boolean },
+  ) =>
+    request<{ ok: true }>(
+      `/platform/dunning/tenants/${tenantId}/pause`,
+      { method: "POST", json: body },
+    ),
 };
 
 // #60 — observability payload shape. Mirrors SystemHealthPayload in
@@ -978,4 +1012,78 @@ export interface PlatformImpersonationSession {
   endsAt: string;
   endedAt: string | null;
   endedBy: "platform" | "tenant" | "expired" | null;
+}
+
+// Dunning (L2 §10). Mirrors apps/api/.../dunning-routes.ts.
+export interface DunningSubscriptionRow {
+  tenantId: string;
+  tenantName: string;
+  tenantSlug: string;
+  subscriptionId: string;
+  status: string;
+  planCode: string;
+  planName: string;
+  billingCycle: string;
+  currentPeriodStart: string;
+  currentPeriodEnd: string;
+  consecutiveFailedAttempts: number;
+  nextChargeAttemptAt: string | null;
+  policy: {
+    id: string;
+    name: string;
+    isPaused: boolean;
+    suspendAfterAttempts: number;
+  };
+  lastAttempt: {
+    attemptedAt: string;
+    status: string | null;
+    failureReason: string | null;
+  } | null;
+}
+
+export interface DunningListPayload {
+  subscriptions: DunningSubscriptionRow[];
+  counts: {
+    pastDue: number;
+    activeWithFailures: number;
+  };
+}
+
+export interface DunningChargeAttempt {
+  id: string;
+  attemptNumber: number;
+  amountCents: number;
+  periodStart: string;
+  periodEnd: string;
+  status: "pending" | "succeeded" | "failed" | "skipped";
+  attemptedAt: string;
+  completedAt: string | null;
+  gatewayResponse: string | null;
+  failureCode: string | null;
+  failureReason: string | null;
+  triggeredByPlatformUserId: string | null;
+}
+
+export interface DunningTenantDetail {
+  tenant: { id: string; name: string; slug: string };
+  subscription: {
+    id: string;
+    status: string;
+    planCode: string;
+    planName: string;
+    billingCycle: string;
+    currentPeriodStart: string;
+    currentPeriodEnd: string;
+    consecutiveFailedAttempts: number;
+    nextChargeAttemptAt: string | null;
+  };
+  policy: {
+    id: string;
+    name: string;
+    isPaused: boolean;
+    suspendAfterAttempts: number;
+    retryIntervalsDays: number[];
+    gracePeriodDays: number;
+  };
+  attempts: DunningChargeAttempt[];
 }
