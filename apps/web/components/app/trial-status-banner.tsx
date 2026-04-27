@@ -189,10 +189,30 @@ function deriveState(
   }
 
   if (sub.status === "past_due") {
-    // Grace window (#63). Server flips past_due → cancelled after 7
-    // days, so the remaining grace ≈ currentPeriodEnd - now, capped to
-    // what's useful. Display the date rather than a countdown so the
-    // tenant knows the exact deadline.
+    // Two reasons to be past_due:
+    //   1. Trial expired (#63 grace window) — consecutiveFailedAttempts is 0
+    //   2. Subscription charge failed (L2 dunning) — counter > 0
+    // Different messaging for each. Trial-expiry message is the
+    // existing one; dunning message tells the tenant their next retry
+    // and when to update their payment method.
+    const isDunning = (sub.consecutiveFailedAttempts ?? 0) > 0;
+    if (isDunning) {
+      const nextRetry = sub.nextChargeAttemptAt
+        ? new Date(sub.nextChargeAttemptAt)
+        : null;
+      const retryStr = nextRetry
+        ? nextRetry.toLocaleDateString("en-LK", {
+            day: "2-digit",
+            month: "short",
+          })
+        : "soon";
+      return {
+        variant: "warning",
+        message: `Your last payment failed. We'll retry on ${retryStr} — please update your payment method to avoid service disruption.`,
+        ctaLabel: "Update payment",
+        dismissible: false,
+      };
+    }
     const graceEnds = new Date(sub.currentPeriodEnd).getTime();
     const days = daysUntil(graceEnds, now);
     return {

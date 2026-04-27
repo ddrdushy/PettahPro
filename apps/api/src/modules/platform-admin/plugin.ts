@@ -4,6 +4,7 @@ import { platformAdminRoutes } from "./routes.js";
 import { platformImpersonationRoutes } from "./impersonation-routes.js";
 import { revenueAnalyticsRoutes } from "./revenue-routes.js";
 import { tenantHealthRoutes } from "./health-routes.js";
+import { dunningRoutes } from "./dunning-routes.js";
 
 /**
  * Registers all platform-admin routes under `/platform`. Depends on the
@@ -23,6 +24,7 @@ export const platformAdminPlugin: FastifyPluginAsync = fp(
     await fastify.register(platformImpersonationRoutes, { prefix: "/platform" });
     await fastify.register(revenueAnalyticsRoutes, { prefix: "/platform" });
     await fastify.register(tenantHealthRoutes, { prefix: "/platform" });
+    await fastify.register(dunningRoutes, { prefix: "/platform" });
   },
   { name: "platform-admin", dependencies: ["identity"] },
 );

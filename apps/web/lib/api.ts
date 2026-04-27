@@ -5638,6 +5638,11 @@ export interface TenantSubscriptionResponse {
     resumeAt: string | null;
     reason: string | null;
   };
+  // Dunning (L2 PR B). Differentiates trial-expiry past_due from
+  // payment-failure past_due. Banner uses these to render the right
+  // message ("trial ended" vs "your last payment failed, retry on…").
+  consecutiveFailedAttempts?: number;
+  nextChargeAttemptAt?: string | null;
   // Per-tenant quota overrides (#71). Every field null = "no custom
   // contract, use the plan's caps." A non-null integer replaces the
   // plan's cap for that resource. The tenant's own settings page (#72)
