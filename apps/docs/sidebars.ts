@@ -99,6 +99,24 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: "category",
+      label: "Reports",
+      collapsed: true,
+      items: [
+        "reports/trial-balance",
+        "reports/profit-loss",
+        "reports/balance-sheet",
+        "reports/general-ledger",
+        "reports/vat-return",
+        "reports/cash-flow",
+        "reports/aging",
+        "reports/exec-kpis",
+        "reports/trends",
+        "reports/budget-vs-actual",
+        "reports/three-way-match",
+      ],
+    },
+    {
+      type: "category",
       label: "Settings",
       collapsed: true,
       items: [
@@ -113,15 +131,21 @@ const sidebars: SidebarsConfig = {
         // "settings/demo-data",
       ],
     },
-    // Categories below are TODO — each will be uncommented when its
-    // first page lands. Docusaurus refuses to build empty categories,
-    // so leaving them out keeps the build green during bootstrap.
-    //
-    // - Reports: trial-balance, profit-loss, balance-sheet,
-    //   general-ledger, vat-return, cash-flow, aging, exec-kpis,
-    //   trends, budget-vs-actual, three-way-match
-    // - Platform admin: overview, tenants, impersonation, plans,
-    //   addons, coupons, revenue, tenant-health
+    {
+      type: "category",
+      label: "Platform admin",
+      collapsed: true,
+      items: [
+        "platform/overview",
+        "platform/tenants",
+        "platform/impersonation",
+        "platform/plans",
+        "platform/addons",
+        "platform/coupons",
+        "platform/revenue",
+        "platform/tenant-health",
+      ],
+    },
   ],
 };
 
