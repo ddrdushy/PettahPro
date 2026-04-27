@@ -57,9 +57,9 @@ const sidebars: SidebarsConfig = {
         "inventory/items",
         "inventory/stock-counts",
         "inventory/bundles",
-        // "inventory/stock-transfers",
-        // "inventory/categories",
-        // "inventory/batches-and-serials",
+        "inventory/stock-transfers",
+        "inventory/categories",
+        "inventory/batches-and-serials",
       ],
     },
     {
