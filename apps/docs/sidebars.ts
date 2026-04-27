@@ -51,6 +51,25 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: "category",
+      label: "Accounting",
+      collapsed: true,
+      items: [
+        "accounting/chart-of-accounts",
+        "accounting/journal-entries",
+        "accounting/period-lock",
+        // "accounting/cost-centers",
+        // "accounting/budgets",
+        // "accounting/wht",
+        // "accounting/fx-revaluation",
+        // "accounting/petty-cash",
+        // "accounting/bank-reconciliation",
+        // "accounting/cheques",
+        // "accounting/fixed-assets",
+        // "accounting/opening-balance",
+      ],
+    },
+    {
+      type: "category",
       label: "HR & Payroll",
       collapsed: true,
       items: [
@@ -87,9 +106,6 @@ const sidebars: SidebarsConfig = {
     //
     // - Inventory: items, stock-counts, stock-transfers, categories,
     //   bundles, batches-and-serials
-    // - Accounting: chart-of-accounts, journal-entries, period-lock,
-    //   cost-centers, budgets, wht, fx-revaluation, petty-cash,
-    //   bank-reconciliation, cheques, fixed-assets, opening-balance
     // - Reports: trial-balance, profit-loss, balance-sheet,
     //   general-ledger, vat-return, cash-flow, aging, exec-kpis,
     //   trends, budget-vs-actual, three-way-match
