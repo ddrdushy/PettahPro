@@ -51,6 +51,19 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: "category",
+      label: "Inventory",
+      collapsed: true,
+      items: [
+        "inventory/items",
+        "inventory/stock-counts",
+        "inventory/bundles",
+        // "inventory/stock-transfers",
+        // "inventory/categories",
+        // "inventory/batches-and-serials",
+      ],
+    },
+    {
+      type: "category",
       label: "Accounting",
       collapsed: true,
       items: [
@@ -104,8 +117,6 @@ const sidebars: SidebarsConfig = {
     // first page lands. Docusaurus refuses to build empty categories,
     // so leaving them out keeps the build green during bootstrap.
     //
-    // - Inventory: items, stock-counts, stock-transfers, categories,
-    //   bundles, batches-and-serials
     // - Reports: trial-balance, profit-loss, balance-sheet,
     //   general-ledger, vat-return, cash-flow, aging, exec-kpis,
     //   trends, budget-vs-actual, three-way-match
