@@ -14,21 +14,22 @@ import type {
   CreditNoteLinkedInvoice,
   CreditNoteReason,
   Customer,
-  DeliveryNoteDetail,
-  DeliveryNoteLine,
   DebitNoteDetail,
   DebitNoteLine,
   DebitNoteLinkedBill,
   DebitNoteReason,
+  DeliveryNoteDetail,
+  DeliveryNoteLine,
   FinalSettlementRow,
   InvoiceDetail,
   InvoiceLine,
   PayrollRun,
   PayrollRunLine,
-  PurchaseOrderDetail,
-  PurchaseOrderLine,
+  PayrollRunLineComponent,
   ProformaInvoiceDetail,
   ProformaInvoiceLine,
+  PurchaseOrderDetail,
+  PurchaseOrderLine,
   QuotationDetail,
   QuotationLine,
   StockTransferDetail,
@@ -114,50 +115,6 @@ type Section =
   // invoice) and debit notes (against a bill) so the recipient can
   // see what the credit/debit applies to.
   | { type: "linkedDocument" }
-  // Settlement-letter sections (M2 #10). Settlement-specific names
-  // because the body is bespoke — employee header (with hire/exit
-  // dates rather than NIC/EPF), single-column earnings + deductions
-  // cards, highlighted net-payable band, declaration paragraph, and
-  // a 2-column signature block. Distinct from payslip's similar
-  // section names so the two renderers can ship independently
-  // without collision.
-  | { type: "settlementEmployee" }
-  | { type: "settlementEarnings" }
-  | { type: "settlementDeductions" }
-  | { type: "settlementNetPay"; label?: string }
-  | { type: "settlementDeclaration"; text?: string }
-  | { type: "settlementSignatures" }
-  // Payslip-specific sections (M2 #9). The body of a payslip is too
-  // bespoke to compose from invoice-style primitives, so each block
-  // is its own section type, all driven by PayrollRunLine fields.
-  | { type: "employeeBlock" }
-  | { type: "payslipColumns" }
-  | { type: "netPayBand"; label?: string }
-  | { type: "leaveSummary" }
-  | { type: "employerContributions" }
-  | { type: "bankDisbursement" }
-  // Source → destination warehouse row used by stock transfers.
-  // Renders the source warehouse name + code on the left, an arrow,
-  // and the destination on the right.
-  | { type: "warehouseRow" }
-  // Signature block for paper sign-off — used on stock transfers
-  // (Dispatched-by / Received-by) and delivery notes.
-  // Labelled callout — used for PO supplier instructions and
-  // similar boilerplate. Both label and text are template-overridable.
-  // Generic enough to reuse on stock_transfer / settlement_letter.
-  | { type: "instructions"; label?: string; text?: string }
-  // Italic disclaimer / legal notice block — used by proforma
-  // invoices for the "this is not a tax invoice" copy and by
-  // settlement letters for the "final and binding" clause.
-  | { type: "disclaimer"; text?: string }
-  // Two-column "Deliver to" + "Shipping address" block used by
-  // delivery notes. Customer-facing left column, free-form ship-to
-  // right column when the DN carries an explicit shipping address.
-  | { type: "partiesRow" }
-  // Signature block for paper sign-off — used on delivery notes and
-  // stock transfers. Renders side-by-side dotted lines with role
-  // labels under each.
-  | { type: "signBlock"; leftLabel?: string; rightLabel?: string }
   | { type: "totals"; showTaxBreakdown?: boolean }
   | { type: "notes" }
   | { type: "footer"; text?: string }
@@ -166,7 +123,38 @@ type Section =
       type: "text";
       text: string;
       emphasis?: "default" | "muted" | "label";
-    };
+    }
+  // Two-column "Deliver to" / shipping-address row used by the delivery
+  // note. Renders nothing when neither column has data.
+  | { type: "partiesRow" }
+  // Source-→-destination warehouse row used by stock transfers.
+  | { type: "warehouseRow" }
+  // "Delivered/dispatched by" + "Received by" sign-off block — used by
+  // delivery notes and stock transfers.
+  | { type: "signBlock" }
+  // Buyer-side instructions callout on a purchase order ("quote PO #
+  // on your invoice", partial-shipment policy etc.).
+  | { type: "instructions" }
+  // Italic "this is not a tax invoice" paragraph rendered at the
+  // bottom of a proforma invoice.
+  | { type: "disclaimer" }
+  // Payslip sections — every block is its own section so payroll
+  // admins can rearrange or drop optional pieces.
+  | { type: "employeeBlock" }
+  | { type: "payslipColumns" }
+  | { type: "netPayBand" }
+  | { type: "leaveSummary" }
+  | { type: "employerContributions" }
+  | { type: "bankDisbursement" }
+  // Settlement-letter sections — the doc has two single-column
+  // earnings/deductions cards plus a declaration paragraph and
+  // signature block, none of which fit the generic shapes above.
+  | { type: "settlementEmployee" }
+  | { type: "settlementEarnings" }
+  | { type: "settlementDeductions" }
+  | { type: "settlementNetPay" }
+  | { type: "settlementDeclaration" }
+  | { type: "settlementSignatures" };
 
 type Layout = {
   pageSize: PageSize;
@@ -1795,107 +1783,6 @@ export function renderCreditNoteTemplate(
 }
 
 // -----------------------------------------------------------------
-// Delivery note context + renderer (M2 #5/10)
-//
-// DN is a logistics doc: no money, just a record of what physically
-// left the warehouse and went to the customer. New section types
-// `partiesRow` (two-column Deliver-to + Shipping-address) and
-// `signBlock` (Delivered by / Received by) capture the doc's two
-// distinguishing pieces. Line items table is qty-only — no prices
-// because the DN is not a fiscal document.
-// -----------------------------------------------------------------
-export type DeliveryNoteContext = {
-  docType: "delivery_note";
-  tenant: Pick<Tenant, "businessName">;
-  deliveryNote: DeliveryNoteDetail;
-  lines: DeliveryNoteLine[];
-  customer: Customer | null;
-  logoDataUrl?: string | null;
-};
-
-export function buildDeliveryNoteContext(args: {
-  tenant: Pick<Tenant, "businessName">;
-  deliveryNote: DeliveryNoteDetail;
-  lines: DeliveryNoteLine[];
-  customer: Customer | null;
-  logoDataUrl?: string | null;
-}): DeliveryNoteContext {
-  return { docType: "delivery_note", ...args };
-}
-
-function buildDeliveryNoteStyles(theme: Theme) {
-  const base = buildInvoiceStyles(theme);
-  return StyleSheet.create({
-    ...base,
-    partiesRow: {
-      flexDirection: "row",
-      gap: 24,
-      marginBottom: 24,
-    },
-    partyCol: { flex: 1 },
-    partyLabel: {
-      fontSize: 8,
-      textTransform: "uppercase",
-      letterSpacing: 0.8,
-      color: theme.textTertiary,
-      marginBottom: 6,
-    },
-    partyName: {
-      fontSize: 12,
-      fontFamily: `${theme.fontFamily}-Bold`,
-      marginBottom: 2,
-    },
-    partyLine: { color: theme.textSecondary, marginTop: 2 },
-    // DN line items are qty-only — override the standard column
-    // widths so Description gets all the room.
-    dnColNum: { width: 24, textAlign: "center" },
-    dnColDesc: { flex: 1, paddingRight: 8 },
-    dnColQty: { width: 100, textAlign: "right" },
-    signBlock: {
-      flexDirection: "row",
-      gap: 24,
-      marginTop: 32,
-    },
-    signCol: { flex: 1 },
-    signLine: {
-      borderTop: `0.5pt solid ${theme.textPrimary}`,
-      paddingTop: 8,
-      minHeight: 56,
-    },
-    signLabel: {
-      fontSize: 8,
-      textTransform: "uppercase",
-      letterSpacing: 0.8,
-      color: theme.textTertiary,
-    },
-    signName: {
-      marginTop: 4,
-      fontSize: 10,
-      color: theme.textPrimary,
-    },
-  });
-}
-
-function formatDnQty(n: string | number): string {
-  return Number(n).toLocaleString("en-LK", {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 4,
-  });
-}
-
-function renderDeliveryNoteSection(
-  section: Section,
-  ctx: DeliveryNoteContext,
-  styles: ReturnType<typeof buildDeliveryNoteStyles>,
-  key: number,
-) {
-  const { deliveryNote, lines, customer, tenant } = ctx;
-  const shipAddress = [
-    deliveryNote.shippingAddressLine1,
-    deliveryNote.shippingAddressLine2,
-    deliveryNote.shippingCity,
-    deliveryNote.shippingPostalCode,
-  ].filter(Boolean) as string[];
 // Debit note context + renderer (M2 #4/10)
 //
 // AP-side counterpart to credit notes. Differs in three places:
@@ -1961,12 +1848,6 @@ function renderDebitNoteSection(
             <Text style={styles.tenantMeta}>Sri Lanka</Text>
           </View>
           <View style={styles.invoiceHeader}>
-            <Text style={styles.invoiceLabel}>Delivery note</Text>
-            <Text style={styles.invoiceNumber}>
-              {deliveryNote.dnNumber ?? "Draft"}
-            </Text>
-            {section.showStatusPill !== false && (
-              <Text style={styles.statusPill}>{deliveryNote.status}</Text>
             <Text style={styles.invoiceLabel}>Debit Note</Text>
             <Text style={styles.invoiceNumber}>{docNumber}</Text>
             {section.showStatusPill !== false && (
@@ -1976,38 +1857,6 @@ function renderDebitNoteSection(
         </View>
       );
 
-    case "metaRow": {
-      const fields = section.fields ?? [
-        "deliveryDate",
-        "carrier",
-        "trackingNumber",
-        "deliveredAt",
-      ];
-      const cells: Array<{ label: string; value: string | null }> = fields.map(
-        (f) => {
-          if (f === "deliveryDate")
-            return {
-              label: "Delivery date",
-              value: formatDate(deliveryNote.deliveryDate),
-            };
-          if (f === "carrier")
-            return { label: "Carrier", value: deliveryNote.carrier ?? null };
-          if (f === "trackingNumber")
-            return {
-              label: "Tracking #",
-              value: deliveryNote.trackingNumber ?? null,
-            };
-          if (f === "deliveredAt")
-            return {
-              label: "Delivered",
-              value: deliveryNote.deliveredAt
-                ? formatDate(deliveryNote.deliveredAt.slice(0, 10))
-                : null,
-            };
-          if (f === "dnNumber")
-            return {
-              label: "DN #",
-              value: deliveryNote.dnNumber ?? null,
     case "draftBanner":
       if (debitNote.status !== "draft") return null;
       return (
@@ -2073,55 +1922,6 @@ function renderDebitNoteSection(
       );
     }
 
-    case "partiesRow":
-      if (!customer && shipAddress.length === 0) return null;
-      return (
-        <View key={key} style={styles.partiesRow}>
-          {customer && (
-            <View style={styles.partyCol}>
-              <Text style={styles.partyLabel}>Deliver to</Text>
-              <Text style={styles.partyName}>{customer.name}</Text>
-              {customer.addressLine1 && (
-                <Text style={styles.partyLine}>{customer.addressLine1}</Text>
-              )}
-              {customer.addressLine2 && (
-                <Text style={styles.partyLine}>{customer.addressLine2}</Text>
-              )}
-              {customer.city && (
-                <Text style={styles.partyLine}>{customer.city}</Text>
-              )}
-              {customer.phone && (
-                <Text style={styles.partyLine}>{customer.phone}</Text>
-              )}
-            </View>
-          )}
-          {shipAddress.length > 0 && (
-            <View style={styles.partyCol}>
-              <Text style={styles.partyLabel}>Shipping address</Text>
-              {shipAddress.map((line, i) => (
-                <Text key={i} style={styles.partyLine}>
-                  {line}
-                </Text>
-              ))}
-            </View>
-          )}
-        </View>
-      );
-
-    // billTo on a DN context falls back to a single-column Deliver-to
-    // so a generic library template that contains {type:"billTo"}
-    // still renders the customer block usefully.
-    case "billTo":
-      if (!customer) return null;
-      return (
-        <View key={key} style={styles.billTo}>
-          <Text style={styles.billToLabel}>Deliver to</Text>
-          <Text style={styles.billToName}>{customer.name}</Text>
-          {customer.addressLine1 && (
-            <Text style={styles.billToLine}>{customer.addressLine1}</Text>
-          )}
-          {customer.city && (
-            <Text style={styles.billToLine}>{customer.city}</Text>
     case "linkedDocument":
       if (!bill) return null;
       return (
@@ -2181,16 +1981,6 @@ function renderDebitNoteSection(
       return (
         <View key={key} style={styles.table}>
           <View style={[styles.row, styles.rowHeader]}>
-            <Text style={[styles.dnColNum, styles.th]}>#</Text>
-            <Text style={[styles.dnColDesc, styles.th]}>Description</Text>
-            <Text style={[styles.dnColQty, styles.th]}>Qty delivered</Text>
-          </View>
-          {lines.map((l) => (
-            <View key={l.id} style={styles.row} wrap={false}>
-              <Text style={[styles.dnColNum, styles.td]}>{l.lineNo}</Text>
-              <Text style={[styles.dnColDesc, styles.td]}>{l.description}</Text>
-              <Text style={[styles.dnColQty, styles.td]}>
-                {formatDnQty(l.quantity)}
             <Text style={[styles.colNum, styles.th]}>#</Text>
             <Text style={[styles.colDesc, styles.th]}>Description</Text>
             <Text style={[styles.colQty, styles.th]}>Qty</Text>
@@ -2234,37 +2024,6 @@ function renderDebitNoteSection(
         </View>
       );
 
-    case "notes":
-      if (!deliveryNote.notes) return null;
-      return (
-        <View key={key} style={styles.notes} wrap={false}>
-          <Text style={styles.notesLabel}>Notes</Text>
-          <Text style={styles.notesText}>{deliveryNote.notes}</Text>
-        </View>
-      );
-
-    case "signBlock":
-      return (
-        <View key={key} style={styles.signBlock} wrap={false}>
-          <View style={styles.signCol}>
-            <View style={styles.signLine}>
-              <Text style={styles.signLabel}>
-                {section.leftLabel ?? "Delivered by (name & signature)"}
-              </Text>
-            </View>
-          </View>
-          <View style={styles.signCol}>
-            <View style={styles.signLine}>
-              <Text style={styles.signLabel}>
-                {section.rightLabel ?? "Received by (name & signature)"}
-              </Text>
-              {deliveryNote.receivedByName && (
-                <Text style={styles.signName}>
-                  {deliveryNote.receivedByName}
-                </Text>
-              )}
-            </View>
-          </View>
     case "totals":
       return (
         <View key={key} style={styles.totalsBlock}>
@@ -2338,9 +2097,326 @@ function renderDebitNoteSection(
     case "footer":
       return (
         <View key={key} style={styles.footer} fixed>
-          <Text>
-            {section.text ?? "Generated with PettahPro — pettahpro.lk"}
-          </Text>
+          <Text>{section.text ?? "Generated with PettahPro — pettahpro.lk"}</Text>
+          <Text>{tenant.businessName}</Text>
+        </View>
+      );
+
+    case "spacer":
+      return <View key={key} style={{ height: section.height ?? 12 }} />;
+
+    case "text": {
+      const s =
+        section.emphasis === "muted"
+          ? styles.textMuted
+          : section.emphasis === "label"
+            ? styles.textLabel
+            : styles.text;
+      return (
+        <Text key={key} style={s}>
+          {section.text}
+        </Text>
+      );
+    }
+
+    default:
+      return null;
+  }
+}
+
+export function renderDebitNoteTemplate(
+  layoutRaw: unknown,
+  ctx: DebitNoteContext,
+) {
+  const layout = parseLayout(layoutRaw);
+  const styles = buildDebitNoteStyles(layout.theme);
+
+  return (
+    <Document
+      title={ctx.debitNote.internalReference ?? "Debit note"}
+      author={ctx.tenant.businessName}
+      creator="PettahPro"
+      producer="PettahPro"
+    >
+      <Page size={pageSizeProp(layout.pageSize)} style={styles.page}>
+        {layout.sections.map((section, i) =>
+          renderDebitNoteSection(section, ctx, styles, i),
+        )}
+      </Page>
+    </Document>
+  );
+}
+
+// -----------------------------------------------------------------
+// Delivery note context + renderer (M2 #5/10)
+//
+// DN-specific behaviour: logistics doc — no money. Sections are
+// header / metaRow / partiesRow (deliver-to + shipping address) /
+// lineItemsTable (qty-only, no prices) / notes / signBlock /
+// footer. Mirrors apps/web/lib/delivery-note-pdf.tsx.
+// -----------------------------------------------------------------
+export type DeliveryNoteContext = {
+  docType: "delivery_note";
+  tenant: Pick<Tenant, "businessName">;
+  deliveryNote: DeliveryNoteDetail;
+  lines: DeliveryNoteLine[];
+  customer: Customer | null;
+  logoDataUrl?: string | null;
+};
+
+export function buildDeliveryNoteContext(args: {
+  tenant: Pick<Tenant, "businessName">;
+  deliveryNote: DeliveryNoteDetail;
+  lines: DeliveryNoteLine[];
+  customer: Customer | null;
+  logoDataUrl?: string | null;
+}): DeliveryNoteContext {
+  return { docType: "delivery_note", ...args };
+}
+
+function buildDeliveryNoteStyles(theme: Theme) {
+  const base = buildInvoiceStyles(theme);
+  return StyleSheet.create({
+    ...base,
+    partiesRow: {
+      flexDirection: "row",
+      gap: 24,
+      marginBottom: 20,
+    },
+    partyCol: { flex: 1 },
+    partyLabel: {
+      fontSize: 8,
+      textTransform: "uppercase",
+      letterSpacing: 0.8,
+      color: theme.textTertiary,
+      marginBottom: 6,
+    },
+    partyName: { fontSize: 12, fontFamily: `${theme.fontFamily}-Bold` },
+    partyLine: { color: theme.textSecondary, marginTop: 2 },
+
+    dnTable: {
+      borderTop: `0.5pt solid ${theme.borderColor}`,
+      marginBottom: 24,
+    },
+    dnColQty: { width: 100, textAlign: "right" },
+
+    signBlock: {
+      marginTop: 40,
+      flexDirection: "row",
+      gap: 40,
+    },
+    signCol: { flex: 1 },
+    signLine: {
+      borderTop: `0.5pt solid ${theme.textPrimary}`,
+      marginTop: 48,
+      paddingTop: 6,
+    },
+    signLabel: {
+      fontSize: 9,
+      color: theme.textTertiary,
+    },
+    signName: { fontSize: 10, color: theme.textPrimary, marginTop: 2 },
+  });
+}
+
+function formatQty(n: string | number | null | undefined): string {
+  if (n === null || n === undefined) return "—";
+  return Number(n).toLocaleString("en-LK", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 4,
+  });
+}
+
+function renderDeliveryNoteSection(
+  section: Section,
+  ctx: DeliveryNoteContext,
+  styles: ReturnType<typeof buildDeliveryNoteStyles>,
+  key: number,
+) {
+  const { deliveryNote, lines, customer, tenant } = ctx;
+  const docNumber = deliveryNote.dnNumber ?? "Draft";
+
+  switch (section.type) {
+    case "header":
+      return (
+        <View key={key} style={styles.header} fixed>
+          <View style={styles.tenantBlock}>
+            {section.showLogo !== false && (
+              <PdfLogoBlock logoDataUrl={ctx.logoDataUrl} />
+            )}
+            <Text style={styles.tenantName}>{tenant.businessName}</Text>
+            <Text style={styles.tenantMeta}>Sri Lanka</Text>
+          </View>
+          <View style={styles.invoiceHeader}>
+            <Text style={styles.invoiceLabel}>Delivery note</Text>
+            <Text style={styles.invoiceNumber}>{docNumber}</Text>
+            {section.showStatusPill !== false && (
+              <Text style={styles.statusPill}>{deliveryNote.status}</Text>
+            )}
+          </View>
+        </View>
+      );
+
+    case "metaRow": {
+      const fields = section.fields ?? [
+        "deliveryDate",
+        "carrier",
+        "trackingNumber",
+        "deliveredAt",
+      ];
+      const cells: Array<{ label: string; value: string | null }> = fields.map(
+        (f) => {
+          if (f === "deliveryDate")
+            return {
+              label: "Delivery date",
+              value: formatDate(deliveryNote.deliveryDate),
+            };
+          if (f === "carrier")
+            return { label: "Carrier", value: deliveryNote.carrier ?? null };
+          if (f === "trackingNumber")
+            return {
+              label: "Tracking #",
+              value: deliveryNote.trackingNumber ?? null,
+            };
+          if (f === "deliveredAt")
+            return {
+              label: "Delivered",
+              value: deliveryNote.deliveredAt
+                ? formatDate(deliveryNote.deliveredAt.slice(0, 10))
+                : null,
+            };
+          if (f === "dnNumber")
+            return {
+              label: "Delivery note #",
+              value: deliveryNote.dnNumber ?? null,
+            };
+          return { label: f, value: null };
+        },
+      );
+      return (
+        <View key={key} style={styles.metaRow}>
+          {cells
+            .filter((c) => c.value !== null)
+            .map((c, i) => (
+              <View key={i} style={styles.metaCell}>
+                <Text style={styles.metaLabel}>{c.label}</Text>
+                <Text style={styles.metaValue}>{c.value}</Text>
+              </View>
+            ))}
+        </View>
+      );
+    }
+
+    case "partiesRow": {
+      const shipAddress = [
+        deliveryNote.shippingAddressLine1,
+        deliveryNote.shippingAddressLine2,
+        deliveryNote.shippingCity,
+        deliveryNote.shippingPostalCode,
+      ].filter((l): l is string => Boolean(l));
+      if (!customer && shipAddress.length === 0) return null;
+      return (
+        <View key={key} style={styles.partiesRow}>
+          {customer && (
+            <View style={styles.partyCol}>
+              <Text style={styles.partyLabel}>Deliver to</Text>
+              <Text style={styles.partyName}>{customer.name}</Text>
+              {customer.addressLine1 && (
+                <Text style={styles.partyLine}>{customer.addressLine1}</Text>
+              )}
+              {customer.addressLine2 && (
+                <Text style={styles.partyLine}>{customer.addressLine2}</Text>
+              )}
+              {customer.city && (
+                <Text style={styles.partyLine}>{customer.city}</Text>
+              )}
+              {customer.phone && (
+                <Text style={styles.partyLine}>{customer.phone}</Text>
+              )}
+            </View>
+          )}
+          {shipAddress.length > 0 && (
+            <View style={styles.partyCol}>
+              <Text style={styles.partyLabel}>Shipping address</Text>
+              {shipAddress.map((line, i) => (
+                <Text key={i} style={styles.partyLine}>
+                  {line}
+                </Text>
+              ))}
+            </View>
+          )}
+        </View>
+      );
+    }
+
+    // billTo on a delivery note falls through to the partiesRow so a
+    // template cloned from a generic library entry doesn't render an
+    // empty block.
+    case "billTo":
+      return renderDeliveryNoteSection(
+        { type: "partiesRow" },
+        ctx,
+        styles,
+        key,
+      );
+
+    case "lineItemsTable":
+      return (
+        <View key={key} style={styles.dnTable}>
+          <View style={[styles.row, styles.rowHeader]}>
+            <Text style={[styles.colNum, styles.th]}>#</Text>
+            <Text style={[styles.colDesc, styles.th]}>Description</Text>
+            <Text style={[styles.dnColQty, styles.th]}>Qty delivered</Text>
+          </View>
+          {lines.map((l) => (
+            <View key={l.id} style={styles.row} wrap={false}>
+              <Text style={[styles.colNum, styles.td]}>{l.lineNo}</Text>
+              <Text style={[styles.colDesc, styles.td]}>{l.description}</Text>
+              <Text style={[styles.dnColQty, styles.td]}>
+                {formatQty(l.quantity)}
+              </Text>
+            </View>
+          ))}
+        </View>
+      );
+
+    case "notes":
+      if (!deliveryNote.notes) return null;
+      return (
+        <View key={key} style={styles.notes} wrap={false}>
+          <Text style={styles.notesLabel}>Notes</Text>
+          <Text style={styles.notesText}>{deliveryNote.notes}</Text>
+        </View>
+      );
+
+    case "signBlock":
+      return (
+        <View key={key} style={styles.signBlock} wrap={false}>
+          <View style={styles.signCol}>
+            <View style={styles.signLine}>
+              <Text style={styles.signLabel}>
+                Delivered by (name &amp; signature)
+              </Text>
+            </View>
+          </View>
+          <View style={styles.signCol}>
+            <View style={styles.signLine}>
+              <Text style={styles.signLabel}>
+                Received by (name &amp; signature)
+              </Text>
+              {deliveryNote.receivedByName && (
+                <Text style={styles.signName}>
+                  {deliveryNote.receivedByName}
+                </Text>
+              )}
+            </View>
+          </View>
+        </View>
+      );
+
+    case "footer":
+      return (
+        <View key={key} style={styles.footer} fixed>
           <Text>{section.text ?? "Generated with PettahPro — pettahpro.lk"}</Text>
           <Text>{tenant.businessName}</Text>
         </View>
@@ -2378,16 +2454,6 @@ export function renderDeliveryNoteTemplate(
   return (
     <Document
       title={ctx.deliveryNote.dnNumber ?? "Delivery note"}
-export function renderDebitNoteTemplate(
-  layoutRaw: unknown,
-  ctx: DebitNoteContext,
-) {
-  const layout = parseLayout(layoutRaw);
-  const styles = buildDebitNoteStyles(layout.theme);
-
-  return (
-    <Document
-      title={ctx.debitNote.internalReference ?? "Debit note"}
       author={ctx.tenant.businessName}
       creator="PettahPro"
       producer="PettahPro"
@@ -2395,7 +2461,6 @@ export function renderDebitNoteTemplate(
       <Page size={pageSizeProp(layout.pageSize)} style={styles.page}>
         {layout.sections.map((section, i) =>
           renderDeliveryNoteSection(section, ctx, styles, i),
-          renderDebitNoteSection(section, ctx, styles, i),
         )}
       </Page>
     </Document>
@@ -2403,242 +2468,729 @@ export function renderDebitNoteTemplate(
 }
 
 // -----------------------------------------------------------------
-// Settlement letter context + renderer (M2 #10/10 — final)
+// Proforma invoice context + renderer (M2 #6/10)
 //
-// HR doc issued to a departing employee. Bespoke shape: employee
-// block carries hire/exit dates and years-of-service rather than
-// the payslip's NIC/EPF; earnings and deductions are single-column
-// cards (deductions combines statutory + others); a fixed
-// "Declaration" paragraph asserts full-and-final settlement; a
-// 2-column signature block at the bottom is for employee +
-// authorised signatory sign-off. Section types use the `settlement`
-// prefix to ship independently of payslip's similar set.
+// Pre-sale doc — same shape as a quotation (validity callout,
+// "Prepared for") with an italic "this is not a tax invoice"
+// disclaimer at the bottom. Status set: draft / sent / converted /
+// cancelled. Mirrors apps/web/lib/proforma-pdf.tsx.
 // -----------------------------------------------------------------
-const SETTLEMENT_DEFAULT_DECLARATION =
-  "This letter sets out the final settlement payable to the employee on cessation of employment. The amount shown is inclusive of all statutory entitlements including gratuity (where applicable), EPF/ETF, and is in full and final settlement of all dues between employer and employee. On receipt of this payment the employee has no further monetary claims against the employer arising out of the employment.";
-
-export type SettlementContext = {
-  docType: "settlement_letter";
+export type ProformaInvoiceContext = {
+  docType: "proforma_invoice";
   tenant: Pick<Tenant, "businessName">;
-  settlement: FinalSettlementRow;
+  proformaInvoice: ProformaInvoiceDetail;
+  lines: ProformaInvoiceLine[];
+  customer: Customer | null;
   logoDataUrl?: string | null;
 };
 
-export function buildSettlementContext(args: {
+export function buildProformaInvoiceContext(args: {
   tenant: Pick<Tenant, "businessName">;
-  settlement: FinalSettlementRow;
+  proformaInvoice: ProformaInvoiceDetail;
+  lines: ProformaInvoiceLine[];
+  customer: Customer | null;
   logoDataUrl?: string | null;
-}): SettlementContext {
-  return { docType: "settlement_letter", ...args };
+}): ProformaInvoiceContext {
+  return { docType: "proforma_invoice", ...args };
 }
 
-function buildSettlementStyles(theme: Theme) {
+function buildProformaInvoiceStyles(theme: Theme) {
   const base = buildInvoiceStyles(theme);
   return StyleSheet.create({
     ...base,
-    confidentialMeta: { color: theme.textSecondary, lineHeight: 1.5 },
-// Payslip context + renderer (M2 #9/10)
-//
-// Payslips are heavily bespoke — two-column earnings/deductions
-// cards, a highlighted net-pay band, optional leave-taken,
-// employer-contributions, and bank-disbursement blocks. Each gets
-// its own section type so a tenant can rearrange them or drop the
-// optional ones without touching code.
-// -----------------------------------------------------------------
-const PAYSLIP_MONTHS = [
-  "January",
-  "February",
-  "March",
-  "April",
-  "May",
-  "June",
-  "July",
-  "August",
-  "September",
-  "October",
-  "November",
-  "December",
-];
-
-export type PayslipContext = {
-  docType: "payslip";
-  tenant: Pick<Tenant, "businessName">;
-  run: PayrollRun;
-  line: PayrollRunLine;
-  logoDataUrl?: string | null;
-};
-
-export function buildPayslipContext(args: {
-  tenant: Pick<Tenant, "businessName">;
-  run: PayrollRun;
-  line: PayrollRunLine;
-  logoDataUrl?: string | null;
-}): PayslipContext {
-  return { docType: "payslip", ...args };
-}
-
-function buildPayslipStyles(theme: Theme) {
-  const base = buildInvoiceStyles(theme);
-  return StyleSheet.create({
-    ...base,
-    payslipMeta: { color: theme.textSecondary, lineHeight: 1.5 },
-    periodPill: {
-      marginTop: 10,
-      paddingHorizontal: 8,
-      paddingVertical: 3,
-      borderRadius: 999,
-      fontSize: 8,
-      fontFamily: `${theme.fontFamily}-Bold`,
-      textTransform: "uppercase",
-      letterSpacing: 0.8,
-      backgroundColor: theme.mutedColor,
-      color: theme.accentColor,
-    },
-    employeeBlock: {
-      flexDirection: "row",
-      justifyContent: "space-between",
-      gap: 24,
-      marginBottom: 24,
-      paddingTop: 16,
-      paddingBottom: 16,
-      borderTop: `0.5pt solid ${theme.borderColor}`,
-      borderBottom: `0.5pt solid ${theme.borderColor}`,
-    },
-    employeeCol: { flex: 1 },
-    employeeName: {
-      fontSize: 14,
-      fontFamily: `${theme.fontFamily}-Bold`,
-    },
-    employeeMeta: { color: theme.textSecondary, marginTop: 2 },
-    card: {
-      backgroundColor: theme.surfaceRecessed,
-      padding: 14,
-      borderRadius: 4,
-      marginBottom: 12,
-    },
-    sectionTitle: {
-    twoCol: { flexDirection: "row", gap: 16, marginBottom: 16 },
-    colCard: {
-      flex: 1,
-      backgroundColor: theme.surfaceRecessed,
-      padding: 14,
-      borderRadius: 4,
-    },
-    colHeader: {
-      fontSize: 9,
-      textTransform: "uppercase",
-      letterSpacing: 1,
-      color: theme.textTertiary,
-      marginBottom: 10,
-    },
-    lineRow: {
-      flexDirection: "row",
-      justifyContent: "space-between",
-      paddingVertical: 3,
-    },
-    lineLabel: { color: theme.textSecondary, flex: 1, paddingRight: 8 },
-    lineValue: { color: theme.textPrimary, fontSize: 10 },
-    cardDivider: {
-      borderTop: `0.5pt solid ${theme.borderColor}`,
-      marginVertical: 6,
-    },
-    subtotal: {
-      flexDirection: "row",
-      justifyContent: "space-between",
-      paddingTop: 4,
-    },
-    subtotalLabel: {
-      fontFamily: `${theme.fontFamily}-Bold`,
-      color: theme.textPrimary,
-    },
-    subtotalValue: {
-      fontFamily: `${theme.fontFamily}-Bold`,
-      color: theme.textPrimary,
-    },
-    netBand: {
-      flexDirection: "row",
-      justifyContent: "space-between",
-      alignItems: "center",
-      backgroundColor: theme.accentColor,
-      color: "#FFFFFF",
-      paddingVertical: 12,
-      paddingHorizontal: 16,
-      borderRadius: 4,
-      marginVertical: 12,
-    },
-    netLabel: {
-      color: "#FFFFFF",
-      fontFamily: `${theme.fontFamily}-Bold`,
-      fontSize: 12,
-    },
-    netValue: {
-      color: "#FFFFFF",
-      fontFamily: `${theme.fontFamily}-Bold`,
-      fontSize: 18,
-    },
-    note: {
-      marginTop: 14,
-      padding: 12,
-      borderLeft: `2pt solid ${theme.borderColor}`,
-    },
-    noteBody: { color: theme.textSecondary, lineHeight: 1.5 },
-    signatureBlock: {
-    employerNote: {
+    validity: {
       marginTop: 12,
       padding: 10,
-      borderLeft: `2pt solid ${theme.borderColor}`,
+      backgroundColor: theme.surfaceRecessed,
+      borderRadius: 4,
     },
-    employerTitle: {
+    validityLabel: {
+      fontSize: 8,
+      textTransform: "uppercase",
+      letterSpacing: 0.8,
+      color: theme.textTertiary,
+      marginBottom: 4,
+    },
+    validityText: { color: theme.textPrimary, fontSize: 10 },
+    validityExpired: { color: "#B47A15" },
+    disclaimer: {
+      marginTop: 10,
+      padding: 10,
+      borderLeft: `2pt solid ${theme.accentColor}`,
+      backgroundColor: "#FAF7EF",
+    },
+    disclaimerText: {
       fontSize: 9,
-      fontFamily: `${theme.fontFamily}-Bold`,
-      marginBottom: 6,
-      color: theme.textPrimary,
-    },
-    employerRow: {
-      flexDirection: "row",
-      justifyContent: "space-between",
-      paddingVertical: 2,
+      color: theme.textSecondary,
+      lineHeight: 1.5,
     },
   });
 }
 
-function formatPayslipDays(n: string | number | null | undefined): string {
-  if (n === null || n === undefined) return "0";
-  const num = Number(n);
-  return num.toLocaleString("en-LK", {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 2,
-  });
-}
-
-function renderPayslipSection(
+function renderProformaInvoiceSection(
   section: Section,
-  ctx: PayslipContext,
-  styles: ReturnType<typeof buildPayslipStyles>,
+  ctx: ProformaInvoiceContext,
+  styles: ReturnType<typeof buildProformaInvoiceStyles>,
   key: number,
 ) {
-  const { run, line, tenant } = ctx;
-  const periodLabel = `${PAYSLIP_MONTHS[run.periodMonth - 1]} ${run.periodYear}`;
-  const comps = (line.components ?? []).slice().sort((a, b) => a.sortOrder - b.sortOrder);
-  const earningRows = comps.filter((c) => c.kind === "earning");
-  const preTaxDeductionRows = comps.filter(
-    (c) =>
-      c.kind === "deduction" &&
-      (c.countsForEpf || c.countsForEtf || c.countsForPaye),
+  const { proformaInvoice, lines, customer, tenant } = ctx;
+  const today = new Date().toISOString().slice(0, 10);
+  const isExpired =
+    proformaInvoice.status !== "converted" &&
+    proformaInvoice.status !== "cancelled" &&
+    proformaInvoice.validUntil < today;
+
+  switch (section.type) {
+    case "header":
+      return (
+        <View key={key} style={styles.header} fixed>
+          <View style={styles.tenantBlock}>
+            {section.showLogo !== false && (
+              <PdfLogoBlock logoDataUrl={ctx.logoDataUrl} />
+            )}
+            <Text style={styles.tenantName}>{tenant.businessName}</Text>
+            <Text style={styles.tenantMeta}>Sri Lanka</Text>
+          </View>
+          <View style={styles.invoiceHeader}>
+            <Text style={styles.invoiceLabel}>Proforma invoice</Text>
+            <Text style={styles.invoiceNumber}>
+              {proformaInvoice.proformaNumber ?? "Draft"}
+            </Text>
+            {section.showStatusPill !== false && (
+              <Text style={styles.statusPill}>{proformaInvoice.status}</Text>
+            )}
+          </View>
+        </View>
+      );
+
+    case "metaRow": {
+      const fields = section.fields ?? [
+        "issueDate",
+        "validUntil",
+        "reference",
+        "currency",
+      ];
+      const cells: Array<{ label: string; value: string | null }> = fields.map(
+        (f) => {
+          if (f === "issueDate")
+            return {
+              label: "Issue date",
+              value: formatDate(proformaInvoice.issueDate),
+            };
+          if (f === "validUntil")
+            return {
+              label: "Valid until",
+              value: formatDate(proformaInvoice.validUntil),
+            };
+          if (f === "reference")
+            return {
+              label: "Reference",
+              value: proformaInvoice.reference ?? null,
+            };
+          if (f === "currency")
+            return { label: "Currency", value: proformaInvoice.currency };
+          if (f === "proformaNumber")
+            return {
+              label: "Proforma #",
+              value: proformaInvoice.proformaNumber ?? null,
+            };
+          return { label: f, value: null };
+        },
+      );
+      return (
+        <View key={key} style={styles.metaRow}>
+          {cells
+            .filter((c) => c.value !== null)
+            .map((c, i) => (
+              <View key={i} style={styles.metaCell}>
+                <Text style={styles.metaLabel}>{c.label}</Text>
+                <Text style={styles.metaValue}>{c.value}</Text>
+              </View>
+            ))}
+        </View>
+      );
+    }
+
+    case "billTo":
+      // "Prepared for" framing — same customer block as quotation.
+      if (!customer) return null;
+      return (
+        <View key={key} style={styles.billTo}>
+          <Text style={styles.billToLabel}>Prepared for</Text>
+          <Text style={styles.billToName}>{customer.name}</Text>
+          {customer.addressLine1 && (
+            <Text style={styles.billToLine}>{customer.addressLine1}</Text>
+          )}
+          {customer.city && (
+            <Text style={styles.billToLine}>{customer.city}</Text>
+          )}
+          {customer.email && (
+            <Text style={styles.billToLine}>{customer.email}</Text>
+          )}
+          {customer.vatNo && (
+            <Text style={[styles.billToLine, { marginTop: 4, fontSize: 8 }]}>
+              VAT: {customer.vatNo}
+            </Text>
+          )}
+        </View>
+      );
+
+    case "lineItemsTable":
+      return (
+        <View key={key} style={styles.table}>
+          <View style={[styles.row, styles.rowHeader]}>
+            <Text style={[styles.colNum, styles.th]}>#</Text>
+            <Text style={[styles.colDesc, styles.th]}>Description</Text>
+            <Text style={[styles.colQty, styles.th]}>Qty</Text>
+            <Text style={[styles.colUnit, styles.th]}>Unit</Text>
+            <Text style={[styles.colTax, styles.th]}>Tax</Text>
+            <Text style={[styles.colTotal, styles.th]}>Total</Text>
+          </View>
+          {lines.map((l) => (
+            <View key={l.id} style={styles.row} wrap={false}>
+              <Text style={[styles.colNum, styles.td]}>{l.lineNo}</Text>
+              <View style={styles.colDesc}>
+                <Text style={styles.td}>{l.description}</Text>
+                {l.discountCents > 0 && (
+                  <Text style={styles.tdMuted}>
+                    Discount {(l.discountPctBps / 100).toFixed(2)}% ·{" "}
+                    {formatLKR(l.discountCents, proformaInvoice.currency)}
+                  </Text>
+                )}
+              </View>
+              <Text style={[styles.colQty, styles.td]}>
+                {Number(l.quantity).toLocaleString("en-LK")}
+              </Text>
+              <Text style={[styles.colUnit, styles.td]}>
+                {formatLKR(l.unitPriceCents, proformaInvoice.currency)}
+              </Text>
+              <View style={styles.colTax}>
+                <Text style={styles.td}>
+                  {l.taxCents > 0
+                    ? formatLKR(l.taxCents, proformaInvoice.currency)
+                    : "—"}
+                </Text>
+                {l.taxCents > 0 && (
+                  <Text style={styles.tdMuted}>
+                    {(l.taxRateBps / 100).toFixed(2)}%
+                  </Text>
+                )}
+              </View>
+              <Text style={[styles.colTotal, styles.td]}>
+                {formatLKR(l.lineTotalCents, proformaInvoice.currency)}
+              </Text>
+            </View>
+          ))}
+        </View>
+      );
+
+    case "totals":
+      return (
+        <View key={key} style={styles.totalsBlock}>
+          <View style={styles.totalRow}>
+            <Text style={styles.totalLabel}>Subtotal</Text>
+            <Text style={styles.totalValue}>
+              {formatLKR(
+                proformaInvoice.subtotalCents,
+                proformaInvoice.currency,
+              )}
+            </Text>
+          </View>
+          {proformaInvoice.discountCents > 0 && (
+            <View style={styles.totalRow}>
+              <Text style={styles.totalLabel}>Discount</Text>
+              <Text style={styles.totalValue}>
+                -
+                {formatLKR(
+                  proformaInvoice.discountCents,
+                  proformaInvoice.currency,
+                )}
+              </Text>
+            </View>
+          )}
+          <View style={styles.totalRow}>
+            <Text style={styles.totalLabel}>Tax</Text>
+            <Text style={styles.totalValue}>
+              {formatLKR(proformaInvoice.taxCents, proformaInvoice.currency)}
+            </Text>
+          </View>
+          <View style={styles.totalDivider} />
+          <View style={styles.grandTotal}>
+            <Text style={styles.grandLabel}>Total</Text>
+            <Text style={styles.grandValue}>
+              {formatLKR(proformaInvoice.totalCents, proformaInvoice.currency)}
+            </Text>
+          </View>
+        </View>
+      );
+
+    case "validity":
+      return (
+        <View key={key} style={styles.validity} wrap={false}>
+          <Text style={styles.validityLabel}>Validity</Text>
+          <Text
+            style={
+              isExpired
+                ? [styles.validityText, styles.validityExpired]
+                : styles.validityText
+            }
+          >
+            {isExpired
+              ? `This proforma expired on ${formatDate(proformaInvoice.validUntil)}. Please request a fresh proforma.`
+              : `This proforma is valid until ${formatDate(proformaInvoice.validUntil)}. Prices and availability may change after that date.`}
+          </Text>
+        </View>
+      );
+
+    case "disclaimer":
+      return (
+        <View key={key} style={styles.disclaimer} wrap={false}>
+          <Text style={styles.disclaimerText}>
+            This is a proforma invoice issued for advance payment, customs, or
+            letter-of-credit purposes. It is not a tax invoice. A final VAT
+            invoice will be issued on supply.
+          </Text>
+        </View>
+      );
+
+    case "notes":
+      if (!proformaInvoice.notes && !proformaInvoice.terms) return null;
+      return (
+        <View key={key} style={styles.notes} wrap={false}>
+          {proformaInvoice.notes && (
+            <>
+              <Text style={styles.notesLabel}>Notes</Text>
+              <Text style={styles.notesText}>{proformaInvoice.notes}</Text>
+            </>
+          )}
+          {proformaInvoice.terms && (
+            <View style={{ marginTop: proformaInvoice.notes ? 14 : 0 }}>
+              <Text style={styles.notesLabel}>Terms</Text>
+              <Text style={styles.notesText}>{proformaInvoice.terms}</Text>
+            </View>
+          )}
+        </View>
+      );
+
+    case "footer":
+      return (
+        <View key={key} style={styles.footer} fixed>
+          <Text>{section.text ?? "Generated with PettahPro — pettahpro.lk"}</Text>
+          <Text>{tenant.businessName}</Text>
+        </View>
+      );
+
+    case "spacer":
+      return <View key={key} style={{ height: section.height ?? 12 }} />;
+
+    case "text": {
+      const s =
+        section.emphasis === "muted"
+          ? styles.textMuted
+          : section.emphasis === "label"
+            ? styles.textLabel
+            : styles.text;
+      return (
+        <Text key={key} style={s}>
+          {section.text}
+        </Text>
+      );
+    }
+
+    default:
+      return null;
+  }
+}
+
+export function renderProformaInvoiceTemplate(
+  layoutRaw: unknown,
+  ctx: ProformaInvoiceContext,
+) {
+  const layout = parseLayout(layoutRaw);
+  const styles = buildProformaInvoiceStyles(layout.theme);
+
+  return (
+    <Document
+      title={ctx.proformaInvoice.proformaNumber ?? "Proforma invoice"}
+      author={ctx.tenant.businessName}
+      creator="PettahPro"
+      producer="PettahPro"
+    >
+      <Page size={pageSizeProp(layout.pageSize)} style={styles.page}>
+        {layout.sections.map((section, i) =>
+          renderProformaInvoiceSection(section, ctx, styles, i),
+        )}
+      </Page>
+    </Document>
   );
-  const postTaxDeductionRows = comps.filter(
-    (c) =>
-      c.kind === "deduction" &&
-      !c.countsForEpf &&
-      !c.countsForEtf &&
-      !c.countsForPaye,
+}
+
+// -----------------------------------------------------------------
+// Purchase order context + renderer (M2 #7/10)
+//
+// Buyer-issued order with supplier block ("billFrom"), priced line
+// items, totals, and a "Supplier instructions" callout. Status set
+// covers the full PO lifecycle (draft / pending_approval / sent /
+// acknowledged / converted / cancelled). Mirrors
+// apps/web/lib/purchase-order-pdf.tsx.
+// -----------------------------------------------------------------
+export type PurchaseOrderContext = {
+  docType: "purchase_order";
+  tenant: Pick<Tenant, "businessName">;
+  purchaseOrder: PurchaseOrderDetail;
+  lines: PurchaseOrderLine[];
+  supplier: Supplier | null;
+  logoDataUrl?: string | null;
+};
+
+export function buildPurchaseOrderContext(args: {
+  tenant: Pick<Tenant, "businessName">;
+  purchaseOrder: PurchaseOrderDetail;
+  lines: PurchaseOrderLine[];
+  supplier: Supplier | null;
+  logoDataUrl?: string | null;
+}): PurchaseOrderContext {
+  return { docType: "purchase_order", ...args };
+}
+
+function buildPurchaseOrderStyles(theme: Theme) {
+  // Reuse bill styles for billFrom + draftBanner shapes; layer the
+  // PO-only "Supplier instructions" callout on top.
+  const base = buildBillStyles(theme);
+  return StyleSheet.create({
+    ...base,
+    instructions: {
+      marginTop: 12,
+      padding: 10,
+      backgroundColor: theme.surfaceRecessed,
+      borderRadius: 4,
+    },
+    instructionsLabel: {
+      fontSize: 8,
+      textTransform: "uppercase",
+      letterSpacing: 0.8,
+      color: theme.textTertiary,
+      marginBottom: 4,
+    },
+    instructionsText: { color: theme.textPrimary, fontSize: 10 },
+    instructionsBold: {
+      fontFamily: `${theme.fontFamily}-Bold`,
+    },
+  });
+}
+
+function renderPurchaseOrderSection(
+  section: Section,
+  ctx: PurchaseOrderContext,
+  styles: ReturnType<typeof buildPurchaseOrderStyles>,
+  key: number,
+) {
+  const { purchaseOrder, lines, supplier, tenant } = ctx;
+
+  switch (section.type) {
+    case "header":
+      return (
+        <View key={key} style={styles.header} fixed>
+          <View style={styles.tenantBlock}>
+            {section.showLogo !== false && (
+              <PdfLogoBlock logoDataUrl={ctx.logoDataUrl} />
+            )}
+            <Text style={styles.tenantName}>{tenant.businessName}</Text>
+            <Text style={styles.tenantMeta}>Sri Lanka</Text>
+          </View>
+          <View style={styles.invoiceHeader}>
+            <Text style={styles.invoiceLabel}>Purchase order</Text>
+            <Text style={styles.invoiceNumber}>
+              {purchaseOrder.poNumber ?? "Draft"}
+            </Text>
+            {section.showStatusPill !== false && (
+              <Text style={styles.statusPill}>{purchaseOrder.status}</Text>
+            )}
+          </View>
+        </View>
+      );
+
+    case "metaRow": {
+      const fields = section.fields ?? [
+        "orderDate",
+        "expectedDeliveryDate",
+        "reference",
+        "currency",
+      ];
+      const cells: Array<{ label: string; value: string | null }> = fields.map(
+        (f) => {
+          if (f === "orderDate")
+            return {
+              label: "Order date",
+              value: formatDate(purchaseOrder.orderDate),
+            };
+          if (f === "expectedDeliveryDate")
+            return {
+              label: "Expected delivery",
+              value: purchaseOrder.expectedDeliveryDate
+                ? formatDate(purchaseOrder.expectedDeliveryDate)
+                : null,
+            };
+          if (f === "reference")
+            return {
+              label: "Reference",
+              value: purchaseOrder.reference ?? null,
+            };
+          if (f === "currency")
+            return { label: "Currency", value: purchaseOrder.currency };
+          if (f === "supplierReference")
+            return {
+              label: "Supplier ref",
+              value: purchaseOrder.supplierReference ?? null,
+            };
+          if (f === "poNumber")
+            return {
+              label: "PO #",
+              value: purchaseOrder.poNumber ?? null,
+            };
+          return { label: f, value: null };
+        },
+      );
+      return (
+        <View key={key} style={styles.metaRow}>
+          {cells
+            .filter((c) => c.value !== null)
+            .map((c, i) => (
+              <View key={i} style={styles.metaCell}>
+                <Text style={styles.metaLabel}>{c.label}</Text>
+                <Text style={styles.metaValue}>{c.value}</Text>
+              </View>
+            ))}
+        </View>
+      );
+    }
+
+    case "billFrom":
+      // POs ship *to* the supplier, so the supplier block reads
+      // "Supplier" rather than "Billed from".
+      if (!supplier) return null;
+      return (
+        <View key={key} style={styles.billFrom}>
+          <Text style={styles.billFromLabel}>Supplier</Text>
+          <Text style={styles.billFromName}>{supplier.name}</Text>
+          {supplier.legalName && supplier.legalName !== supplier.name && (
+            <Text style={styles.billFromLine}>{supplier.legalName}</Text>
+          )}
+          {supplier.addressLine1 && (
+            <Text style={styles.billFromLine}>{supplier.addressLine1}</Text>
+          )}
+          {supplier.addressLine2 && (
+            <Text style={styles.billFromLine}>{supplier.addressLine2}</Text>
+          )}
+          {supplier.city && (
+            <Text style={styles.billFromLine}>{supplier.city}</Text>
+          )}
+          {supplier.email && (
+            <Text style={styles.billFromLine}>{supplier.email}</Text>
+          )}
+          {supplier.phone && (
+            <Text style={styles.billFromLine}>{supplier.phone}</Text>
+          )}
+          {supplier.vatNo && (
+            <Text style={[styles.billFromLine, { marginTop: 4, fontSize: 8 }]}>
+              VAT: {supplier.vatNo}
+            </Text>
+          )}
+        </View>
+      );
+
+    case "billTo":
+      return renderPurchaseOrderSection(
+        { type: "billFrom" },
+        ctx,
+        styles,
+        key,
+      );
+
+    case "lineItemsTable":
+      return (
+        <View key={key} style={styles.table}>
+          <View style={[styles.row, styles.rowHeader]}>
+            <Text style={[styles.colNum, styles.th]}>#</Text>
+            <Text style={[styles.colDesc, styles.th]}>Description</Text>
+            <Text style={[styles.colQty, styles.th]}>Qty</Text>
+            <Text style={[styles.colUnit, styles.th]}>Unit</Text>
+            <Text style={[styles.colTax, styles.th]}>Tax</Text>
+            <Text style={[styles.colTotal, styles.th]}>Total</Text>
+          </View>
+          {lines.map((l) => (
+            <View key={l.id} style={styles.row} wrap={false}>
+              <Text style={[styles.colNum, styles.td]}>{l.lineNo}</Text>
+              <View style={styles.colDesc}>
+                <Text style={styles.td}>{l.description}</Text>
+                {l.discountCents > 0 && (
+                  <Text style={styles.tdMuted}>
+                    Discount {(l.discountPctBps / 100).toFixed(2)}% ·{" "}
+                    {formatLKR(l.discountCents, purchaseOrder.currency)}
+                  </Text>
+                )}
+              </View>
+              <Text style={[styles.colQty, styles.td]}>
+                {Number(l.quantity).toLocaleString("en-LK")}
+              </Text>
+              <Text style={[styles.colUnit, styles.td]}>
+                {formatLKR(l.unitPriceCents, purchaseOrder.currency)}
+              </Text>
+              <View style={styles.colTax}>
+                <Text style={styles.td}>
+                  {l.taxCents > 0
+                    ? formatLKR(l.taxCents, purchaseOrder.currency)
+                    : "—"}
+                </Text>
+                {l.taxCents > 0 && (
+                  <Text style={styles.tdMuted}>
+                    {(l.taxRateBps / 100).toFixed(2)}%
+                  </Text>
+                )}
+              </View>
+              <Text style={[styles.colTotal, styles.td]}>
+                {formatLKR(l.lineTotalCents, purchaseOrder.currency)}
+              </Text>
+            </View>
+          ))}
+        </View>
+      );
+
+    case "totals":
+      return (
+        <View key={key} style={styles.totalsBlock}>
+          <View style={styles.totalRow}>
+            <Text style={styles.totalLabel}>Subtotal</Text>
+            <Text style={styles.totalValue}>
+              {formatLKR(
+                purchaseOrder.subtotalCents,
+                purchaseOrder.currency,
+              )}
+            </Text>
+          </View>
+          {purchaseOrder.discountCents > 0 && (
+            <View style={styles.totalRow}>
+              <Text style={styles.totalLabel}>Discount</Text>
+              <Text style={styles.totalValue}>
+                -
+                {formatLKR(
+                  purchaseOrder.discountCents,
+                  purchaseOrder.currency,
+                )}
+              </Text>
+            </View>
+          )}
+          <View style={styles.totalRow}>
+            <Text style={styles.totalLabel}>Tax</Text>
+            <Text style={styles.totalValue}>
+              {formatLKR(purchaseOrder.taxCents, purchaseOrder.currency)}
+            </Text>
+          </View>
+          <View style={styles.totalDivider} />
+          <View style={styles.grandTotal}>
+            <Text style={styles.grandLabel}>Order total</Text>
+            <Text style={styles.grandValue}>
+              {formatLKR(purchaseOrder.totalCents, purchaseOrder.currency)}
+            </Text>
+          </View>
+        </View>
+      );
+
+    case "instructions":
+      return (
+        <View key={key} style={styles.instructions} wrap={false}>
+          <Text style={styles.instructionsLabel}>Supplier instructions</Text>
+          <Text style={styles.instructionsText}>
+            Please quote PO number{" "}
+            <Text style={styles.instructionsBold}>
+              {purchaseOrder.poNumber ?? "—"}
+            </Text>{" "}
+            on your invoice and delivery note. Partial shipments must be agreed
+            with the buyer in advance.
+          </Text>
+        </View>
+      );
+
+    case "notes":
+      if (!purchaseOrder.notes && !purchaseOrder.terms) return null;
+      return (
+        <View key={key} style={styles.notes} wrap={false}>
+          {purchaseOrder.notes && (
+            <>
+              <Text style={styles.notesLabel}>Notes</Text>
+              <Text style={styles.notesText}>{purchaseOrder.notes}</Text>
+            </>
+          )}
+          {purchaseOrder.terms && (
+            <View style={{ marginTop: purchaseOrder.notes ? 14 : 0 }}>
+              <Text style={styles.notesLabel}>Terms</Text>
+              <Text style={styles.notesText}>{purchaseOrder.terms}</Text>
+            </View>
+          )}
+        </View>
+      );
+
+    case "footer":
+      return (
+        <View key={key} style={styles.footer} fixed>
+          <Text>{section.text ?? "Generated with PettahPro — pettahpro.lk"}</Text>
+          <Text>{tenant.businessName}</Text>
+        </View>
+      );
+
+    case "spacer":
+      return <View key={key} style={{ height: section.height ?? 12 }} />;
+
+    case "text": {
+      const s =
+        section.emphasis === "muted"
+          ? styles.textMuted
+          : section.emphasis === "label"
+            ? styles.textLabel
+            : styles.text;
+      return (
+        <Text key={key} style={s}>
+          {section.text}
+        </Text>
+      );
+    }
+
+    default:
+      return null;
+  }
+}
+
+export function renderPurchaseOrderTemplate(
+  layoutRaw: unknown,
+  ctx: PurchaseOrderContext,
+) {
+  const layout = parseLayout(layoutRaw);
+  const styles = buildPurchaseOrderStyles(layout.theme);
+
+  return (
+    <Document
+      title={ctx.purchaseOrder.poNumber ?? "Purchase order"}
+      author={ctx.tenant.businessName}
+      creator="PettahPro"
+      producer="PettahPro"
+    >
+      <Page size={pageSizeProp(layout.pageSize)} style={styles.page}>
+        {layout.sections.map((section, i) =>
+          renderPurchaseOrderSection(section, ctx, styles, i),
+        )}
+      </Page>
+    </Document>
   );
+}
+
+// -----------------------------------------------------------------
 // Stock transfer context + renderer (M2 #8/10)
 //
-// Stock transfer is an internal logistics doc — no money, but a
-// 3-quantity table (Requested / Dispatched / Received) and a
-// source-→-destination warehouse pair instead of a customer block.
-// signBlock reuses the labels Dispatched-by / Received-by.
+// Internal logistics doc — no money, no parties (warehouses
+// instead). Three-quantity table (Requested / Dispatched /
+// Received) with discrepancy highlighting, signature block for
+// dispatched-by / received-by sign-off. Mirrors
+// apps/web/lib/stock-transfer-pdf.tsx.
 // -----------------------------------------------------------------
 export type StockTransferContext = {
   docType: "stock_transfer";
@@ -2667,49 +3219,8 @@ function buildStockTransferStyles(theme: Theme) {
     ...base,
     warehouseRow: {
       flexDirection: "row",
-      alignItems: "center",
-      gap: 12,
-      marginBottom: 24,
-// Purchase order context + renderer (M2 #7/10)
-//
-// PO is the AP-side counterpart to a quotation. Has its own status
-// set (draft/pending_approval/sent/acknowledged/converted/cancelled)
-// and a fixed "supplier instructions" callout that the buyer needs
-// the supplier to acknowledge. instructions section type is generic
-// so the template author can override the label/text without code.
-// -----------------------------------------------------------------
-const PO_DEFAULT_INSTRUCTIONS_LABEL = "Supplier instructions";
-const PO_DEFAULT_INSTRUCTIONS_TEXT =
-  "Please quote PO number {{poNumber}} on your invoice and delivery note. Partial shipments must be agreed with the buyer in advance.";
-
-export type PurchaseOrderContext = {
-  docType: "purchase_order";
-  tenant: Pick<Tenant, "businessName">;
-  purchaseOrder: PurchaseOrderDetail;
-  lines: PurchaseOrderLine[];
-  supplier: Supplier | null;
-  logoDataUrl?: string | null;
-};
-
-export function buildPurchaseOrderContext(args: {
-  tenant: Pick<Tenant, "businessName">;
-  purchaseOrder: PurchaseOrderDetail;
-  lines: PurchaseOrderLine[];
-  supplier: Supplier | null;
-  logoDataUrl?: string | null;
-}): PurchaseOrderContext {
-  return { docType: "purchase_order", ...args };
-}
-
-function buildPurchaseOrderStyles(theme: Theme) {
-  const base = buildBillStyles(theme);
-  return StyleSheet.create({
-    ...base,
-    instructions: {
-      marginTop: 18,
-      padding: 12,
-      backgroundColor: theme.surfaceRecessed,
-      borderRadius: 4,
+      gap: 24,
+      marginBottom: 20,
     },
     warehouseCol: { flex: 1 },
     warehouseLabel: {
@@ -2717,82 +3228,39 @@ function buildPurchaseOrderStyles(theme: Theme) {
       textTransform: "uppercase",
       letterSpacing: 0.8,
       color: theme.textTertiary,
-      marginBottom: 4,
+      marginBottom: 6,
     },
-    warehouseName: {
-      fontSize: 12,
-      fontFamily: `${theme.fontFamily}-Bold`,
-    },
-    warehouseLine: { color: theme.textSecondary, marginTop: 2, fontSize: 9 },
-    arrow: {
-      fontSize: 16,
+    warehouseName: { fontSize: 12, fontFamily: `${theme.fontFamily}-Bold` },
+    warehouseLine: { color: theme.textSecondary, marginTop: 2 },
+    warehouseArrow: {
+      alignSelf: "center",
       color: theme.textTertiary,
+      fontSize: 16,
+      paddingTop: 18,
     },
-    stColNum: { width: 24, textAlign: "center" },
-    stColDesc: { flex: 1, paddingRight: 8 },
-    stColQty: { width: 80, textAlign: "right" },
-    tdShort: { fontSize: 10, color: "#B47A15" },
-    signBlock: {
-      flexDirection: "row",
-      gap: 24,
-      marginTop: 32,
-    },
-    signatureCol: { flex: 1 },
-    signatureLine: {
-      borderTop: `0.5pt solid ${theme.textPrimary}`,
-      paddingTop: 8,
-      minHeight: 60,
-    },
-  });
-}
 
-function renderSettlementSection(
-  section: Section,
-  ctx: SettlementContext,
-  styles: ReturnType<typeof buildSettlementStyles>,
-  key: number,
-) {
-  const { settlement, tenant } = ctx;
-  const lines = settlement.linesSnapshot ?? [];
-  const earningRows = lines.filter((l) => l.kind === "earning");
-  const deductionRows = lines.filter((l) => l.kind === "deduction");
-  const statutoryRows = lines.filter((l) => l.kind === "statutory");
-  const earningsTotal = earningRows.reduce((s, r) => s + r.amountCents, 0);
-  const deductionsTotal =
-    deductionRows.reduce((s, r) => s + r.amountCents, 0) +
-    statutoryRows.reduce((s, r) => s + r.amountCents, 0);
-  const number = settlement.settlementNumber ?? "Draft";
-  const statusLabel =
-    settlement.status === "posted"
-      ? "Posted"
-      : settlement.status === "paid"
-        ? "Paid"
-        : settlement.status === "approved"
-          ? "Approved"
-          : settlement.status === "cancelled"
-            ? "Cancelled"
-            : "Draft";
+    stTable: {
+      borderTop: `0.5pt solid ${theme.borderColor}`,
+      marginBottom: 24,
+    },
+    stColQty: { width: 90, textAlign: "right" },
+    tdShort: { fontSize: 10, color: "#92400E" },
+
+    signBlock: {
+      marginTop: 40,
+      flexDirection: "row",
+      gap: 40,
+    },
     signCol: { flex: 1 },
     signLine: {
       borderTop: `0.5pt solid ${theme.textPrimary}`,
-      paddingTop: 8,
-      minHeight: 56,
+      marginTop: 48,
+      paddingTop: 6,
     },
     signLabel: {
-    instructionsLabel: {
-      fontSize: 8,
-      textTransform: "uppercase",
-      letterSpacing: 0.8,
+      fontSize: 9,
       color: theme.textTertiary,
     },
-  });
-}
-
-function formatStQty(n: string | number | null | undefined): string {
-  if (n === null || n === undefined) return "—";
-  return Number(n).toLocaleString("en-LK", {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 4,
   });
 }
 
@@ -2805,80 +3273,6 @@ function renderStockTransferSection(
   const { transfer, lines, source, destination, tenant } = ctx;
   const isDispatchedOrLater =
     transfer.status === "dispatched" || transfer.status === "received";
-      marginBottom: 6,
-    },
-    instructionsText: { color: theme.textSecondary, lineHeight: 1.5 },
-  });
-}
-
-function renderPurchaseOrderSection(
-  section: Section,
-  ctx: PurchaseOrderContext,
-  styles: ReturnType<typeof buildPurchaseOrderStyles>,
-  key: number,
-) {
-  const { purchaseOrder: po, lines, supplier, tenant } = ctx;
-// Proforma invoice context + renderer (M2 #6/10)
-//
-// Proformas are pre-sale documents for advance payment / customs /
-// LC purposes. Same shape as a quotation (validity callout, money,
-// "Prepared for" customer block) plus a fixed legal disclaimer at
-// the bottom: "This is not a tax invoice." The disclaimer is its
-// own section type so settlement_letter (M2 #10) can reuse it.
-// -----------------------------------------------------------------
-const PROFORMA_DEFAULT_DISCLAIMER =
-  "This is a proforma invoice issued for advance payment, customs, or letter-of-credit purposes. It is not a tax invoice. A final VAT invoice will be issued on supply.";
-
-export type ProformaInvoiceContext = {
-  docType: "proforma_invoice";
-  tenant: Pick<Tenant, "businessName">;
-  proformaInvoice: ProformaInvoiceDetail;
-  lines: ProformaInvoiceLine[];
-  customer: Customer | null;
-  logoDataUrl?: string | null;
-};
-
-export function buildProformaInvoiceContext(args: {
-  tenant: Pick<Tenant, "businessName">;
-  proformaInvoice: ProformaInvoiceDetail;
-  lines: ProformaInvoiceLine[];
-  customer: Customer | null;
-  logoDataUrl?: string | null;
-}): ProformaInvoiceContext {
-  return { docType: "proforma_invoice", ...args };
-}
-
-function buildProformaStyles(theme: Theme) {
-  // Reuse quotation styles — same validity callout shape.
-  const base = buildQuotationStyles(theme);
-  return StyleSheet.create({
-    ...base,
-    disclaimer: {
-      marginTop: 18,
-      padding: 12,
-      borderLeft: `2pt solid ${theme.borderColor}`,
-    },
-    disclaimerText: {
-      fontSize: 9,
-      fontStyle: "italic",
-      color: theme.textSecondary,
-      lineHeight: 1.5,
-    },
-  });
-}
-
-function renderProformaSection(
-  section: Section,
-  ctx: ProformaInvoiceContext,
-  styles: ReturnType<typeof buildProformaStyles>,
-  key: number,
-) {
-  const { proformaInvoice: pf, lines, customer, tenant } = ctx;
-  const today = new Date().toISOString().slice(0, 10);
-  const isExpired =
-    pf.status !== "converted" &&
-    pf.status !== "cancelled" &&
-    pf.validUntil < today;
 
   switch (section.type) {
     case "header":
@@ -2889,24 +3283,6 @@ function renderProformaSection(
               <PdfLogoBlock logoDataUrl={ctx.logoDataUrl} />
             )}
             <Text style={styles.tenantName}>{tenant.businessName}</Text>
-            <Text style={styles.confidentialMeta}>
-              Final settlement · confidential
-            </Text>
-          </View>
-          <View style={styles.invoiceHeader}>
-            <Text style={styles.invoiceLabel}>Settlement</Text>
-            <Text style={styles.invoiceNumber}>{number}</Text>
-            {section.showStatusPill !== false && (
-              <Text style={styles.statusPill}>{statusLabel}</Text>
-            <Text style={styles.payslipMeta}>Payslip · confidential</Text>
-          </View>
-          <View style={styles.invoiceHeader}>
-            <Text style={styles.invoiceLabel}>Payslip</Text>
-            <Text style={styles.invoiceNumber}>
-              {run.runNumber ?? "Draft"}
-            </Text>
-            {section.showStatusPill !== false && (
-              <Text style={styles.periodPill}>{periodLabel}</Text>
             <Text style={styles.tenantMeta}>Sri Lanka</Text>
           </View>
           <View style={styles.invoiceHeader}>
@@ -2916,86 +3292,11 @@ function renderProformaSection(
             </Text>
             {section.showStatusPill !== false && (
               <Text style={styles.statusPill}>{transfer.status}</Text>
-            <Text style={styles.invoiceLabel}>Purchase order</Text>
-            <Text style={styles.invoiceNumber}>{po.poNumber ?? "Draft"}</Text>
-            {section.showStatusPill !== false && (
-              <Text style={styles.statusPill}>{po.status}</Text>
-            <Text style={styles.invoiceLabel}>Proforma invoice</Text>
-            <Text style={styles.invoiceNumber}>
-              {pf.proformaNumber ?? "Draft"}
-            </Text>
-            {section.showStatusPill !== false && (
-              <Text style={styles.statusPill}>{pf.status}</Text>
             )}
           </View>
         </View>
       );
 
-    case "settlementEmployee":
-      return (
-        <View key={key} style={styles.employeeBlock}>
-          <View style={styles.employeeCol}>
-            <Text style={styles.employeeName}>
-              {settlement.employeeFullName}
-            </Text>
-            {settlement.designation && (
-              <Text style={styles.employeeMeta}>{settlement.designation}</Text>
-            )}
-            {settlement.department && (
-              <Text style={styles.employeeMeta}>{settlement.department}</Text>
-            )}
-            {settlement.employeeCode && (
-              <Text style={styles.employeeMeta}>
-                Employee code: {settlement.employeeCode}
-    case "employeeBlock":
-      return (
-        <View key={key} style={styles.employeeBlock}>
-          <View style={styles.employeeCol}>
-            <Text style={styles.employeeName}>{line.employeeFullName}</Text>
-            {line.designation && (
-              <Text style={styles.employeeMeta}>{line.designation}</Text>
-            )}
-            {line.department && (
-              <Text style={styles.employeeMeta}>{line.department}</Text>
-            )}
-            {line.employeeCode && (
-              <Text style={styles.employeeMeta}>
-                Employee code: {line.employeeCode}
-              </Text>
-            )}
-          </View>
-          <View>
-            <Text style={styles.metaLabel}>Hire date</Text>
-            <Text style={styles.metaValue}>
-              {formatDate(settlement.hireDate)}
-            </Text>
-            <Text style={styles.metaLabel}>Exit date</Text>
-            <Text style={styles.metaValue}>
-              {formatDate(settlement.exitDate)}
-            </Text>
-            <Text style={styles.metaLabel}>Last working day</Text>
-            <Text style={styles.metaValue}>
-              {formatDate(settlement.lastWorkingDay)}
-            </Text>
-            <Text style={styles.metaLabel}>Years of service</Text>
-            <Text style={styles.metaValue}>
-              {Number(settlement.yearsOfService).toFixed(2)} (
-              {settlement.gratuityYearsCompleted} completed)
-            </Text>
-            {line.nic && (
-              <>
-                <Text style={styles.metaLabel}>NIC</Text>
-                <Text style={styles.metaValue}>{line.nic}</Text>
-              </>
-            )}
-            {line.epfNumber && (
-              <>
-                <Text style={styles.metaLabel}>EPF number</Text>
-                <Text style={styles.metaValue}>{line.epfNumber}</Text>
-              </>
-            )}
-            <Text style={styles.metaLabel}>Pay date</Text>
-            <Text style={styles.metaValue}>{formatDate(run.payDate)}</Text>
     case "metaRow": {
       const fields = section.fields ?? [
         "requestedDate",
@@ -3034,40 +3335,6 @@ function renderProformaSection(
               label: "Transfer #",
               value: transfer.transferNumber ?? null,
             };
-        "orderDate",
-        "expectedDeliveryDate",
-        "issueDate",
-        "validUntil",
-        "reference",
-        "currency",
-      ];
-      const cells: Array<{ label: string; value: string | null }> = fields.map(
-        (f) => {
-          if (f === "orderDate")
-            return { label: "Order date", value: formatDate(po.orderDate) };
-          if (f === "expectedDeliveryDate")
-            return {
-              label: "Expected delivery",
-              value: po.expectedDeliveryDate
-                ? formatDate(po.expectedDeliveryDate)
-                : null,
-            };
-          if (f === "reference")
-            return { label: "Reference", value: po.reference ?? null };
-          if (f === "currency")
-            return { label: "Currency", value: po.currency };
-          if (f === "poNumber")
-            return { label: "PO #", value: po.poNumber ?? null };
-          if (f === "issueDate")
-            return { label: "Issue date", value: formatDate(pf.issueDate) };
-          if (f === "validUntil")
-            return { label: "Valid until", value: formatDate(pf.validUntil) };
-          if (f === "reference")
-            return { label: "Reference", value: pf.reference ?? null };
-          if (f === "currency")
-            return { label: "Currency", value: pf.currency };
-          if (f === "proformaNumber")
-            return { label: "Proforma #", value: pf.proformaNumber ?? null };
           return { label: f, value: null };
         },
       );
@@ -3099,7 +3366,7 @@ function renderProformaSection(
               <Text style={styles.warehouseLine}>—</Text>
             )}
           </View>
-          <Text style={styles.arrow}>→</Text>
+          <Text style={styles.warehouseArrow}>→</Text>
           <View style={styles.warehouseCol}>
             <Text style={styles.warehouseLabel}>To (destination)</Text>
             {destination ? (
@@ -3116,189 +3383,12 @@ function renderProformaSection(
         </View>
       );
 
-    case "settlementEarnings":
-      if (earningRows.length === 0) return null;
-      return (
-        <View key={key} style={styles.card} wrap={false}>
-          <Text style={styles.sectionTitle}>Earnings</Text>
-          {earningRows.map((line) => (
-            <View key={line.code} style={styles.lineRow}>
-              <Text style={styles.lineLabel}>{line.name}</Text>
-              <Text style={styles.lineValue}>
-                {formatLKR(line.amountCents)}
-              </Text>
-            </View>
-          ))}
-          <View style={styles.cardDivider} />
-          <View style={styles.subtotal}>
-            <Text style={styles.subtotalLabel}>Gross earnings</Text>
-            <Text style={styles.subtotalValue}>{formatLKR(earningsTotal)}</Text>
-          </View>
-        </View>
-      );
-
-    case "settlementDeductions":
-      if (deductionRows.length === 0 && statutoryRows.length === 0) return null;
-      return (
-        <View key={key} style={styles.card} wrap={false}>
-          <Text style={styles.sectionTitle}>Deductions</Text>
-          {statutoryRows.map((line) => (
-            <View key={line.code} style={styles.lineRow}>
-              <Text style={styles.lineLabel}>{line.name}</Text>
-              <Text style={styles.lineValue}>
-                -{formatLKR(line.amountCents)}
-              </Text>
-            </View>
-          ))}
-          {deductionRows.map((line) => (
-            <View key={line.code} style={styles.lineRow}>
-              <Text style={styles.lineLabel}>{line.name}</Text>
-              <Text style={styles.lineValue}>
-                -{formatLKR(line.amountCents)}
-              </Text>
-            </View>
-          ))}
-          <View style={styles.cardDivider} />
-          <View style={styles.subtotal}>
-            <Text style={styles.subtotalLabel}>Total deductions</Text>
-            <Text style={styles.subtotalValue}>
-              -{formatLKR(deductionsTotal)}
-    case "payslipColumns":
-      return (
-        <View key={key} style={styles.twoCol} wrap={false}>
-          <View style={styles.colCard}>
-            <Text style={styles.colHeader}>Earnings</Text>
-            {earningRows.length === 0 ? (
-              <View style={styles.lineRow}>
-                <Text style={styles.lineLabel}>Basic salary</Text>
-                <Text style={styles.lineValue}>
-                  {formatLKR(line.basicSalaryCents)}
-                </Text>
-              </View>
-            ) : (
-              earningRows.map((c) => (
-                <View key={c.id} style={styles.lineRow}>
-                  <Text style={styles.lineLabel}>{c.name}</Text>
-                  <Text style={styles.lineValue}>
-                    {formatLKR(c.amountCents)}
-                  </Text>
-                </View>
-              ))
-            )}
-            <View style={styles.cardDivider} />
-            <View style={styles.subtotal}>
-              <Text style={styles.subtotalLabel}>Gross earnings</Text>
-              <Text style={styles.subtotalValue}>
-                {formatLKR(line.earningsCents || line.grossCents)}
-              </Text>
-            </View>
-          </View>
-
-          <View style={styles.colCard}>
-            <Text style={styles.colHeader}>Deductions</Text>
-            {preTaxDeductionRows.map((c) => (
-              <View key={c.id} style={styles.lineRow}>
-                <Text style={styles.lineLabel}>{c.name}</Text>
-                <Text style={styles.lineValue}>
-                  -{formatLKR(c.amountCents)}
-                </Text>
-              </View>
-            ))}
-            {line.epfEmployeeCents > 0 && (
-              <View style={styles.lineRow}>
-                <Text style={styles.lineLabel}>EPF (employee, 8%)</Text>
-                <Text style={styles.lineValue}>
-                  -{formatLKR(line.epfEmployeeCents)}
-                </Text>
-              </View>
-            )}
-            {line.payeCents > 0 && (
-              <View style={styles.lineRow}>
-                <Text style={styles.lineLabel}>PAYE</Text>
-                <Text style={styles.lineValue}>
-                  -{formatLKR(line.payeCents)}
-                </Text>
-              </View>
-            )}
-            {postTaxDeductionRows.map((c) => (
-              <View key={c.id} style={styles.lineRow}>
-                <Text style={styles.lineLabel}>{c.name}</Text>
-                <Text style={styles.lineValue}>
-                  -{formatLKR(c.amountCents)}
-                </Text>
-              </View>
-            ))}
-            {line.totalDeductionsCents === 0 &&
-              preTaxDeductionRows.length === 0 &&
-              postTaxDeductionRows.length === 0 && (
-                <Text style={styles.lineLabel}>No deductions</Text>
-              )}
-            <View style={styles.cardDivider} />
-            <View style={styles.subtotal}>
-              <Text style={styles.subtotalLabel}>Total deductions</Text>
-              <Text style={styles.subtotalValue}>
-                -
-                {formatLKR(
-                  Math.max(
-                    0,
-                    (line.earningsCents || line.grossCents) - line.netPayCents,
-                  ),
-                )}
-              </Text>
-            </View>
+    // billTo/billFrom on a stock transfer falls through to warehouseRow
+    // so a generic-template clone doesn't render an empty block.
+    case "billTo":
     case "billFrom":
-      // POs render the supplier as the recipient — the buyer is
-      // sending the order *to* the supplier, so the label is just
-      // "Supplier".
-      if (!supplier) return null;
-      return (
-        <View key={key} style={styles.billFrom}>
-          <Text style={styles.billFromLabel}>Supplier</Text>
-          <Text style={styles.billFromName}>{supplier.name}</Text>
-          {supplier.legalName && supplier.legalName !== supplier.name && (
-            <Text style={styles.billFromLine}>{supplier.legalName}</Text>
-          )}
-          {supplier.addressLine1 && (
-            <Text style={styles.billFromLine}>{supplier.addressLine1}</Text>
-          )}
-          {supplier.addressLine2 && (
-            <Text style={styles.billFromLine}>{supplier.addressLine2}</Text>
-          )}
-          {supplier.city && (
-            <Text style={styles.billFromLine}>{supplier.city}</Text>
-          )}
-          {supplier.email && (
-            <Text style={styles.billFromLine}>{supplier.email}</Text>
-          )}
-          {supplier.vatNo && (
-            <Text style={[styles.billFromLine, { marginTop: 4, fontSize: 8 }]}>
-              VAT: {supplier.vatNo}
-    case "billTo":
-      if (!customer) return null;
-      return (
-        <View key={key} style={styles.billTo}>
-          <Text style={styles.billToLabel}>Prepared for</Text>
-          <Text style={styles.billToName}>{customer.name}</Text>
-          {customer.addressLine1 && (
-            <Text style={styles.billToLine}>{customer.addressLine1}</Text>
-          )}
-          {customer.city && (
-            <Text style={styles.billToLine}>{customer.city}</Text>
-          )}
-          {customer.email && (
-            <Text style={styles.billToLine}>{customer.email}</Text>
-          )}
-          {customer.vatNo && (
-            <Text style={[styles.billToLine, { marginTop: 4, fontSize: 8 }]}>
-              VAT: {customer.vatNo}
-            </Text>
-          )}
-        </View>
-      );
-
-    case "billTo":
-      return renderPurchaseOrderSection(
-        { type: "billFrom" },
+      return renderStockTransferSection(
+        { type: "warehouseRow" },
         ctx,
         styles,
         key,
@@ -3306,10 +3396,10 @@ function renderProformaSection(
 
     case "lineItemsTable":
       return (
-        <View key={key} style={styles.table}>
+        <View key={key} style={styles.stTable}>
           <View style={[styles.row, styles.rowHeader]}>
-            <Text style={[styles.stColNum, styles.th]}>#</Text>
-            <Text style={[styles.stColDesc, styles.th]}>Item</Text>
+            <Text style={[styles.colNum, styles.th]}>#</Text>
+            <Text style={[styles.colDesc, styles.th]}>Item</Text>
             <Text style={[styles.stColQty, styles.th]}>Requested</Text>
             <Text style={[styles.stColQty, styles.th]}>Dispatched</Text>
             <Text style={[styles.stColQty, styles.th]}>Received</Text>
@@ -3319,32 +3409,33 @@ function renderProformaSection(
             const received =
               l.quantity_received != null ? Number(l.quantity_received) : null;
             const isShort =
-              isDispatchedOrLater && received !== null && received < dispatched;
+              isDispatchedOrLater &&
+              received !== null &&
+              received < dispatched;
             return (
               <View key={l.id} style={styles.row} wrap={false}>
-                <Text style={[styles.stColNum, styles.td]}>{l.line_no}</Text>
-                <View style={styles.stColDesc}>
+                <Text style={[styles.colNum, styles.td]}>{l.line_no}</Text>
+                <View style={styles.colDesc}>
                   <Text style={styles.td}>{l.item_name}</Text>
                   {l.sku && <Text style={styles.tdMuted}>{l.sku}</Text>}
                   {l.notes && <Text style={styles.tdMuted}>{l.notes}</Text>}
                 </View>
                 <Text style={[styles.stColQty, styles.td]}>
-                  {formatStQty(l.quantity_requested)} {l.unit}
+                  {formatQty(l.quantity_requested)} {l.unit}
                 </Text>
                 <Text style={[styles.stColQty, styles.td]}>
                   {l.quantity_dispatched != null
-                    ? `${formatStQty(l.quantity_dispatched)} ${l.unit}`
+                    ? `${formatQty(l.quantity_dispatched)} ${l.unit}`
                     : "—"}
                 </Text>
                 <Text
-                  style={
-                    isShort
-                      ? [styles.stColQty, styles.tdShort]
-                      : [styles.stColQty, styles.td]
-                  }
+                  style={[
+                    styles.stColQty,
+                    isShort ? styles.tdShort : styles.td,
+                  ]}
                 >
                   {l.quantity_received != null
-                    ? `${formatStQty(l.quantity_received)} ${l.unit}`
+                    ? `${formatQty(l.quantity_received)} ${l.unit}`
                     : "—"}
                 </Text>
               </View>
@@ -3354,109 +3445,904 @@ function renderProformaSection(
       );
 
     case "notes": {
-      const blocks: Array<{ label: string; text: string }> = [];
-      if (transfer.notes) blocks.push({ label: "Notes", text: transfer.notes });
-      if (transfer.cancelledReason)
-        blocks.push({ label: "Cancelled reason", text: transfer.cancelledReason });
-      if (blocks.length === 0) return null;
+      const hasNotes = !!transfer.notes;
+      const hasCancelReason = !!transfer.cancelledReason;
+      if (!hasNotes && !hasCancelReason) return null;
       return (
-        <View key={key} style={styles.notes} wrap={false}>
-          {blocks.map((b, i) => (
-            <View key={i} style={i > 0 ? { marginTop: 14 } : undefined}>
-              <Text style={styles.notesLabel}>{b.label}</Text>
-              <Text style={styles.notesText}>{b.text}</Text>
+        <View key={key}>
+          {hasNotes && (
+            <View style={styles.notes} wrap={false}>
+              <Text style={styles.notesLabel}>Notes</Text>
+              <Text style={styles.notesText}>{transfer.notes}</Text>
             </View>
-          ))}
-            <Text style={[styles.colNum, styles.th]}>#</Text>
-            <Text style={[styles.colDesc, styles.th]}>Description</Text>
-            <Text style={[styles.colQty, styles.th]}>Qty</Text>
-            <Text style={[styles.colUnit, styles.th]}>Unit</Text>
-            <Text style={[styles.colTax, styles.th]}>Tax</Text>
-            <Text style={[styles.colTotal, styles.th]}>Total</Text>
+          )}
+          {hasCancelReason && (
+            <View style={styles.notes} wrap={false}>
+              <Text style={styles.notesLabel}>Cancelled reason</Text>
+              <Text style={styles.notesText}>{transfer.cancelledReason}</Text>
+            </View>
+          )}
+        </View>
+      );
+    }
+
+    case "signBlock":
+      return (
+        <View key={key} style={styles.signBlock} wrap={false}>
+          <View style={styles.signCol}>
+            <View style={styles.signLine}>
+              <Text style={styles.signLabel}>
+                Dispatched by (name &amp; signature)
+              </Text>
+            </View>
           </View>
-          {lines.map((l) => (
-            <View key={l.id} style={styles.row} wrap={false}>
-              <Text style={[styles.colNum, styles.td]}>{l.lineNo}</Text>
-              <View style={styles.colDesc}>
-                <Text style={styles.td}>{l.description}</Text>
-                {l.discountCents > 0 && (
-                  <Text style={styles.tdMuted}>
-                    Discount {(l.discountPctBps / 100).toFixed(2)}% ·{" "}
-                    {formatLKR(l.discountCents, po.currency)}
-                    {formatLKR(l.discountCents, pf.currency)}
-                  </Text>
-                )}
-              </View>
-              <Text style={[styles.colQty, styles.td]}>
-                {Number(l.quantity).toLocaleString("en-LK")}
-              </Text>
-              <Text style={[styles.colUnit, styles.td]}>
-                {formatLKR(l.unitPriceCents, po.currency)}
-              </Text>
-              <View style={styles.colTax}>
-                <Text style={styles.td}>
-                  {l.taxCents > 0 ? formatLKR(l.taxCents, po.currency) : "—"}
-                {formatLKR(l.unitPriceCents, pf.currency)}
-              </Text>
-              <View style={styles.colTax}>
-                <Text style={styles.td}>
-                  {l.taxCents > 0 ? formatLKR(l.taxCents, pf.currency) : "—"}
-                </Text>
-                {l.taxCents > 0 && (
-                  <Text style={styles.tdMuted}>
-                    {(l.taxRateBps / 100).toFixed(2)}%
-                  </Text>
-                )}
-              </View>
-              <Text style={[styles.colTotal, styles.td]}>
-                {formatLKR(l.lineTotalCents, po.currency)}
-                {formatLKR(l.lineTotalCents, pf.currency)}
+          <View style={styles.signCol}>
+            <View style={styles.signLine}>
+              <Text style={styles.signLabel}>
+                Received by (name &amp; signature)
               </Text>
             </View>
-          ))}
+          </View>
         </View>
       );
 
-    case "totals":
+    case "footer":
       return (
-        <View key={key} style={styles.totalsBlock}>
-          <View style={styles.totalRow}>
-            <Text style={styles.totalLabel}>Subtotal</Text>
-            <Text style={styles.totalValue}>
-              {formatLKR(po.subtotalCents, po.currency)}
+        <View key={key} style={styles.footer} fixed>
+          <Text>{section.text ?? "Generated with PettahPro — pettahpro.lk"}</Text>
+          <Text>{tenant.businessName}</Text>
+        </View>
+      );
+
+    case "spacer":
+      return <View key={key} style={{ height: section.height ?? 12 }} />;
+
+    case "text": {
+      const s =
+        section.emphasis === "muted"
+          ? styles.textMuted
+          : section.emphasis === "label"
+            ? styles.textLabel
+            : styles.text;
+      return (
+        <Text key={key} style={s}>
+          {section.text}
+        </Text>
+      );
+    }
+
+    default:
+      return null;
+  }
+}
+
+export function renderStockTransferTemplate(
+  layoutRaw: unknown,
+  ctx: StockTransferContext,
+) {
+  const layout = parseLayout(layoutRaw);
+  const styles = buildStockTransferStyles(layout.theme);
+
+  return (
+    <Document
+      title={ctx.transfer.transferNumber ?? "Stock transfer"}
+      author={ctx.tenant.businessName}
+      creator="PettahPro"
+      producer="PettahPro"
+    >
+      <Page size={pageSizeProp(layout.pageSize)} style={styles.page}>
+        {layout.sections.map((section, i) =>
+          renderStockTransferSection(section, ctx, styles, i),
+        )}
+      </Page>
+    </Document>
+  );
+}
+
+// -----------------------------------------------------------------
+// Payslip context + renderer (M2 #9/10)
+//
+// Two-column earnings/deductions cards, highlighted net-pay band,
+// optional leave / employer-contribution / bank-disbursement
+// blocks. Each block is its own section so payroll admins can
+// rearrange or drop optional pieces. Mirrors
+// apps/web/lib/payslip-pdf.tsx.
+// -----------------------------------------------------------------
+const PAYSLIP_MONTHS = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
+
+function formatLKRSimple(cents: number): string {
+  const abs = Math.abs(cents) / 100;
+  const negative = cents < 0;
+  const formatted = abs.toLocaleString("en-LK", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  return `${negative ? "-" : ""}LKR ${formatted}`;
+}
+
+function formatDays(days: string | number): string {
+  const n = Number(days);
+  if (!Number.isFinite(n)) return "0 days";
+  const rounded = Number.isInteger(n) ? n.toString() : n.toFixed(2);
+  return `${rounded} ${n === 1 ? "day" : "days"}`;
+}
+
+export type PayslipContext = {
+  docType: "payslip";
+  tenant: Pick<Tenant, "businessName">;
+  run: PayrollRun;
+  line: PayrollRunLine;
+  logoDataUrl?: string | null;
+};
+
+export function buildPayslipContext(args: {
+  tenant: Pick<Tenant, "businessName">;
+  run: PayrollRun;
+  line: PayrollRunLine;
+  logoDataUrl?: string | null;
+}): PayslipContext {
+  return { docType: "payslip", ...args };
+}
+
+function buildPayslipStyles(theme: Theme) {
+  const base = buildInvoiceStyles(theme);
+  return StyleSheet.create({
+    ...base,
+    payslipTenantMeta: { color: theme.textSecondary, lineHeight: 1.5 },
+    payslipNumber: {
+      fontSize: 20,
+      fontFamily: `${theme.fontFamily}-Bold`,
+      marginTop: 4,
+    },
+    periodPill: {
+      marginTop: 8,
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+      borderRadius: 999,
+      backgroundColor: theme.mutedColor,
+      color: theme.accentColor,
+      fontSize: 9,
+      fontFamily: `${theme.fontFamily}-Bold`,
+    },
+
+    employeeBlock: {
+      borderTop: `0.5pt solid ${theme.borderColor}`,
+      borderBottom: `0.5pt solid ${theme.borderColor}`,
+      paddingVertical: 14,
+      marginBottom: 20,
+      flexDirection: "row",
+      justifyContent: "space-between",
+    },
+    employeeCol: { maxWidth: 260 },
+    employeeName: {
+      fontSize: 14,
+      fontFamily: `${theme.fontFamily}-Bold`,
+      marginBottom: 4,
+    },
+    employeeMeta: { color: theme.textSecondary, lineHeight: 1.6 },
+    employeeMetaLabel: {
+      fontSize: 8,
+      textTransform: "uppercase",
+      letterSpacing: 0.8,
+      color: theme.textTertiary,
+      marginBottom: 3,
+    },
+    employeeMetaValue: {
+      fontSize: 10,
+      color: theme.textPrimary,
+      marginBottom: 8,
+    },
+
+    twoCol: {
+      flexDirection: "row",
+      gap: 18,
+      marginBottom: 20,
+    },
+    colCard: {
+      flex: 1,
+      borderRadius: 4,
+      border: `0.5pt solid ${theme.borderColor}`,
+      padding: 14,
+    },
+    colHeader: {
+      fontSize: 9,
+      textTransform: "uppercase",
+      letterSpacing: 0.8,
+      color: theme.textTertiary,
+      marginBottom: 10,
+    },
+    lineRow: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      paddingVertical: 4,
+    },
+    lineLabel: { color: theme.textSecondary },
+    lineValue: { color: theme.textPrimary },
+    cardDivider: {
+      borderTop: `0.5pt solid ${theme.borderColor}`,
+      marginVertical: 8,
+    },
+    subtotal: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      paddingVertical: 4,
+    },
+    subtotalLabel: {
+      fontFamily: `${theme.fontFamily}-Bold`,
+      color: theme.textPrimary,
+    },
+    subtotalValue: {
+      fontFamily: `${theme.fontFamily}-Bold`,
+      color: theme.textPrimary,
+    },
+
+    netBand: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "center",
+      backgroundColor: theme.mutedColor,
+      paddingVertical: 14,
+      paddingHorizontal: 16,
+      borderRadius: 4,
+      marginBottom: 20,
+    },
+    netLabel: {
+      fontSize: 10,
+      textTransform: "uppercase",
+      letterSpacing: 0.8,
+      color: theme.accentColor,
+      fontFamily: `${theme.fontFamily}-Bold`,
+    },
+    netValue: {
+      fontSize: 20,
+      fontFamily: `${theme.fontFamily}-Bold`,
+      color: theme.textPrimary,
+    },
+
+    employerNote: {
+      backgroundColor: theme.surfaceRecessed,
+      padding: 12,
+      borderRadius: 4,
+      marginBottom: 20,
+    },
+    employerTitle: {
+      fontSize: 9,
+      textTransform: "uppercase",
+      letterSpacing: 0.8,
+      color: theme.textTertiary,
+      marginBottom: 8,
+    },
+    employerRow: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      paddingVertical: 2,
+    },
+  });
+}
+
+function payslipDeductionTotal(line: PayrollRunLine): number {
+  const gross = line.earningsCents || line.grossCents;
+  return Math.max(0, gross - line.netPayCents);
+}
+
+function splitPayslipComponents(line: PayrollRunLine) {
+  const comps = (line.components ?? [])
+    .slice()
+    .sort((a, b) => a.sortOrder - b.sortOrder);
+  const earnings: PayrollRunLineComponent[] = comps.filter(
+    (c) => c.kind === "earning",
+  );
+  const preTax: PayrollRunLineComponent[] = comps.filter(
+    (c) =>
+      c.kind === "deduction" &&
+      (c.countsForEpf || c.countsForEtf || c.countsForPaye),
+  );
+  const postTax: PayrollRunLineComponent[] = comps.filter(
+    (c) =>
+      c.kind === "deduction" &&
+      !c.countsForEpf &&
+      !c.countsForEtf &&
+      !c.countsForPaye,
+  );
+  return { earnings, preTax, postTax };
+}
+
+function renderPayslipSection(
+  section: Section,
+  ctx: PayslipContext,
+  styles: ReturnType<typeof buildPayslipStyles>,
+  key: number,
+) {
+  const { run, line, tenant } = ctx;
+  const periodLabel = `${PAYSLIP_MONTHS[run.periodMonth - 1]} ${run.periodYear}`;
+
+  switch (section.type) {
+    case "header":
+      return (
+        <View key={key} style={styles.header} fixed>
+          <View style={styles.tenantBlock}>
+            {section.showLogo !== false && (
+              <PdfLogoBlock logoDataUrl={ctx.logoDataUrl} />
+            )}
+            <Text style={styles.tenantName}>{tenant.businessName}</Text>
+            <Text style={styles.payslipTenantMeta}>Payslip · confidential</Text>
+          </View>
+          <View style={styles.invoiceHeader}>
+            <Text style={styles.invoiceLabel}>Payslip</Text>
+            <Text style={styles.payslipNumber}>
+              {run.runNumber ? run.runNumber : "Draft"}
+            </Text>
+            {section.showStatusPill !== false && (
+              <Text style={styles.periodPill}>{periodLabel}</Text>
+            )}
+          </View>
+        </View>
+      );
+
+    case "employeeBlock":
+      return (
+        <View key={key} style={styles.employeeBlock}>
+          <View style={styles.employeeCol}>
+            <Text style={styles.employeeName}>{line.employeeFullName}</Text>
+            {line.designation && (
+              <Text style={styles.employeeMeta}>{line.designation}</Text>
+            )}
+            {line.department && (
+              <Text style={styles.employeeMeta}>{line.department}</Text>
+            )}
+            {line.employeeCode && (
+              <Text style={styles.employeeMeta}>
+                Employee code: {line.employeeCode}
+              </Text>
+            )}
+          </View>
+          <View>
+            {line.nic && (
+              <>
+                <Text style={styles.employeeMetaLabel}>NIC</Text>
+                <Text style={styles.employeeMetaValue}>{line.nic}</Text>
+              </>
+            )}
+            {line.epfNumber && (
+              <>
+                <Text style={styles.employeeMetaLabel}>EPF number</Text>
+                <Text style={styles.employeeMetaValue}>{line.epfNumber}</Text>
+              </>
+            )}
+            <Text style={styles.employeeMetaLabel}>Pay date</Text>
+            <Text style={styles.employeeMetaValue}>
+              {formatDate(run.payDate)}
             </Text>
           </View>
-          {po.discountCents > 0 && (
-            <View style={styles.totalRow}>
-              <Text style={styles.totalLabel}>Discount</Text>
-              <Text style={styles.totalValue}>
-                -{formatLKR(po.discountCents, po.currency)}
-              {formatLKR(pf.subtotalCents, pf.currency)}
-            </Text>
+        </View>
+      );
+
+    case "payslipColumns": {
+      const { earnings, preTax, postTax } = splitPayslipComponents(line);
+      return (
+        <View key={key} style={styles.twoCol}>
+          <View style={styles.colCard}>
+            <Text style={styles.colHeader}>Earnings</Text>
+            {earnings.length === 0 ? (
+              <View style={styles.lineRow}>
+                <Text style={styles.lineLabel}>Basic salary</Text>
+                <Text style={styles.lineValue}>
+                  {formatLKRSimple(line.basicSalaryCents)}
+                </Text>
+              </View>
+            ) : (
+              earnings.map((c) => (
+                <View key={c.id} style={styles.lineRow}>
+                  <Text style={styles.lineLabel}>{c.name}</Text>
+                  <Text style={styles.lineValue}>
+                    {formatLKRSimple(c.amountCents)}
+                  </Text>
+                </View>
+              ))
+            )}
+            <View style={styles.cardDivider} />
+            <View style={styles.subtotal}>
+              <Text style={styles.subtotalLabel}>Gross earnings</Text>
+              <Text style={styles.subtotalValue}>
+                {formatLKRSimple(line.earningsCents || line.grossCents)}
+              </Text>
+            </View>
           </View>
-          {pf.discountCents > 0 && (
-            <View style={styles.totalRow}>
-              <Text style={styles.totalLabel}>Discount</Text>
-              <Text style={styles.totalValue}>
-                -{formatLKR(pf.discountCents, pf.currency)}
+
+          <View style={styles.colCard}>
+            <Text style={styles.colHeader}>Deductions</Text>
+            {preTax.map((c) => (
+              <View key={c.id} style={styles.lineRow}>
+                <Text style={styles.lineLabel}>{c.name}</Text>
+                <Text style={styles.lineValue}>
+                  -{formatLKRSimple(c.amountCents)}
+                </Text>
+              </View>
+            ))}
+            {line.epfEmployeeCents > 0 && (
+              <View style={styles.lineRow}>
+                <Text style={styles.lineLabel}>EPF (employee, 8%)</Text>
+                <Text style={styles.lineValue}>
+                  -{formatLKRSimple(line.epfEmployeeCents)}
+                </Text>
+              </View>
+            )}
+            {line.payeCents > 0 && (
+              <View style={styles.lineRow}>
+                <Text style={styles.lineLabel}>PAYE</Text>
+                <Text style={styles.lineValue}>
+                  -{formatLKRSimple(line.payeCents)}
+                </Text>
+              </View>
+            )}
+            {postTax.map((c) => (
+              <View key={c.id} style={styles.lineRow}>
+                <Text style={styles.lineLabel}>{c.name}</Text>
+                <Text style={styles.lineValue}>
+                  -{formatLKRSimple(c.amountCents)}
+                </Text>
+              </View>
+            ))}
+            {line.totalDeductionsCents === 0 &&
+              preTax.length === 0 &&
+              postTax.length === 0 && (
+                <Text style={styles.lineLabel}>No deductions</Text>
+              )}
+            <View style={styles.cardDivider} />
+            <View style={styles.subtotal}>
+              <Text style={styles.subtotalLabel}>Total deductions</Text>
+              <Text style={styles.subtotalValue}>
+                -{formatLKRSimple(payslipDeductionTotal(line))}
+              </Text>
+            </View>
+          </View>
+        </View>
+      );
+    }
+
+    case "netPayBand":
+      return (
+        <View key={key} style={styles.netBand}>
+          <Text style={styles.netLabel}>Net take-home pay</Text>
+          <Text style={styles.netValue}>
+            {formatLKRSimple(line.netPayCents)}
+          </Text>
+        </View>
+      );
+
+    case "leaveSummary": {
+      const paid = Number(line.paidLeaveDays);
+      const unpaid = Number(line.unpaidLeaveDays);
+      if (!(paid > 0 || unpaid > 0)) return null;
+      return (
+        <View key={key} style={styles.employerNote}>
+          <Text style={styles.employerTitle}>Leave taken this period</Text>
+          {paid > 0 && (
+            <View style={styles.employerRow}>
+              <Text style={styles.lineLabel}>Paid leave</Text>
+              <Text style={styles.lineValue}>
+                {formatDays(line.paidLeaveDays)}
               </Text>
             </View>
           )}
-          <View style={styles.totalRow}>
-            <Text style={styles.totalLabel}>Tax</Text>
-            <Text style={styles.totalValue}>
-              {formatLKR(po.taxCents, po.currency)}
-              {formatLKR(pf.taxCents, pf.currency)}
+          {unpaid > 0 && (
+            <View style={styles.employerRow}>
+              <Text style={styles.lineLabel}>No-pay leave</Text>
+              <Text style={styles.lineValue}>
+                {formatDays(line.unpaidLeaveDays)}
+              </Text>
+            </View>
+          )}
+        </View>
+      );
+    }
+
+    case "employerContributions": {
+      if (!(line.epfEmployerCents > 0 || line.etfEmployerCents > 0))
+        return null;
+      return (
+        <View key={key} style={styles.employerNote}>
+          <Text style={styles.employerTitle}>
+            Employer contributions (for your records)
+          </Text>
+          {line.epfEmployerCents > 0 && (
+            <View style={styles.employerRow}>
+              <Text style={styles.lineLabel}>EPF (employer, 12%)</Text>
+              <Text style={styles.lineValue}>
+                {formatLKRSimple(line.epfEmployerCents)}
+              </Text>
+            </View>
+          )}
+          {line.etfEmployerCents > 0 && (
+            <View style={styles.employerRow}>
+              <Text style={styles.lineLabel}>ETF (employer, 3%)</Text>
+              <Text style={styles.lineValue}>
+                {formatLKRSimple(line.etfEmployerCents)}
+              </Text>
+            </View>
+          )}
+        </View>
+      );
+    }
+
+    case "bankDisbursement":
+      if (!line.bankName || !line.bankAccountNo) return null;
+      return (
+        <View key={key} style={styles.employerNote}>
+          <Text style={styles.employerTitle}>Disbursed to</Text>
+          <Text style={styles.employeeMetaValue}>
+            {line.bankName} · {line.bankAccountNo}
+            {line.bankBranch ? ` · ${line.bankBranch}` : ""}
+          </Text>
+        </View>
+      );
+
+    case "footer":
+      return (
+        <View key={key} style={styles.footer} fixed>
+          <Text>{section.text ?? "Generated with PettahPro — pettahpro.lk"}</Text>
+          <Text>
+            Payslip for {line.employeeFullName} · {periodLabel}
+          </Text>
+        </View>
+      );
+
+    case "spacer":
+      return <View key={key} style={{ height: section.height ?? 12 }} />;
+
+    case "text": {
+      const s =
+        section.emphasis === "muted"
+          ? styles.textMuted
+          : section.emphasis === "label"
+            ? styles.textLabel
+            : styles.text;
+      return (
+        <Text key={key} style={s}>
+          {section.text}
+        </Text>
+      );
+    }
+
+    default:
+      return null;
+  }
+}
+
+export function renderPayslipTemplate(
+  layoutRaw: unknown,
+  ctx: PayslipContext,
+) {
+  const layout = parseLayout(layoutRaw);
+  const styles = buildPayslipStyles(layout.theme);
+  const periodLabel = `${PAYSLIP_MONTHS[ctx.run.periodMonth - 1]} ${ctx.run.periodYear}`;
+
+  return (
+    <Document
+      title={`Payslip ${ctx.line.employeeFullName} ${periodLabel}`}
+      author={ctx.tenant.businessName}
+      creator="PettahPro"
+      producer="PettahPro"
+    >
+      <Page size={pageSizeProp(layout.pageSize)} style={styles.page}>
+        {layout.sections.map((section, i) =>
+          renderPayslipSection(section, ctx, styles, i),
+        )}
+      </Page>
+    </Document>
+  );
+}
+
+// -----------------------------------------------------------------
+// Settlement letter context + renderer (M2 #10/10)
+//
+// Final settlement letter for a departing employee. Carries hire
+// and exit dates plus years of service, single-column earnings and
+// deductions cards, a highlighted Net-payable band, and a
+// Declaration paragraph asserting full-and-final settlement.
+// Mirrors apps/web/lib/settlement-letter-pdf.tsx.
+// -----------------------------------------------------------------
+export type SettlementContext = {
+  docType: "settlement_letter";
+  tenant: Pick<Tenant, "businessName">;
+  settlement: FinalSettlementRow;
+  logoDataUrl?: string | null;
+};
+
+export function buildSettlementContext(args: {
+  tenant: Pick<Tenant, "businessName">;
+  settlement: FinalSettlementRow;
+  logoDataUrl?: string | null;
+}): SettlementContext {
+  return { docType: "settlement_letter", ...args };
+}
+
+function buildSettlementStyles(theme: Theme) {
+  const base = buildInvoiceStyles(theme);
+  return StyleSheet.create({
+    ...base,
+    settlementTenantMeta: { color: theme.textSecondary, lineHeight: 1.5 },
+    settlementNumber: {
+      fontSize: 20,
+      fontFamily: `${theme.fontFamily}-Bold`,
+      marginTop: 4,
+    },
+    settlementStatusPill: {
+      marginTop: 8,
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+      borderRadius: 999,
+      backgroundColor: theme.mutedColor,
+      color: theme.accentColor,
+      fontSize: 9,
+      fontFamily: `${theme.fontFamily}-Bold`,
+    },
+
+    employeeBlock: {
+      borderTop: `0.5pt solid ${theme.borderColor}`,
+      borderBottom: `0.5pt solid ${theme.borderColor}`,
+      paddingVertical: 14,
+      marginBottom: 20,
+      flexDirection: "row",
+      justifyContent: "space-between",
+    },
+    employeeCol: { maxWidth: 260 },
+    employeeName: {
+      fontSize: 14,
+      fontFamily: `${theme.fontFamily}-Bold`,
+      marginBottom: 4,
+    },
+    employeeMeta: { color: theme.textSecondary, lineHeight: 1.6 },
+    employeeMetaLabel: {
+      fontSize: 8,
+      textTransform: "uppercase",
+      letterSpacing: 0.8,
+      color: theme.textTertiary,
+      marginBottom: 3,
+    },
+    employeeMetaValue: {
+      fontSize: 10,
+      color: theme.textPrimary,
+      marginBottom: 8,
+    },
+
+    sectionTitle: {
+      fontSize: 9,
+      textTransform: "uppercase",
+      letterSpacing: 0.8,
+      color: theme.textTertiary,
+      marginBottom: 8,
+    },
+    card: {
+      borderRadius: 4,
+      border: `0.5pt solid ${theme.borderColor}`,
+      padding: 14,
+      marginBottom: 14,
+    },
+    lineRow: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      paddingVertical: 4,
+    },
+    lineLabel: { color: theme.textSecondary },
+    lineValue: { color: theme.textPrimary },
+    cardDivider: {
+      borderTop: `0.5pt solid ${theme.borderColor}`,
+      marginVertical: 8,
+    },
+    subtotal: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      paddingVertical: 4,
+    },
+    subtotalLabel: {
+      fontFamily: `${theme.fontFamily}-Bold`,
+      color: theme.textPrimary,
+    },
+    subtotalValue: {
+      fontFamily: `${theme.fontFamily}-Bold`,
+      color: theme.textPrimary,
+    },
+
+    netBand: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "center",
+      backgroundColor: theme.mutedColor,
+      paddingVertical: 14,
+      paddingHorizontal: 16,
+      borderRadius: 4,
+      marginBottom: 20,
+    },
+    netLabel: {
+      fontSize: 10,
+      textTransform: "uppercase",
+      letterSpacing: 0.8,
+      color: theme.accentColor,
+      fontFamily: `${theme.fontFamily}-Bold`,
+    },
+    netValue: {
+      fontSize: 20,
+      fontFamily: `${theme.fontFamily}-Bold`,
+      color: theme.textPrimary,
+    },
+
+    note: {
+      backgroundColor: theme.surfaceRecessed,
+      padding: 12,
+      borderRadius: 4,
+      marginBottom: 20,
+    },
+    noteBody: { color: theme.textSecondary, lineHeight: 1.5 },
+
+    signatureBlock: {
+      marginTop: 32,
+      flexDirection: "row",
+      justifyContent: "space-between",
+    },
+    signatureCol: { flex: 1, marginRight: 16 },
+    signatureLine: {
+      borderTop: `0.5pt solid ${theme.textPrimary}`,
+      marginTop: 40,
+      paddingTop: 6,
+    },
+  });
+}
+
+function settlementStatusLabel(status: FinalSettlementRow["status"]): string {
+  if (status === "posted") return "Posted";
+  if (status === "paid") return "Paid";
+  if (status === "approved") return "Approved";
+  if (status === "cancelled") return "Cancelled";
+  if (status === "pending_approval") return "Pending approval";
+  return "Draft";
+}
+
+function renderSettlementSection(
+  section: Section,
+  ctx: SettlementContext,
+  styles: ReturnType<typeof buildSettlementStyles>,
+  key: number,
+) {
+  const { settlement, tenant } = ctx;
+  const lines = settlement.linesSnapshot ?? [];
+  const earningRows = lines.filter((l) => l.kind === "earning");
+  const deductionRows = lines.filter((l) => l.kind === "deduction");
+  const statutoryRows = lines.filter((l) => l.kind === "statutory");
+  const earningsTotal = earningRows.reduce((s, r) => s + r.amountCents, 0);
+  const deductionsTotal =
+    deductionRows.reduce((s, r) => s + r.amountCents, 0) +
+    statutoryRows.reduce((s, r) => s + r.amountCents, 0);
+  const number = settlement.settlementNumber ?? "Draft";
+
+  switch (section.type) {
+    case "header":
+      return (
+        <View key={key} style={styles.header} fixed>
+          <View style={styles.tenantBlock}>
+            {section.showLogo !== false && (
+              <PdfLogoBlock logoDataUrl={ctx.logoDataUrl} />
+            )}
+            <Text style={styles.tenantName}>{tenant.businessName}</Text>
+            <Text style={styles.settlementTenantMeta}>
+              Final settlement · confidential
             </Text>
           </View>
-          <View style={styles.totalDivider} />
-          <View style={styles.grandTotal}>
-            <Text style={styles.grandLabel}>Order total</Text>
-            <Text style={styles.grandValue}>
-              {formatLKR(po.totalCents, po.currency)}
-            <Text style={styles.grandLabel}>Total</Text>
-            <Text style={styles.grandValue}>
-              {formatLKR(pf.totalCents, pf.currency)}
+          <View style={styles.invoiceHeader}>
+            <Text style={styles.invoiceLabel}>Settlement</Text>
+            <Text style={styles.settlementNumber}>{number}</Text>
+            {section.showStatusPill !== false && (
+              <Text style={styles.settlementStatusPill}>
+                {settlementStatusLabel(settlement.status)}
+              </Text>
+            )}
+          </View>
+        </View>
+      );
+
+    case "settlementEmployee":
+      return (
+        <View key={key} style={styles.employeeBlock}>
+          <View style={styles.employeeCol}>
+            <Text style={styles.employeeName}>
+              {settlement.employeeFullName}
+            </Text>
+            {settlement.designation && (
+              <Text style={styles.employeeMeta}>{settlement.designation}</Text>
+            )}
+            {settlement.department && (
+              <Text style={styles.employeeMeta}>{settlement.department}</Text>
+            )}
+            {settlement.employeeCode && (
+              <Text style={styles.employeeMeta}>
+                Employee code: {settlement.employeeCode}
+              </Text>
+            )}
+          </View>
+          <View>
+            <Text style={styles.employeeMetaLabel}>Hire date</Text>
+            <Text style={styles.employeeMetaValue}>
+              {formatDate(settlement.hireDate)}
+            </Text>
+            <Text style={styles.employeeMetaLabel}>Exit date</Text>
+            <Text style={styles.employeeMetaValue}>
+              {formatDate(settlement.exitDate)}
+            </Text>
+            <Text style={styles.employeeMetaLabel}>Last working day</Text>
+            <Text style={styles.employeeMetaValue}>
+              {formatDate(settlement.lastWorkingDay)}
+            </Text>
+            <Text style={styles.employeeMetaLabel}>Years of service</Text>
+            <Text style={styles.employeeMetaValue}>
+              {Number(settlement.yearsOfService).toFixed(2)} (
+              {settlement.gratuityYearsCompleted} completed)
+            </Text>
+          </View>
+        </View>
+      );
+
+    case "settlementEarnings":
+      if (earningRows.length === 0) return null;
+      return (
+        <View key={key} style={styles.card}>
+          <Text style={styles.sectionTitle}>Earnings</Text>
+          {earningRows.map((l) => (
+            <View key={l.code} style={styles.lineRow}>
+              <Text style={styles.lineLabel}>{l.name}</Text>
+              <Text style={styles.lineValue}>
+                {formatLKRSimple(l.amountCents)}
+              </Text>
+            </View>
+          ))}
+          <View style={styles.cardDivider} />
+          <View style={styles.subtotal}>
+            <Text style={styles.subtotalLabel}>Gross earnings</Text>
+            <Text style={styles.subtotalValue}>
+              {formatLKRSimple(earningsTotal)}
+            </Text>
+          </View>
+        </View>
+      );
+
+    case "settlementDeductions":
+      if (deductionRows.length === 0 && statutoryRows.length === 0) return null;
+      return (
+        <View key={key} style={styles.card}>
+          <Text style={styles.sectionTitle}>Deductions</Text>
+          {statutoryRows.map((l) => (
+            <View key={l.code} style={styles.lineRow}>
+              <Text style={styles.lineLabel}>{l.name}</Text>
+              <Text style={styles.lineValue}>
+                -{formatLKRSimple(l.amountCents)}
+              </Text>
+            </View>
+          ))}
+          {deductionRows.map((l) => (
+            <View key={l.code} style={styles.lineRow}>
+              <Text style={styles.lineLabel}>{l.name}</Text>
+              <Text style={styles.lineValue}>
+                -{formatLKRSimple(l.amountCents)}
+              </Text>
+            </View>
+          ))}
+          <View style={styles.cardDivider} />
+          <View style={styles.subtotal}>
+            <Text style={styles.subtotalLabel}>Total deductions</Text>
+            <Text style={styles.subtotalValue}>
+              -{formatLKRSimple(deductionsTotal)}
             </Text>
           </View>
         </View>
@@ -3464,33 +4350,35 @@ function renderProformaSection(
 
     case "settlementNetPay":
       return (
-        <View key={key} style={styles.netBand} wrap={false}>
-          <Text style={styles.netLabel}>{section.label ?? "Net payable"}</Text>
+        <View key={key} style={styles.netBand}>
+          <Text style={styles.netLabel}>Net payable</Text>
           <Text style={styles.netValue}>
-            {formatLKR(settlement.netPayableCents)}
+            {formatLKRSimple(settlement.netPayableCents)}
           </Text>
         </View>
       );
 
-    case "settlementDeclaration": {
-      // Default text expands a couple of variables for the renderer
-      // since the standard text is mostly fixed but mentions both the
-      // employee name and the exit date.
-      const text =
-        section.text ??
-        `This letter sets out the final settlement payable to ${settlement.employeeFullName} on the cessation of employment with ${tenant.businessName} effective ${formatDate(settlement.exitDate)}. ${SETTLEMENT_DEFAULT_DECLARATION}`;
+    case "settlementDeclaration":
       return (
-        <View key={key} style={styles.note} wrap={false}>
+        <View key={key} style={styles.note}>
           <Text style={styles.sectionTitle}>Declaration</Text>
-          <Text style={styles.noteBody}>{text}</Text>
+          <Text style={styles.noteBody}>
+            This letter sets out the final settlement payable to{" "}
+            {settlement.employeeFullName} on the cessation of employment with{" "}
+            {tenant.businessName} effective {formatDate(settlement.exitDate)}.
+            The amount shown is inclusive of all statutory entitlements
+            including gratuity (where applicable), EPF/ETF, and is in full and
+            final settlement of all dues between employer and employee. On
+            receipt of this payment the employee has no further monetary claims
+            against the employer arising out of the employment.
+          </Text>
         </View>
       );
-    }
 
     case "notes":
       if (!settlement.notes) return null;
       return (
-        <View key={key} style={styles.note} wrap={false}>
+        <View key={key} style={styles.note}>
           <Text style={styles.sectionTitle}>Notes</Text>
           <Text style={styles.noteBody}>{settlement.notes}</Text>
         </View>
@@ -3498,7 +4386,7 @@ function renderProformaSection(
 
     case "settlementSignatures":
       return (
-        <View key={key} style={styles.signatureBlock} wrap={false}>
+        <View key={key} style={styles.signatureBlock}>
           <View style={styles.signatureCol}>
             <View style={styles.signatureLine}>
               <Text style={styles.lineLabel}>Employee signature</Text>
@@ -3513,183 +4401,16 @@ function renderProformaSection(
               <Text style={styles.lineLabel}>{tenant.businessName}</Text>
             </View>
           </View>
-    case "netPayBand":
-      return (
-        <View key={key} style={styles.netBand} wrap={false}>
-          <Text style={styles.netLabel}>
-            {section.label ?? "Net take-home pay"}
-          </Text>
-          <Text style={styles.netValue}>{formatLKR(line.netPayCents)}</Text>
-        </View>
-      );
-
-    case "leaveSummary":
-      if (
-        Number(line.paidLeaveDays) === 0 &&
-        Number(line.unpaidLeaveDays) === 0
-      )
-        return null;
-      return (
-        <View key={key} style={styles.employerNote} wrap={false}>
-          <Text style={styles.employerTitle}>Leave taken this period</Text>
-          {Number(line.paidLeaveDays) > 0 && (
-            <View style={styles.employerRow}>
-              <Text style={styles.lineLabel}>Paid leave</Text>
-              <Text style={styles.lineValue}>
-                {formatPayslipDays(line.paidLeaveDays)}
-              </Text>
-            </View>
-          )}
-          {Number(line.unpaidLeaveDays) > 0 && (
-            <View style={styles.employerRow}>
-              <Text style={styles.lineLabel}>No-pay leave</Text>
-              <Text style={styles.lineValue}>
-                {formatPayslipDays(line.unpaidLeaveDays)}
-              </Text>
-            </View>
-          )}
-        </View>
-      );
-
-    case "employerContributions":
-      if (line.epfEmployerCents === 0 && line.etfEmployerCents === 0) return null;
-      return (
-        <View key={key} style={styles.employerNote} wrap={false}>
-          <Text style={styles.employerTitle}>
-            Employer contributions (for your records)
-          </Text>
-          {line.epfEmployerCents > 0 && (
-            <View style={styles.employerRow}>
-              <Text style={styles.lineLabel}>EPF (employer, 12%)</Text>
-              <Text style={styles.lineValue}>
-                {formatLKR(line.epfEmployerCents)}
-              </Text>
-            </View>
-          )}
-          {line.etfEmployerCents > 0 && (
-            <View style={styles.employerRow}>
-              <Text style={styles.lineLabel}>ETF (employer, 3%)</Text>
-              <Text style={styles.lineValue}>
-                {formatLKR(line.etfEmployerCents)}
-              </Text>
-            </View>
-          )}
-        </View>
-      );
-
-    case "bankDisbursement":
-      if (!line.bankName || !line.bankAccountNo) return null;
-      return (
-        <View key={key} style={styles.employerNote} wrap={false}>
-          <Text style={styles.employerTitle}>Disbursed to</Text>
-          <Text style={styles.metaValue}>
-            {line.bankName} · {line.bankAccountNo}
-            {line.bankBranch ? ` · ${line.bankBranch}` : ""}
-          </Text>
-    case "instructions": {
-      const text = (section.text ?? PO_DEFAULT_INSTRUCTIONS_TEXT).replace(
-        "{{poNumber}}",
-        po.poNumber ?? "—",
-      );
-      return (
-        <View key={key} style={styles.instructions} wrap={false}>
-          <Text style={styles.instructionsLabel}>
-            {section.label ?? PO_DEFAULT_INSTRUCTIONS_LABEL}
-          </Text>
-          <Text style={styles.instructionsText}>{text}</Text>
-        </View>
-      );
-    }
-
-    case "signBlock":
-      return (
-        <View key={key} style={styles.signBlock} wrap={false}>
-          <View style={styles.signCol}>
-            <View style={styles.signLine}>
-              <Text style={styles.signLabel}>
-                {section.leftLabel ?? "Dispatched by (name & signature)"}
-              </Text>
-            </View>
-          </View>
-          <View style={styles.signCol}>
-            <View style={styles.signLine}>
-              <Text style={styles.signLabel}>
-                {section.rightLabel ?? "Received by (name & signature)"}
-              </Text>
-            </View>
-          </View>
-    case "notes":
-      if (!po.notes && !po.terms) return null;
-      return (
-        <View key={key} style={styles.notes} wrap={false}>
-          {po.notes && (
-            <>
-              <Text style={styles.notesLabel}>Notes</Text>
-              <Text style={styles.notesText}>{po.notes}</Text>
-            </>
-          )}
-          {po.terms && (
-            <View style={{ marginTop: po.notes ? 14 : 0 }}>
-              <Text style={styles.notesLabel}>Terms</Text>
-              <Text style={styles.notesText}>{po.terms}</Text>
-    case "validity":
-      return (
-        <View key={key} style={styles.validity} wrap={false}>
-          <Text style={styles.validityLabel}>Validity</Text>
-          <Text
-            style={
-              isExpired
-                ? [styles.validityText, styles.validityExpired]
-                : styles.validityText
-            }
-          >
-            {isExpired
-              ? `This proforma expired on ${formatDate(pf.validUntil)}. Please request a fresh proforma.`
-              : `This proforma is valid until ${formatDate(pf.validUntil)}. Prices and availability may change after that date.`}
-          </Text>
-        </View>
-      );
-
-    case "disclaimer":
-      return (
-        <View key={key} style={styles.disclaimer} wrap={false}>
-          <Text style={styles.disclaimerText}>
-            {section.text ?? PROFORMA_DEFAULT_DISCLAIMER}
-          </Text>
-        </View>
-      );
-
-    case "notes":
-      if (!pf.notes && !pf.terms) return null;
-      return (
-        <View key={key} style={styles.notes} wrap={false}>
-          {pf.notes && (
-            <>
-              <Text style={styles.notesLabel}>Notes</Text>
-              <Text style={styles.notesText}>{pf.notes}</Text>
-            </>
-          )}
-          {pf.terms && (
-            <View style={{ marginTop: pf.notes ? 14 : 0 }}>
-              <Text style={styles.notesLabel}>Terms</Text>
-              <Text style={styles.notesText}>{pf.terms}</Text>
-            </View>
-          )}
         </View>
       );
 
     case "footer":
       return (
         <View key={key} style={styles.footer} fixed>
-          <Text>
-            {section.text ?? "Generated with PettahPro — pettahpro.lk"}
-          </Text>
+          <Text>{section.text ?? "Generated with PettahPro — pettahpro.lk"}</Text>
           <Text>
             Settlement {number} · {settlement.employeeFullName}
           </Text>
-            Payslip for {line.employeeFullName} · {periodLabel}
-          </Text>
-          <Text>{tenant.businessName}</Text>
         </View>
       );
 
@@ -3725,47 +4446,6 @@ export function renderSettlementLetterTemplate(
   return (
     <Document
       title={`Settlement letter ${ctx.settlement.employeeFullName}`}
-export function renderPayslipTemplate(
-  layoutRaw: unknown,
-  ctx: PayslipContext,
-) {
-  const layout = parseLayout(layoutRaw);
-  const styles = buildPayslipStyles(layout.theme);
-  const periodLabel = `${PAYSLIP_MONTHS[ctx.run.periodMonth - 1]} ${ctx.run.periodYear}`;
-
-  return (
-    <Document
-      title={`Payslip ${ctx.line.employeeFullName} ${periodLabel}`}
-export function renderStockTransferTemplate(
-  layoutRaw: unknown,
-  ctx: StockTransferContext,
-) {
-  const layout = parseLayout(layoutRaw);
-  const styles = buildStockTransferStyles(layout.theme);
-
-  return (
-    <Document
-      title={ctx.transfer.transferNumber ?? "Stock transfer"}
-export function renderPurchaseOrderTemplate(
-  layoutRaw: unknown,
-  ctx: PurchaseOrderContext,
-) {
-  const layout = parseLayout(layoutRaw);
-  const styles = buildPurchaseOrderStyles(layout.theme);
-
-  return (
-    <Document
-      title={ctx.purchaseOrder.poNumber ?? "Purchase order"}
-export function renderProformaInvoiceTemplate(
-  layoutRaw: unknown,
-  ctx: ProformaInvoiceContext,
-) {
-  const layout = parseLayout(layoutRaw);
-  const styles = buildProformaStyles(layout.theme);
-
-  return (
-    <Document
-      title={ctx.proformaInvoice.proformaNumber ?? "Proforma invoice"}
       author={ctx.tenant.businessName}
       creator="PettahPro"
       producer="PettahPro"
@@ -3773,10 +4453,6 @@ export function renderProformaInvoiceTemplate(
       <Page size={pageSizeProp(layout.pageSize)} style={styles.page}>
         {layout.sections.map((section, i) =>
           renderSettlementSection(section, ctx, styles, i),
-          renderPayslipSection(section, ctx, styles, i),
-          renderStockTransferSection(section, ctx, styles, i),
-          renderPurchaseOrderSection(section, ctx, styles, i),
-          renderProformaSection(section, ctx, styles, i),
         )}
       </Page>
     </Document>
